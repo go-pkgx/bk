@@ -19,7 +19,11 @@ jobs:
           go test ./... -covermode=atomic -coverprofile=cov.out
           total=$(go tool cover -func=cov.out | awk '/^total:/{print $3}')
           echo "total coverage: $total"
-          [ "$total" = "100.0%" ] || { echo "coverage below 100%"; go tool cover -func=cov.out | awk '$3!="100.0%"'; exit 1; }
+          if [ "$total" != "100.0%" ]; then
+            echo "coverage below 100%"; go tool cover -func=cov.out | awk '$3!="100.0%"'
+            echo "== uncovered blocks =="; awk 'NR>1 && $NF==0' cov.out
+            exit 1
+          fi
 
   build:
     runs-on: ubuntu-latest

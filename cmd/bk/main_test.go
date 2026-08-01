@@ -31,10 +31,13 @@ func TestTargetCommand(t *testing.T) {
 }
 
 func TestFixupCommand(t *testing.T) {
-	prefix := t.TempDir()
-	code, _, errs := run2(t, "fixup", prefix)
-	if code != 0 {
-		t.Errorf("fixup: code=%d err=%q", code, errs)
+	// host-independent success: a windows target skips all relocation → exit 0
+	if code, _, errs := run2(t, "--platform", "windows/x86-64", "fixup", t.TempDir()); code != 0 {
+		t.Errorf("windows fixup: code=%d err=%q", code, errs)
+	}
+	// also the native (host-platform) path on an empty prefix
+	if code, _, errs := run2(t, "fixup", t.TempDir()); code != 0 {
+		t.Errorf("native fixup: code=%d err=%q", code, errs)
 	}
 	// missing arg
 	if code, _, _ := run2(t, "fixup"); code != 2 {
