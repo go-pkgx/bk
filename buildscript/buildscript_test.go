@@ -89,6 +89,15 @@ func TestGuards(t *testing.T) {
 	if s, _ := scriptItem(map[string]any{"if": "some-flag", "run": "x"}, lin); s != "x" {
 		t.Errorf("unrecognised guard should keep: %q", s)
 	}
+	// a range-like but unparseable condition does not gate (kept)
+	if s, _ := scriptItem(map[string]any{"if": "^", "run": "x"}, lin); s != "x" {
+		t.Errorf("unparseable range should keep: %q", s)
+	}
+	// an unparseable package version cannot gate a semver condition (kept)
+	badVer := opts("linux", "x86-64", "not-a-version")
+	if s, _ := scriptItem(map[string]any{"if": "^1", "run": "x"}, badVer); s != "x" {
+		t.Errorf("bad version should keep: %q", s)
+	}
 }
 
 func TestRunFormsAndErrors(t *testing.T) {

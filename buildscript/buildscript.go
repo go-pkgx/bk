@@ -12,7 +12,7 @@ import (
 
 	"github.com/go-pkgx/bk/moustache"
 	"github.com/go-pkgx/bk/target"
-	"github.com/go-pkgx/bottle"
+	"github.com/go-pkgx/semver"
 )
 
 // Options carries everything script generation needs beyond the node itself.
@@ -128,7 +128,15 @@ func matchGuard(cond string, opts Options) bool {
 		return t.Platform == m[1] && t.Arch == m[2]
 	}
 	if rangeRE.MatchString(cond) {
-		return bottle.ParseVer(opts.PkgVersion).Satisfies(cond)
+		ver, err := semver.ParseVersion(opts.PkgVersion)
+		if err != nil {
+			return true
+		}
+		rng, err := semver.ParseRange(cond)
+		if err != nil {
+			return true
+		}
+		return rng.Satisfies(ver)
 	}
 	return true // an unrecognised condition does not gate the step
 }
