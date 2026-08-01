@@ -1,0 +1,47 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+permissions: { contents: read }
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - run: go vet ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: test + 100% coverage gate
+        run: |
+          go test ./... -covermode=atomic -coverprofile=cov.out
+          total=$(go tool cover -func=cov.out | awk '/^total:/{print $3}')
+          echo "total coverage: $total"
+          [ "$total" = "100.0%" ] || { echo "coverage below 100%"; go tool cover -func=cov.out | awk '$3!="100.0%"'; exit 1; }
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: linux,   goarch: riscv64 }
+          - { goos: linux,   goarch: ppc64le }
+          - { goos: linux,   goarch: s390x }
+          - { goos: linux,   goarch: loong64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - name: build ${{ matrix.goos }}/${{ matrix.goarch }} (CGO=0)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build ./...
