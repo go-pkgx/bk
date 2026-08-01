@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://go-pkgx.github.io/bk/package.schema.json",
+  "title": "pkgx pantry package.yml",
+  "description": "Schema for a pkgx pantry package.yml recipe, derived from libpkgx's parser and validated against the full pkgxdev/pantry corpus. Reused by go-pkgx/bk to validate recipes (YAML and its HCL2 front-end).",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "distributable": {
+      "description": "Where the source is fetched from (null when the package has no sources).",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "description": "source URL (shorthand)" },
+        { "$ref": "#/$defs/distributableObject" },
+        { "type": "array", "items": { "oneOf": [ { "type": "string" }, { "$ref": "#/$defs/distributableObject" } ] } }
+      ]
+    },
+    "versions": {
+      "description": "How available versions are discovered: an explicit list, a single source object, or an array of source objects (multiple sources).",
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/versionSource" },
+        { "type": "array", "items": { "oneOf": [ { "type": ["string", "number", "null"] }, { "$ref": "#/$defs/versionSource" } ] } }
+      ]
+    },
+    "dependencies": { "$ref": "#/$defs/depMap", "description": "runtime dependencies, platform-keyable" },
+    "build": {
+      "description": "The build. A string/array is script shorthand; an object carries dependencies/env/etc.",
+      "oneOf": [
+        { "$ref": "#/$defs/script" },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "dependencies": { "$ref": "#/$defs/depMap" },
+            "script": { "$ref": "#/$defs/script" },
+            "env": { "$ref": "#/$defs/envMap" },
+            "working-directory": { "type": "string" },
+            "prefix": { "type": "string" },
+            "skip": { "$ref": "#/$defs/stringOrArray", "description": "fix-up steps to skip: fix-machos, fix-patchelf, libtool-cleanup, flatten-includes" }
+          }
+        }
+      ]
+    },
+    "test": {
+      "description": "Post-build sanity test run in a fresh sandbox.",
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/script" },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "dependencies": { "$ref": "#/$defs/depMap" },
+            "script": { "$ref": "#/$defs/script" },
+            "env": { "$ref": "#/$defs/envMap" },
+            "fixture": { "$ref": "#/$defs/fixture" },
+            "working-directory": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "provides": {
+      "description": "Programs/paths this package provides, eg. bin/foo. Platform-keyable.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "array", "items": { "type": "string" } },
+        { "type": "object", "additionalProperties": true }
+      ]
+    },
+    "runtime": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": { "env": { "$ref": "#/$defs/envMap" } },
+      "description": "environment exported to consumers at runtime"
+    },
+    "companions": { "$ref": "#/$defs/depMap", "description": "packages suggested alongside this one" },
+    "platforms": { "$ref": "#/$defs/stringOrArray", "description": "platforms this package builds for: darwin, linux, windows, or <os>/<arch>" },
+    "warnings": { "$ref": "#/$defs/stringOrArray" },
+    "interprets": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "extensions": { "$ref": "#/$defs/stringOrArray" },
+        "args": { "$ref": "#/$defs/stringOrArray" }
+      }
+    },
+    "entrypoint": { "$ref": "#/$defs/stringOrArray" },
+    "display-name": { "type": "string" },
+    "displayname": { "type": "string" },
+    "summary": { "type": "string" },
+    "description": { "type": "string" },
+    "license": { "$ref": "#/$defs/stringOrArray" }
+  },
+  "$defs": {
+    "versionSource": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "github": { "type": "string", "description": "owner/repo or owner/repo/releases or /tags" },
+        "gitlab": { "type": "string" },
+        "url": { "type": "string", "description": "a URL to scrape versions from" },
+        "match": { "type": "string", "description": "regex selecting version strings from the URL body" },
+        "strip": { "$ref": "#/$defs/regexOrArray" },
+        "transform": { "type": "string" },
+        "ignore": { "$ref": "#/$defs/regexOrArray" }
+      }
+    },
+    "distributableObject": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "url": { "type": "string", "description": "source tarball/repo URL; supports {{version}} moustaches" },
+        "ref": { "type": "string" },
+        "strip-components": { "type": ["integer", "string"], "description": "leading path components to strip on extract" }
+      }
+    },
+    "stringOrArray": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        { "type": "array", "items": { "type": ["string", "number"] } }
+      ]
+    },
+    "regexOrArray": {
+      "oneOf": [
+        { "type": ["string", "number"] },
+        { "type": "array", "items": { "type": ["string", "number"] } }
+      ]
+    },
+    "constraint": {
+      "description": "a semver constraint (*, ^1, ~1.2, >=1, =1.2.3), boolean, number, or null shorthand",
+      "type": ["string", "number", "boolean", "null"]
+    },
+    "depMap": {
+      "type": ["object", "null"],
+      "description": "project → constraint, optionally nested under a platform key (darwin|linux|windows[/arch] or <arch>)",
+      "additionalProperties": {
+        "oneOf": [
+          { "$ref": "#/$defs/constraint" },
+          { "type": "object", "additionalProperties": { "$ref": "#/$defs/constraint" } }
+        ]
+      }
+    },
+    "envScalar": { "type": ["string", "number", "boolean", "null"] },
+    "envValue": {
+      "oneOf": [
+        { "$ref": "#/$defs/envScalar" },
+        { "type": "array", "items": { "$ref": "#/$defs/envScalar" } }
+      ]
+    },
+    "envMap": {
+      "type": ["object", "null"],
+      "description": "KEY → value(s); a platform key (darwin|linux|windows[/arch] or <arch>) nests a sub-map merged/overridden for that target",
+      "additionalProperties": {
+        "oneOf": [
+          { "$ref": "#/$defs/envValue" },
+          { "type": "object", "additionalProperties": { "$ref": "#/$defs/envValue" } }
+        ]
+      }
+    },
+    "fixture": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean"] },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "content": { "type": "string" },
+            "contents": { "type": "string" },
+            "extname": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "scriptStep": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean"] },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "if": { "type": ["string", "number"], "description": "guard: a platform, arch, <os>/<arch>, or semver range — evaluated against the build TARGET" },
+            "run": { "$ref": "#/$defs/script" },
+            "working-directory": { "type": "string" },
+            "prop": { "$ref": "#/$defs/fixture" },
+            "fixture": { "$ref": "#/$defs/fixture" }
+          }
+        }
+      ]
+    },
+    "script": {
+      "oneOf": [
+        { "type": ["string", "number", "boolean"] },
+        { "type": "array", "items": { "$ref": "#/$defs/scriptStep" } }
+      ]
+    }
+  }
+}
