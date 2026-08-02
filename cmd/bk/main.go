@@ -63,6 +63,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "build":
+		return runBuild(rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "unknown command:", rest[0])
 		return 2
