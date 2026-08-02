@@ -55,8 +55,8 @@ func Wrap(o WrapOptions) string {
 	if o.PkgxBin != "" {
 		fmt.Fprintf(&b, "export PKGX=\"%s\"\n", o.PkgxBin)
 	}
-	fmt.Fprintf(&b, "export HOME=%s\n", o.Home)
-	fmt.Fprintf(&b, "export SRCROOT=%s\n", o.SrcRoot)
+	fmt.Fprintf(&b, "export HOME=%q\n", o.Home)
+	fmt.Fprintf(&b, "export SRCROOT=%q\n", o.SrcRoot)
 	b.WriteString(tmpdirLine(o.Host) + "\n")
 	b.WriteString("if [ -n \"$CI\" ]; then export FORCE_UNSAFE_CONFIGURE=1; fi\n")
 	b.WriteString("mkdir -p $HOME\n")
@@ -66,7 +66,7 @@ func Wrap(o WrapOptions) string {
 	b.WriteString("env -u GH_TOKEN -u GITHUB_TOKEN\n\n")
 
 	b.WriteString("set -x\n")
-	fmt.Fprintf(&b, "cd %s\n\n", o.SrcRoot)
+	fmt.Fprintf(&b, "cd %q\n\n", o.SrcRoot)
 	b.WriteString(strings.TrimRight(o.UserScript, "\n"))
 	b.WriteString("\n")
 	return b.String()

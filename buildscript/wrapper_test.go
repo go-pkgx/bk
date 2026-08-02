@@ -26,15 +26,15 @@ func TestWrapLinux(t *testing.T) {
 		`export PATH="/bk/libexec:$PATH"`,
 		`export CMAKE_PREFIX_PATH="/opt/pkgx${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"`,
 		`export PKGX="/opt/pkgx/bin/pkgx"`,
-		"export HOME=/bk/home",
-		"export SRCROOT=/bk/build",
+		`export HOME="/bk/home"`,
+		`export SRCROOT="/bk/build"`,
 		`export TMPDIR="$HOME/tmp"; mkdir -p "$TMPDIR"`,
 		"export FORCE_UNSAFE_CONFIGURE=1",
 		`export LDFLAGS="-pie $LDFLAGS"`,
 		`export CFLAGS="-fPIC $CFLAGS"`,
 		`export CXXFLAGS="-fPIC $CXXFLAGS"`,
 		"env -u GH_TOKEN -u GITHUB_TOKEN",
-		"cd /bk/build",
+		`cd "/bk/build"`,
 		"./configure\nmake install",
 	}
 	for _, w := range wants {

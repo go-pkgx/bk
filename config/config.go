@@ -52,10 +52,13 @@ func dataHome() string {
 	return dataHomeFor(runtime.GOOS, home)
 }
 
-// dataHomeFor is the pure, testable OS split of dataHome.
+// dataHomeFor is the pure, testable OS split of dataHome. On darwin it uses
+// ~/Library/Caches rather than "Application Support": the build tree lives here
+// and that path has NO space — autotools/libtool choke on spaces in build paths
+// even when quoted, and "Application Support" would poison every macOS build.
 func dataHomeFor(goos, home string) string {
 	if goos == "darwin" {
-		return filepath.Join(home, "Library", "Application Support")
+		return filepath.Join(home, "Library", "Caches")
 	}
 	return filepath.Join(home, ".local", "share")
 }

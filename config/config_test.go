@@ -110,8 +110,8 @@ func TestDataHomeVariants(t *testing.T) {
 	if dataHome() != dataHomeFor(runtime.GOOS, mustHome(t)) {
 		t.Errorf("dataHome != dataHomeFor(host)")
 	}
-	// both OS branches, pure
-	if dataHomeFor("darwin", "/h") != filepath.FromSlash("/h/Library/Application Support") {
+	// both OS branches, pure (darwin uses a space-free Caches path)
+	if dataHomeFor("darwin", "/h") != filepath.FromSlash("/h/Library/Caches") {
 		t.Errorf("darwin: %q", dataHomeFor("darwin", "/h"))
 	}
 	if dataHomeFor("linux", "/h") != filepath.FromSlash("/h/.local/share") {
