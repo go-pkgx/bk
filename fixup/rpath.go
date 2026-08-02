@@ -168,11 +168,9 @@ func fixRpaths(opts Options) error {
 			opts.log("skipping mach-o fixes for %s", opts.Prefix)
 			return nil
 		}
-		// Mach-O install-name/rpath rewriting is not yet implemented in pure Go
-		// (brewkit shells out to fix-machos.rb). Documented gap — bk targets
-		// linux + windows cross first.
-		opts.log("note: darwin mach-o rpath fix-up not yet implemented for %s", opts.Prefix)
-		return nil
+		return walkExes(opts.Prefix, func(exe string) error {
+			return rewriteMacho(exe, opts)
+		})
 	default:
 		return nil
 	}

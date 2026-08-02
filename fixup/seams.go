@@ -15,4 +15,5 @@ var (
 	osSymlink   = os.Symlink
 	osMkdirAll  = os.MkdirAll
 	osOpenFile  = os.OpenFile
+	osReadFile  = os.ReadFile
 )

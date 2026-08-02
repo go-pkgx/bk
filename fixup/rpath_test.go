@@ -285,7 +285,7 @@ func TestFixRpathsSkipsAndDarwin(t *testing.T) {
 	if err := FixUp(Options{Prefix: prefix, Platform: "linux", Skips: []string{"fix-patchelf"}, Log: log}); err != nil {
 		t.Fatal(err)
 	}
-	// darwin (mach-o TODO note)
+	// darwin (walks exes; empty prefix → no-op, no error)
 	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", Log: log}); err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestFixRpathsSkipsAndDarwin(t *testing.T) {
 	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", Skips: []string{"fix-machos"}, Log: log}); err != nil {
 		t.Fatal(err)
 	}
-	if !anyContains(logs, "skipping rpath") || !anyContains(logs, "mach-o rpath fix-up not yet") || !anyContains(logs, "skipping mach-o") {
-		t.Errorf("expected skip/darwin logs, got %v", logs)
+	if !anyContains(logs, "skipping rpath") || !anyContains(logs, "skipping mach-o") {
+		t.Errorf("expected skip logs, got %v", logs)
 	}
 }
