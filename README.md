@@ -23,11 +23,21 @@ Early. Implemented and 100%-covered so far:
 | `pantry` | parses + schema-validates a `package.yml` into a shared `Recipe` |
 | `pantry/hcl` | an **HCL2 front-end** — a `package.hcl` decodes into the *same* `Recipe` via the same schema, so a recipe written in HCL2 yields an identical build |
 | `fixup`  | post-build relocatability: `.pc`/`.cmake` path rewriting, libtool `.la` cleanup, `lib64→lib`, single-dir header flattening, and a **pure-Go ELF RUNPATH rewriter** (`debug/elf`, no `patchelf`). A Windows target skips all POSIX relocation. |
-| `cmd/bk` | `bk target` prints the resolved target; `bk fixup <prefix>` runs the relocation pipeline |
+| `moustache` | pkgx's `{{token}}` template substitution (version/deps/prefix/hw) |
+| `buildscript` | the build/test script generator (`if:` guards vs the target, platform-reduced env, fixtures) + the porcelain `Wrap` (full runnable script) |
+| `fetch` | source download + extract (tar.gz/xz/bz2/zip, git), zip-slip-safe |
+| `bottlepkg` | package an install tree into a pkgx bottle + dist layout |
+| `build` | the pipeline orchestrator (`Runner`): dep-closure, base toolchain, sanitized env, autotools maintainer-mode defeat |
+| `cmd/bk` | `bk target`, `bk fixup <prefix>`, and **`bk build --recipe <yml> [--dist out] <project>`** (the full pipeline end to end) |
 
-Roadmap: dependency-closure hydration (reusing
-[`go-pkgx/bottle`](https://github.com/go-pkgx/bottle)), build-script generation,
-source fetch/extract, Mach-O relocation, and bottle packaging.
+`bk build` runs the whole pipeline — resolve version → fetch source → parse
+recipe → dependency closure → generate + wrap the build script → run it in a
+sanitized env → fix-up → package a bottle. **Proven end to end** on real
+packages: zlib.net (native darwin + a Windows cross-build to COFF/AMD64) and
+gnu.org/wget (openssl dependency → a running binary).
+
+Roadmap: Mach-O relocation (darwin fix-up), `{{deps.*}}` prefix tokens, and a
+comprehensive base-toolchain manifest.
 
 ### Recipes in YAML or HCL2
 
