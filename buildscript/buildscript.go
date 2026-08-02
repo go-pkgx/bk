@@ -165,11 +165,19 @@ func platformReduce(env map[string]any, t target.Target) map[string]any {
 	for k, v := range env {
 		out[k] = v
 	}
-	for k, v := range env {
-		os, arch, isKey := platformKey(k)
-		if !isKey {
-			continue
+	// Merge platform sub-maps in a deterministic (sorted) key order: when two
+	// platform keys supplement the SAME list (eg. linux CFLAGS and x86-64
+	// CFLAGS), map iteration order would otherwise make the result unstable.
+	pkeys := make([]string, 0, len(env))
+	for k := range env {
+		if _, _, ok := platformKey(k); ok {
+			pkeys = append(pkeys, k)
 		}
+	}
+	sort.Strings(pkeys)
+	for _, k := range pkeys {
+		v := env[k]
+		os, arch, _ := platformKey(k)
 		delete(out, k)
 		if os != "" && os != t.Platform {
 			continue
