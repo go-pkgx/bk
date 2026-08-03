@@ -12,7 +12,7 @@ import (
 
 	"github.com/go-pkgx/bk/moustache"
 	"github.com/go-pkgx/bk/target"
-	"github.com/go-pkgx/semver"
+	"github.com/go-versions/semver"
 )
 
 // Options carries everything script generation needs beyond the node itself.
