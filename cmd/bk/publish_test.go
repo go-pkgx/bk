@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-attest/sbom"
 	"github.com/go-attest/sbom/provenance"
+	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bottle"
 )
 
@@ -117,6 +118,40 @@ func TestPublishEndToEnd(t *testing.T) {
 	}
 }
 
+func TestPublishSigned(t *testing.T) {
+	m := newMiniOCI()
+	defer m.close()
+	kp, err := sign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyFile := filepath.Join(t.TempDir(), "k.key")
+	if err := os.WriteFile(keyFile, []byte(kp.SecretKeyFile("")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := writeBottle(t, "s.tar.gz")
+	code, out, errs := run2(t, "publish", "--to", m.base(), "--project", "z.org",
+		"--version", "1", "--platform", "linux/x86-64", "--sign", keyFile, b)
+	if code != 0 {
+		t.Fatalf("signed publish code=%d err=%q", code, errs)
+	}
+	if !strings.Contains(out, "+signature") {
+		t.Errorf("output = %q", out)
+	}
+	// unreadable key
+	if c, _, _ := run2(t, "publish", "--to", m.base(), "--project", "z.org", "--version", "1",
+		"--platform", "linux/x86-64", "--sign", filepath.Join(t.TempDir(), "nope"), b); c != 1 {
+		t.Error("missing key file")
+	}
+	// invalid key content
+	bad := filepath.Join(t.TempDir(), "bad.key")
+	os.WriteFile(bad, []byte("garbage"), 0o600)
+	if c, _, _ := run2(t, "publish", "--to", m.base(), "--project", "z.org", "--version", "1",
+		"--platform", "linux/x86-64", "--sign", bad, b); c != 1 {
+		t.Error("bad key content")
+	}
+}
+
 func TestPublishFlagErrors(t *testing.T) {
 	if c, _, _ := run2(t, "publish"); c != 2 {
 		t.Error("no flags")
@@ -159,7 +194,8 @@ func TestPublishRuntimeErrors(t *testing.T) {
 }
 
 func TestBuildReferrers(t *testing.T) {
-	refs, err := buildReferrers("sqlite.org", "3.46.0", "linux", "x86-64", []byte("x"), time.Unix(0, 0).UTC())
+	tarball := []byte("x")
+	refs, err := buildReferrers("sqlite.org", "3.46.0", "linux", "x86-64", tarball, time.Unix(0, 0).UTC(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,13 +209,60 @@ func TestBuildReferrers(t *testing.T) {
 	if !json.Valid(refs[1].Blob) || !strings.Contains(string(refs[1].Blob), "in-toto") {
 		t.Errorf("prov blob: %s", refs[1].Blob)
 	}
+
+	// with a signing key: a third, signature referrer that VerifySignature accepts
+	kp, err := sign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sref, err := buildReferrers("sqlite.org", "3.46.0", "linux", "x86-64", tarball, time.Unix(0, 0).UTC(), kp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sref) != 3 || sref[2].ArtifactType != bottle.ArtifactTypeSignature {
+		t.Fatalf("signed refs = %+v", sref)
+	}
+	sig := sref[2].Annotations[bottle.CosignSignatureAnnotation]
+	if err := bottle.VerifySignature(tarball, sref[2].Blob, sig, kp.PublicKeyString()); err != nil {
+		t.Errorf("signature referrer does not verify: %v", err)
+	}
+
 	// provenance seam error
 	pj := provJSON
 	provJSON = func(provenance.Statement) ([]byte, error) { return nil, errBoom }
-	if _, err := buildReferrers("p", "1", "linux", "x86-64", []byte("x"), time.Unix(0, 0).UTC()); err == nil {
+	if _, err := buildReferrers("p", "1", "linux", "x86-64", tarball, time.Unix(0, 0).UTC(), nil); err == nil {
 		t.Error("expected provenance error")
 	}
 	provJSON = pj
+
+	// simple-signing seam error
+	ss := simpleSigning
+	simpleSigning = func(string, string) ([]byte, error) { return nil, errBoom }
+	if _, err := buildReferrers("p", "1", "linux", "x86-64", tarball, time.Unix(0, 0).UTC(), kp); err == nil {
+		t.Error("expected simple-signing error")
+	}
+	simpleSigning = ss
+}
+
+func TestBuildTime(t *testing.T) {
+	// valid SOURCE_DATE_EPOCH → deterministic UTC
+	t.Setenv("SOURCE_DATE_EPOCH", "1000000000")
+	if got := buildTime(); !got.Equal(time.Unix(1000000000, 0).UTC()) {
+		t.Errorf("epoch: %v", got)
+	}
+	on := nowFn
+	nowFn = func() time.Time { return time.Unix(42, 0) }
+	defer func() { nowFn = on }()
+	// unparseable → wall clock
+	t.Setenv("SOURCE_DATE_EPOCH", "nope")
+	if got := buildTime(); !got.Equal(time.Unix(42, 0).UTC()) {
+		t.Errorf("invalid fallback: %v", got)
+	}
+	// unset → wall clock
+	os.Unsetenv("SOURCE_DATE_EPOCH")
+	if got := buildTime(); !got.Equal(time.Unix(42, 0).UTC()) {
+		t.Errorf("unset fallback: %v", got)
+	}
 }
 
 func TestOCIPushBadBase(t *testing.T) {
