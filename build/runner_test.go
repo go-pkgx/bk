@@ -74,6 +74,25 @@ func TestBuildHappyPath(t *testing.T) {
 	}
 }
 
+func TestBuildWithResolveDep(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	r := okRunner("acme.org/tool", tgt)
+	r.ResolveDep = func(string, string) (string, error) { return "9.9.9", nil }
+	rec := okRecipe()
+	// a build script that references {{deps.<project>.prefix}} so the resolved
+	// token actually expands into the generated script
+	rec.Build = map[string]any{"script": []any{"./configure --with-ssl={{deps.openssl.org.prefix}}"}}
+	res, err := r.Build(rec, "acme.org/tool", "*", tgt, tgt, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(res.ScriptPath)
+	if !strings.Contains(string(b), "openssl.org/v9.9.9") {
+		t.Errorf("resolved dep prefix not expanded in script:\n%s", b)
+	}
+}
+
 func TestBuildGitAndNoDistributable(t *testing.T) {
 	tenv(t)
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
@@ -128,6 +147,7 @@ func TestBuildErrorBranches(t *testing.T) {
 		"rename":      func(r *Runner) { osRename = func(string, string) error { return errBoom } },
 		"fixup":       func(r *Runner) { r.FixUp = func(fixup.Options) error { return errBoom } },
 		"writebottle": func(r *Runner) { r.WriteBottle = func(_, _, _, _, _, _ string) (string, error) { return "", errBoom } },
+		"resolvedep":  func(r *Runner) { r.ResolveDep = func(string, string) (string, error) { return "", errBoom } },
 	}
 	for name, mut := range cases {
 		t.Run(name, func(t *testing.T) {

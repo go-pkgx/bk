@@ -45,6 +45,7 @@ func realBuildRunner(pkgxBin string) *build.Runner {
 		Run:         runBash,
 		FixUp:       fixup.FixUp,
 		WriteBottle: bottlepkg.WriteBottle,
+		ResolveDep:  pickVersion,
 		PkgxBin:     pkgxBin,
 		BashPath:    "/bin/bash",
 	}

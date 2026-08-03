@@ -23,6 +23,9 @@ type Runner struct {
 	Run         func(scriptPath string, env []string) error
 	FixUp       func(fixup.Options) error
 	WriteBottle func(installDir, project, version, osn, arch, outDir string) (string, error)
+	// ResolveDep, when set, resolves each dependency to a version so the build
+	// gets {{deps.<project>.prefix}}/{{deps.<project>.version}} tokens.
+	ResolveDep  func(project, constraint string) (string, error)
 	Concurrency int
 	PkgxBin     string
 	BashPath    string
@@ -88,6 +91,13 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		moustache.Token{From: "srcroot", To: paths.Build},
 		moustache.Token{From: "pkgx.prefix", To: config.PkgxDir()},
 	)
+	if r.ResolveDep != nil {
+		dt, err := DepTokens(recipe.Dependencies, buildDeps(recipe), tgt, config.PkgxDir(), r.ResolveDep)
+		if err != nil {
+			return res, fmt.Errorf("resolve deps: %w", err)
+		}
+		toks = append(toks, dt...)
+	}
 	user, err := buildscript.Generate(recipe.Build, buildscript.Options{Target: tgt, PkgVersion: version, Tokens: toks})
 	if err != nil {
 		return res, fmt.Errorf("generate: %w", err)

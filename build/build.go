@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-pkgx/bk/moustache"
 	"github.com/go-pkgx/bk/target"
 )
 
@@ -23,11 +24,10 @@ var (
 	osArchDepRE = regexp.MustCompile(`^(darwin|linux|windows)/(aarch64|x86-64)$`)
 )
 
-// DepSpecs reduces a recipe dependency map (project → constraint, with optional
-// platform-keyed sub-maps) into pkgx pkgspecs ("project@constraint") for the
-// target. Non-matching platform keys are dropped; matching ones are merged in.
-// Output is sorted for determinism.
-func DepSpecs(deps map[string]any, tgt target.Target) []string {
+// reduceDepMap flattens a recipe dependency map (project → constraint, with
+// optional platform-keyed sub-maps) to project → constraint for the target,
+// dropping non-matching platform keys and merging matching ones.
+func reduceDepMap(deps map[string]any, tgt target.Target) map[string]string {
 	flat := map[string]string{}
 	for k, v := range deps {
 		os, arch, isKey := platformKey(k)
@@ -47,6 +47,13 @@ func DepSpecs(deps map[string]any, tgt target.Target) []string {
 			}
 		}
 	}
+	return flat
+}
+
+// DepSpecs reduces a recipe dependency map into pkgx pkgspecs
+// ("project@constraint") for the target, sorted for determinism.
+func DepSpecs(deps map[string]any, tgt target.Target) []string {
+	flat := reduceDepMap(deps, tgt)
 	specs := make([]string, 0, len(flat))
 	for p, c := range flat {
 		if c == "" || c == "*" {
@@ -57,6 +64,36 @@ func DepSpecs(deps map[string]any, tgt target.Target) []string {
 	}
 	sort.Strings(specs)
 	return specs
+}
+
+// DepTokens resolves each recipe dependency (runtime + build) to a version and
+// install prefix ($PKGX_DIR/<project>/v<version>) and returns the
+// `{{deps.<project>.prefix}}` / `{{deps.<project>.version.*}}` moustache tokens.
+// resolve maps a project + constraint to a concrete version.
+func DepTokens(runtime, buildDeps map[string]any, tgt target.Target, pkgxDir string, resolve func(project, constraint string) (string, error)) ([]moustache.Token, error) {
+	flat := reduceDepMap(runtime, tgt)
+	for p, c := range reduceDepMap(buildDeps, tgt) {
+		flat[p] = c
+	}
+	projects := make([]string, 0, len(flat))
+	for p := range flat {
+		projects = append(projects, p)
+	}
+	sort.Strings(projects)
+
+	deps := make([]moustache.Dep, 0, len(projects))
+	for _, p := range projects {
+		ver, err := resolve(p, flat[p])
+		if err != nil {
+			return nil, err
+		}
+		deps = append(deps, moustache.Dep{
+			Project: p,
+			Version: ver,
+			Path:    filepath.Join(pkgxDir, filepath.FromSlash(p), "v"+ver),
+		})
+	}
+	return moustache.Deps(deps), nil
 }
 
 func platformKey(k string) (os, arch string, ok bool) {

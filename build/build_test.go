@@ -104,6 +104,42 @@ func TestBaseToolchainAndEvalDeps(t *testing.T) {
 	}
 }
 
+func TestDepTokens(t *testing.T) {
+	resolve := func(p, c string) (string, error) { return "1.2.3", nil }
+	toks, err := DepTokens(
+		map[string]any{"openssl.org": "^1.1"},
+		map[string]any{"freedesktop.org/pkg-config": "^0.29"},
+		lin(), "/opt/pkgx", resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	find := func(from string) (string, bool) {
+		for _, tk := range toks {
+			if tk.From == from {
+				return tk.To, true
+			}
+		}
+		return "", false
+	}
+	if to, ok := find("deps.openssl.org.prefix"); !ok || to != filepath.FromSlash("/opt/pkgx/openssl.org/v1.2.3") {
+		t.Errorf("openssl prefix = %q %v", to, ok)
+	}
+	if to, _ := find("deps.openssl.org.version"); to != "1.2.3" {
+		t.Errorf("openssl version = %q", to)
+	}
+	if _, ok := find("deps.freedesktop.org/pkg-config.prefix"); !ok {
+		t.Error("build dep pkg-config token missing")
+	}
+	// resolve error propagates
+	if _, err := DepTokens(map[string]any{"x": "1"}, nil, lin(), "/p", func(string, string) (string, error) { return "", errBoom }); err == nil {
+		t.Error("expected resolve error")
+	}
+	// empty deps → no tokens
+	if tk, _ := DepTokens(nil, nil, lin(), "/p", resolve); len(tk) != 0 {
+		t.Errorf("empty = %v", tk)
+	}
+}
+
 func TestSanitizedEnv(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	t.Setenv("GITHUB_TOKEN", "secret")

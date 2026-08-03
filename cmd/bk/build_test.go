@@ -147,7 +147,7 @@ func TestPickVersion(t *testing.T) {
 func TestRealBuildRunner(t *testing.T) {
 	r := realBuildRunner("/opt/pkgx/bin/pkgx")
 	if r.PickVersion == nil || r.Fetch == nil || r.FetchGit == nil || r.Touch == nil ||
-		r.Run == nil || r.FixUp == nil || r.WriteBottle == nil || r.PkgxBin == "" || r.BashPath == "" {
+		r.Run == nil || r.FixUp == nil || r.WriteBottle == nil || r.ResolveDep == nil || r.PkgxBin == "" || r.BashPath == "" {
 		t.Errorf("realBuildRunner not fully wired: %+v", r)
 	}
 }
