@@ -3,7 +3,8 @@ module github.com/go-pkgx/bk
 go 1.26.4
 
 require (
-	github.com/go-pkgx/bottle v0.4.0
+	github.com/go-attest/sbom v0.1.0
+	github.com/go-pkgx/bottle v0.4.1-0.20260803134507-130c3b1f543f
 	github.com/go-versions/semver v0.1.0
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
