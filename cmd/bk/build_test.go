@@ -32,10 +32,11 @@ func writeRecipe(t *testing.T) string {
 func stubFactory(project string) func(string) *build.Runner {
 	return func(string) *build.Runner {
 		return &build.Runner{
-			PickVersion: func(string, string) (string, error) { return "1.0.0", nil },
-			Fetch:       func(string, string, int) error { return nil },
-			FetchGit:    func(string, string, string) error { return nil },
-			Touch:       func(string) error { return nil },
+			PickVersion:    func(string, string) (string, error) { return "1.0.0", nil },
+			ResolveVersion: func(any, string) (string, error) { return "1.0.0", nil },
+			Fetch:          func(string, string, int) error { return nil },
+			FetchGit:       func(string, string, string) error { return nil },
+			Touch:          func(string) error { return nil },
 			Run: func(string, []string) error {
 				return os.MkdirAll(config.Compute(project, "1.0.0", target.Host()).BuildInstall, 0o755)
 			},
@@ -105,7 +106,7 @@ func TestBuildCommandErrors(t *testing.T) {
 	t.Setenv("BREWKIT_TARGET", "")
 	// Build error (factory whose PickVersion fails)
 	buildFactory = func(string) *build.Runner {
-		return &build.Runner{PickVersion: func(string, string) (string, error) { return "", os.ErrInvalid }}
+		return &build.Runner{ResolveVersion: func(any, string) (string, error) { return "", os.ErrInvalid }}
 	}
 	if c, _, _ := run2(t, "build", "--recipe", rec, "p"); c != 1 {
 		t.Errorf("build-error code=%d", c)
@@ -146,7 +147,7 @@ func TestPickVersion(t *testing.T) {
 
 func TestRealBuildRunner(t *testing.T) {
 	r := realBuildRunner("/opt/pkgx/bin/pkgx")
-	if r.PickVersion == nil || r.Fetch == nil || r.FetchGit == nil || r.Touch == nil ||
+	if r.PickVersion == nil || r.ResolveVersion == nil || r.Fetch == nil || r.FetchGit == nil || r.Touch == nil ||
 		r.Run == nil || r.FixUp == nil || r.WriteBottle == nil || r.ResolveDep == nil || r.PkgxBin == "" || r.BashPath == "" {
 		t.Errorf("realBuildRunner not fully wired: %+v", r)
 	}

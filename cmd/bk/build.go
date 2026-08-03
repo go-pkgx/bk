@@ -13,6 +13,7 @@ import (
 	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/target"
+	"github.com/go-pkgx/bk/versions"
 	"github.com/go-pkgx/bottle"
 )
 
@@ -38,16 +39,17 @@ func runBash(scriptPath string, env []string) error {
 // field but pickVersion/runBash is a direct package function of matching shape.
 func realBuildRunner(pkgxBin string) *build.Runner {
 	return &build.Runner{
-		PickVersion: pickVersion,
-		Fetch:       fetch.Fetch,
-		FetchGit:    fetch.FetchGit,
-		Touch:       build.TouchAutotools,
-		Run:         runBash,
-		FixUp:       fixup.FixUp,
-		WriteBottle: bottlepkg.WriteBottle,
-		ResolveDep:  pickVersion,
-		PkgxBin:     pkgxBin,
-		BashPath:    "/bin/bash",
+		PickVersion:    pickVersion,
+		ResolveVersion: versions.Resolve,
+		Fetch:          fetch.Fetch,
+		FetchGit:       fetch.FetchGit,
+		Touch:          build.TouchAutotools,
+		Run:            runBash,
+		FixUp:          fixup.FixUp,
+		WriteBottle:    bottlepkg.WriteBottle,
+		ResolveDep:     pickVersion,
+		PkgxBin:        pkgxBin,
+		BashPath:       "/bin/bash",
 	}
 }
 

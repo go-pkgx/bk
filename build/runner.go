@@ -17,12 +17,16 @@ import (
 // orchestration is testable with stubs; NewRunner wires the real bk packages.
 type Runner struct {
 	PickVersion func(project, constraint string) (string, error)
-	Fetch       func(url, dest string, strip int) error
-	FetchGit    func(repo, ref, dest string) error
-	Touch       func(dir string) error
-	Run         func(scriptPath string, env []string) error
-	FixUp       func(fixup.Options) error
-	WriteBottle func(installDir, project, version, osn, arch, outDir string) (string, error)
+	// ResolveVersion resolves the MAIN project version from the recipe's own
+	// `versions:` spec, so it matches the distributable URL's {{version.raw}}
+	// rather than dist's already-built (possibly normalised) bottle list.
+	ResolveVersion func(spec any, constraint string) (string, error)
+	Fetch          func(url, dest string, strip int) error
+	FetchGit       func(repo, ref, dest string) error
+	Touch          func(dir string) error
+	Run            func(scriptPath string, env []string) error
+	FixUp          func(fixup.Options) error
+	WriteBottle    func(installDir, project, version, osn, arch, outDir string) (string, error)
 	// ResolveDep, when set, resolves each dependency to a version so the build
 	// gets {{deps.<project>.prefix}}/{{deps.<project>.version}} tokens.
 	ResolveDep  func(project, constraint string) (string, error)
@@ -43,7 +47,7 @@ type Result struct {
 // and, when distOut != "", packages a bottle there.
 func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, host target.Target, distOut string) (Result, error) {
 	var res Result
-	version, err := r.PickVersion(project, constraint)
+	version, err := r.ResolveVersion(recipe.Versions, constraint)
 	if err != nil {
 		return res, fmt.Errorf("resolve version: %w", err)
 	}

@@ -35,10 +35,11 @@ func okRecipe() *pantry.Recipe {
 // +brewing install dir so the subsequent rename works.
 func okRunner(project string, tgt target.Target) *Runner {
 	return &Runner{
-		PickVersion: func(string, string) (string, error) { return "1.2.3", nil },
-		Fetch:       func(string, string, int) error { return nil },
-		FetchGit:    func(string, string, string) error { return nil },
-		Touch:       func(string) error { return nil },
+		PickVersion:    func(string, string) (string, error) { return "1.2.3", nil },
+		ResolveVersion: func(any, string) (string, error) { return "1.2.3", nil },
+		Fetch:          func(string, string, int) error { return nil },
+		FetchGit:       func(string, string, string) error { return nil },
+		Touch:          func(string) error { return nil },
 		Run: func(string, []string) error {
 			p := config.Compute(project, "1.2.3", tgt)
 			return os.MkdirAll(p.BuildInstall, 0o755)
@@ -128,9 +129,9 @@ func TestBuildErrorBranches(t *testing.T) {
 	}
 
 	cases := map[string]func(r *Runner){
-		"pickversion": func(r *Runner) { r.PickVersion = func(string, string) (string, error) { return "", errBoom } },
-		"removeall":   func(r *Runner) { osRemoveAll = func(string) error { return errBoom } },
-		"mkdirall":    func(r *Runner) { osMkdirAll = func(string, os.FileMode) error { return errBoom } },
+		"resolveversion": func(r *Runner) { r.ResolveVersion = func(any, string) (string, error) { return "", errBoom } },
+		"removeall":      func(r *Runner) { osRemoveAll = func(string) error { return errBoom } },
+		"mkdirall":       func(r *Runner) { osMkdirAll = func(string, os.FileMode) error { return errBoom } },
 		"mkdir-home": func(r *Runner) {
 			n := 0
 			osMkdirAll = func(p string, m os.FileMode) error {
