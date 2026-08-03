@@ -16,4 +16,11 @@ var (
 	osMkdirAll  = os.MkdirAll
 	osWriteFile = os.WriteFile
 	osRename    = os.Rename
+	osStat      = os.Stat
+	osReadDir   = os.ReadDir
+	osReadFile  = os.ReadFile
 )
+
+// copyProps is a seam over copyPropsTree so Build's copy-error branch is
+// testable without a real filesystem failure.
+var copyProps = copyPropsTree

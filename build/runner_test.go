@@ -204,6 +204,179 @@ func TestSourceOf(t *testing.T) {
 	}
 }
 
+// restorePropSeams resets the props-copy os seams after a test mutates them.
+func restorePropSeams() {
+	osStat, osReadDir, osReadFile = os.Stat, os.ReadDir, os.ReadFile
+	osMkdirAll, osWriteFile = os.MkdirAll, os.WriteFile
+	copyProps = copyPropsTree
+}
+
+func TestBuildCopiesProps(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	project := "acme.org/tool"
+
+	// a recipe dir with a props/ tree: a 0644 patch and an executable helper in
+	// a sub-directory, exercising file + nested-dir + mode-preservation paths.
+	recipeDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(recipeDir, "props", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	patch := filepath.Join(recipeDir, "props", "patch.txt")
+	if err := os.WriteFile(patch, []byte("the patch"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(patch, 0o644)
+	script := filepath.Join(recipeDir, "props", "sub", "run.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(script, 0o755)
+
+	r := okRunner(project, tgt)
+	r.RecipeDir = recipeDir
+	rec := okRecipe()
+	// a script that references both a relative props path and the {{props}} token
+	rec.Build = map[string]any{"script": []any{"patch -p1 < props/patch.txt", "test -f {{props}}/patch.txt"}}
+	res, err := r.Build(rec, project, "*", tgt, tgt, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	build := config.Compute(project, "1.2.3", tgt).Build
+	// the patch landed at <build>/props/patch.txt with matching contents + mode
+	dstPatch := filepath.Join(build, "props", "patch.txt")
+	b, err := os.ReadFile(dstPatch)
+	if err != nil || string(b) != "the patch" {
+		t.Fatalf("props file = %q %v", b, err)
+	}
+	if fi, _ := os.Stat(dstPatch); fi.Mode().Perm() != 0o644 {
+		t.Errorf("patch mode = %v, want 0644", fi.Mode().Perm())
+	}
+	// the executable helper preserved its 0755 mode through the copy
+	if fi, _ := os.Stat(filepath.Join(build, "props", "sub", "run.sh")); fi == nil || fi.Mode().Perm() != 0o755 {
+		t.Errorf("helper mode = %v, want 0755", fi.Mode().Perm())
+	}
+	// the {{props}} token resolved to the absolute build props dir in the script
+	sc, _ := os.ReadFile(res.ScriptPath)
+	if want := filepath.Join(build, "props"); !strings.Contains(string(sc), want+"/patch.txt") {
+		t.Errorf("script missing resolved {{props}} (%s):\n%s", want, sc)
+	}
+}
+
+func TestBuildNoProps(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	project := "acme.org/tool"
+	// RecipeDir set but with NO props/ → build succeeds, nothing copied.
+	r := okRunner(project, tgt)
+	r.RecipeDir = t.TempDir()
+	if _, err := r.Build(okRecipe(), project, "*", tgt, tgt, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(config.Compute(project, "1.2.3", tgt).Build, "props")); !os.IsNotExist(err) {
+		t.Errorf("props dir should not exist: %v", err)
+	}
+}
+
+func TestBuildPropsCopyError(t *testing.T) {
+	tenv(t)
+	defer restorePropSeams()
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	recipeDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(recipeDir, "props"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyProps = func(string, string) error { return errBoom }
+	r := okRunner("acme.org/tool", tgt)
+	r.RecipeDir = recipeDir
+	if _, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, ""); err == nil {
+		t.Error("expected copy-props error")
+	}
+}
+
+func TestCopyPropsTree(t *testing.T) {
+	defer restorePropSeams()
+
+	// happy path is covered by TestBuildCopiesProps; here we drive every internal
+	// error branch by making one os seam fail at a time.
+	mksrc := func(t *testing.T) string {
+		d := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(d, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "a.txt"), []byte("a"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "sub", "b.txt"), []byte("b"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+
+	t.Run("stat-src", func(t *testing.T) {
+		defer restorePropSeams()
+		osStat = func(string) (os.FileInfo, error) { return nil, errBoom }
+		if err := copyPropsTree("s", "d"); err != errBoom {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("mkdir-root", func(t *testing.T) {
+		defer restorePropSeams()
+		osMkdirAll = func(string, os.FileMode) error { return errBoom }
+		if err := copyPropsTree(mksrc(t), filepath.Join(t.TempDir(), "out")); err != errBoom {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("readdir", func(t *testing.T) {
+		defer restorePropSeams()
+		osReadDir = func(string) ([]os.DirEntry, error) { return nil, errBoom }
+		if err := copyPropsTree(mksrc(t), filepath.Join(t.TempDir(), "out")); err != errBoom {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("recurse", func(t *testing.T) {
+		defer restorePropSeams()
+		n := 0
+		osMkdirAll = func(p string, m os.FileMode) error {
+			if n++; n >= 2 { // fail the nested sub/ dir, not the root
+				return errBoom
+			}
+			return os.MkdirAll(p, m)
+		}
+		if err := copyPropsTree(mksrc(t), filepath.Join(t.TempDir(), "out")); err != errBoom {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("stat-file", func(t *testing.T) {
+		defer restorePropSeams()
+		n := 0
+		osStat = func(p string) (os.FileInfo, error) {
+			if n++; n >= 2 { // src ok, first file stat fails
+				return nil, errBoom
+			}
+			return os.Stat(p)
+		}
+		if err := copyPropsTree(mksrc(t), filepath.Join(t.TempDir(), "out")); err != errBoom {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("readfile", func(t *testing.T) {
+		defer restorePropSeams()
+		osReadFile = func(string) ([]byte, error) { return nil, errBoom }
+		if err := copyPropsTree(mksrc(t), filepath.Join(t.TempDir(), "out")); err != errBoom {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("writefile", func(t *testing.T) {
+		defer restorePropSeams()
+		osWriteFile = func(string, []byte, os.FileMode) error { return errBoom }
+		if err := copyPropsTree(mksrc(t), filepath.Join(t.TempDir(), "out")); err != errBoom {
+			t.Errorf("err = %v", err)
+		}
+	})
+}
+
 func TestHelpers(t *testing.T) {
 	if (&Runner{Concurrency: 3}).concurrency() != 3 {
 		t.Error("explicit concurrency")

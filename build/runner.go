@@ -2,6 +2,7 @@ package build
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strconv"
 
@@ -33,6 +34,11 @@ type Runner struct {
 	Concurrency int
 	PkgxBin     string
 	BashPath    string
+	// RecipeDir is the pantry project directory holding the recipe (package.yml).
+	// When it contains a props/ dir, those auxiliary files (patches, scripts) are
+	// copied into the build tree so recipes can reference them as `props/foo` or
+	// via the {{props}} moustache. Empty disables the behaviour.
+	RecipeDir string
 }
 
 // Result reports what a build produced.
@@ -86,6 +92,18 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		}
 	}
 
+	// copy the recipe's props/ (patches, helper scripts) into the build tree so
+	// relative `props/foo` and {{props}}/foo references resolve.
+	propsDir := filepath.Join(paths.Build, "props")
+	if r.RecipeDir != "" {
+		propsSrc := filepath.Join(r.RecipeDir, "props")
+		if _, err := osStat(propsSrc); err == nil {
+			if err := copyProps(propsSrc, propsDir); err != nil {
+				return res, fmt.Errorf("copy props: %w", err)
+			}
+		}
+	}
+
 	// deps + tokens + script
 	deps := EvalDeps(recipe.Dependencies, buildDeps(recipe), tgt)
 	toks := moustache.Prefix(paths.BuildInstall)
@@ -93,6 +111,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	toks = append(toks, moustache.Host(tgt.Arch, tgt.Triple, tgt.Platform, r.concurrency())...)
 	toks = append(toks,
 		moustache.Token{From: "srcroot", To: paths.Build},
+		moustache.Token{From: "props", To: propsDir},
 		moustache.Token{From: "pkgx.prefix", To: config.PkgxDir()},
 	)
 	if r.ResolveDep != nil {
@@ -193,4 +212,42 @@ func str(v any) string {
 		return s
 	}
 	return ""
+}
+
+// copyPropsTree recursively copies src into dst, preserving each file's
+// permission bits (patches ship 0644, helper scripts may be executable). Every
+// filesystem call goes through an os seam so all error branches are testable.
+func copyPropsTree(src, dst string) error {
+	info, err := osStat(src)
+	if err != nil {
+		return err
+	}
+	if err := osMkdirAll(dst, info.Mode().Perm()|0o700); err != nil {
+		return err
+	}
+	entries, err := osReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		sp, dp := filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())
+		if e.IsDir() {
+			if err := copyPropsTree(sp, dp); err != nil {
+				return err
+			}
+			continue
+		}
+		fi, err := osStat(sp)
+		if err != nil {
+			return err
+		}
+		data, err := osReadFile(sp)
+		if err != nil {
+			return err
+		}
+		if err := osWriteFile(dp, data, fi.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	return nil
 }

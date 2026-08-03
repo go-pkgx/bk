@@ -69,6 +69,25 @@ func TestBuildCommand(t *testing.T) {
 	}
 }
 
+func TestBuildCommandSetsRecipeDir(t *testing.T) {
+	tempEnv(t)
+	old := buildFactory
+	defer func() { buildFactory = old }()
+
+	var captured *build.Runner
+	base := stubFactory("test.org/x")
+	buildFactory = func(p string) *build.Runner { captured = base(p); return captured }
+
+	rec := writeRecipe(t)
+	code, _, errs := run2(t, "build", "--recipe", rec, "test.org/x")
+	if code != 0 {
+		t.Fatalf("build: code=%d err=%q", code, errs)
+	}
+	if captured == nil || captured.RecipeDir != filepath.Dir(rec) {
+		t.Errorf("RecipeDir = %q, want %q", captured.RecipeDir, filepath.Dir(rec))
+	}
+}
+
 func TestBuildCommandErrors(t *testing.T) {
 	tempEnv(t)
 	old := buildFactory

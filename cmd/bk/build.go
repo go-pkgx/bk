@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/go-pkgx/bk/bottlepkg"
 	"github.com/go-pkgx/bk/build"
@@ -71,6 +72,9 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	}
 	project := rest[0]
 
+	runner := buildFactory(*pkgx)
+	runner.RecipeDir = filepath.Dir(*recipe)
+
 	data, err := os.ReadFile(*recipe)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -87,7 +91,7 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	res, err := buildFactory(*pkgx).Build(rec, project, "*", tgt, target.Host(), *dist)
+	res, err := runner.Build(rec, project, "*", tgt, target.Host(), *dist)
 	if err != nil {
 		fmt.Fprintln(stderr, "build failed:", err)
 		return 1
