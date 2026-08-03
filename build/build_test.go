@@ -146,7 +146,7 @@ func TestSanitizedEnv(t *testing.T) {
 	os.Unsetenv("PKGX_PANTRY_DIR")
 	env := SanitizedEnv("/h", "/pkgx")
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "GITHUB_TOKEN=secret"} {
+	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "GITHUB_TOKEN=secret", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true MAKEINFO=true"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("SanitizedEnv missing %q in %v", want, env)
 		}
@@ -158,7 +158,7 @@ func TestSanitizedEnv(t *testing.T) {
 
 func TestTouchAutotools(t *testing.T) {
 	dir := t.TempDir()
-	files := []string{"configure.ac", "acinclude.m4", "aclocal.m4", "config.h.in", "configure", "Makefile.in", "sub/Makefile.in"}
+	files := []string{"configure.ac", "acinclude.m4", "m4/pkg.m4", "aclocal.m4", "config.h.in", "configure", "Makefile.in", "sub/Makefile.in"}
 	for _, f := range files {
 		p := filepath.Join(dir, f)
 		os.MkdirAll(filepath.Dir(p), 0o755)
@@ -171,7 +171,10 @@ func TestTouchAutotools(t *testing.T) {
 		fi, _ := os.Stat(filepath.Join(dir, f))
 		return fi.ModTime()
 	}
-	// ascending tiers: inputs < aclocal.m4 < configure < Makefile.in
+	// ascending tiers: inputs (incl. m4/ macros) < aclocal.m4 < configure < Makefile.in
+	if !mt("m4/pkg.m4").Before(mt("aclocal.m4")) {
+		t.Errorf("m4/ macro not aged before aclocal.m4: m4=%v aclocal=%v", mt("m4/pkg.m4"), mt("aclocal.m4"))
+	}
 	if !mt("configure.ac").Before(mt("aclocal.m4")) ||
 		!mt("aclocal.m4").Before(mt("configure")) ||
 		!mt("configure").Before(mt("Makefile.in")) ||

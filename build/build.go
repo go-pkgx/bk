@@ -168,6 +168,14 @@ func SanitizedEnv(home, pkgxDir string) []string {
 		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
 		"HOME=" + home,
 		"PKGX_DIR=" + pkgxDir,
+		// Neutralise autotools maintainer-mode. A release tarball ships a correct
+		// configure/Makefile.in/aclocal.m4, but timestamp skew after extraction
+		// makes `make` try to regenerate them with a pinned aclocal-1.NN /
+		// automake-1.NN that isn't installed (→ "aclocal-1.18: command not
+		// found", exit 127). Passing these as make variable overrides via
+		// MAKEFLAGS no-ops every regen rule, so the shipped generated files are
+		// used as-is. (make-only; a recipe's own direct autoreconf is untouched.)
+		"MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true MAKEINFO=true",
 	}
 	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "PKGX_PANTRY_DIR", "PKGX_PANTRY_PATH", "GITHUB_TOKEN"} {
 		if v, ok := os.LookupEnv(k); ok {
@@ -179,7 +187,13 @@ func SanitizedEnv(home, pkgxDir string) []string {
 
 // autotools file tiers, oldest → newest, so outputs end up newer than inputs.
 var autotoolsTiers = [][]string{
-	{".ac", ".am", "acinclude.m4"}, // inputs
+	// Inputs (oldest): configure.ac/.am plus EVERY *.m4 macro — including those
+	// under m4/ that ship in a release tarball at a recent mtime. Without ageing
+	// them, aclocal.m4 (next tier) can be older than an m4 macro, so make tries
+	// to regenerate it with a pinned `aclocal-1.NN` that isn't installed.
+	{".ac", ".am", ".m4"},
+	// aclocal.m4 is bumped one tier newer than the .m4 macros above (the last
+	// matching tier wins), so it never looks stale against them.
 	{"aclocal.m4"},
 	{"config.h.in", "configure"},
 	{"Makefile.in"}, // final outputs
