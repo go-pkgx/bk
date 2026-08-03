@@ -1,6 +1,7 @@
 package fixup
 
 import (
+	"debug/macho"
 	"encoding/binary"
 	"errors"
 	"os"
@@ -45,6 +46,64 @@ func buildMachO(t *testing.T, cmds ...machoCmd) string {
 	le.PutUint32(buf[20:], uint32(len(body)))
 	copy(buf[32:], body)
 	p := filepath.Join(t.TempDir(), "obj.dylib")
+	if err := os.WriteFile(p, buf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// buildFatMachO wraps one crafted thin Mach-O64 slice per arches entry behind
+// a 32-bit FAT_MAGIC universal header.
+func buildFatMachO(t *testing.T, arches ...[]machoCmd) string {
+	t.Helper()
+	return buildFat(t, false, arches...)
+}
+
+// buildFat writes a fat (universal) Mach-O: magic + nfat_arch (uint32 BE),
+// then one fat_arch entry per slice — 20 bytes (cputype, cpusubtype, offset,
+// size, align, all uint32 BE) for FAT_MAGIC, 32 bytes (offset/size widened to
+// uint64) for FAT_MAGIC_64 — followed by the 8-aligned thin slices. Each slice
+// gets a distinct cputype: debug/macho rejects duplicate architectures.
+func buildFat(t *testing.T, fat64 bool, arches ...[]machoCmd) string {
+	t.Helper()
+	be := binary.BigEndian
+	var slices [][]byte
+	for _, cmds := range arches {
+		b, err := os.ReadFile(buildMachO(t, cmds...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		slices = append(slices, b)
+	}
+	entry := 20
+	magic := uint32(0xcafebabe) // FAT_MAGIC
+	if fat64 {
+		entry = 32
+		magic = fatMagic64
+	}
+	buf := make([]byte, 8+entry*len(slices))
+	be.PutUint32(buf[0:], magic)
+	be.PutUint32(buf[4:], uint32(len(slices)))
+	cpus := []uint32{0x0100000c, 0x01000007, 0x0000000c} // arm64, x86_64, arm
+	for i, s := range slices {
+		for len(buf)%8 != 0 { // 8-align each slice (align field = 2^3)
+			buf = append(buf, 0)
+		}
+		off := len(buf)
+		e := 8 + i*entry
+		be.PutUint32(buf[e:], cpus[i]) // cpusubtype stays 0
+		if fat64 {
+			be.PutUint64(buf[e+8:], uint64(off))
+			be.PutUint64(buf[e+16:], uint64(len(s)))
+			be.PutUint32(buf[e+24:], 3)
+		} else {
+			be.PutUint32(buf[e+8:], uint32(off))
+			be.PutUint32(buf[e+12:], uint32(len(s)))
+			be.PutUint32(buf[e+16:], 3)
+		}
+		buf = append(buf, s...)
+	}
+	p := filepath.Join(t.TempDir(), "fat.dylib")
 	if err := os.WriteFile(p, buf, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -214,5 +273,111 @@ func TestWalkMachoStringsEdges(t *testing.T) {
 	walkMachoStrings(raw, le, 32, 1, func(_ uint32, s string) string { seen = s; return s })
 	if seen != "abcd" {
 		t.Errorf("cstr no-nul = %q", seen)
+	}
+}
+
+func TestFatMachO(t *testing.T) {
+	p := buildFatMachO(t,
+		[]machoCmd{{lcIDDylib, "/opt/x/v1+brewing/lib/libz.dylib"}, {lcRpath, "/opt/pkgx"}},
+		[]machoCmd{{lcIDDylib, "/opt/x/v1+brewing/lib/libz.dylib"}},
+	)
+	// the crafted fat must be well-formed per the stdlib
+	ff, err := macho.OpenFat(p)
+	if err != nil {
+		t.Fatalf("OpenFat on crafted fat: %v", err)
+	}
+	if len(ff.Arches) != 2 {
+		t.Fatalf("arches = %d, want 2", len(ff.Arches))
+	}
+	ff.Close()
+	if !isMachO(p) {
+		t.Error("fat binary not recognised as Mach-O")
+	}
+	// strings from ALL slices
+	ss, err := ReadMachoStrings(p)
+	if err != nil || len(ss) != 3 {
+		t.Fatalf("ReadMachoStrings fat = %v %v, want 3 strings", ss, err)
+	}
+	// rewrite touches every slice
+	if err := RewriteMachoStrings(p, func(s string) string { return strings.ReplaceAll(s, "+brewing", "") }); err != nil {
+		t.Fatal(err)
+	}
+	ss, _ = ReadMachoStrings(p)
+	if len(ss) != 3 || ss[0] != "/opt/x/v1/lib/libz.dylib" || ss[1] != "/opt/pkgx" || ss[2] != "/opt/x/v1/lib/libz.dylib" {
+		t.Errorf("fat rewrite = %v", ss)
+	}
+	// still a well-formed fat after the in-place rewrite
+	if ff, err := macho.OpenFat(p); err != nil {
+		t.Errorf("rewrite corrupted the fat: %v", err)
+	} else {
+		ff.Close()
+	}
+	// a slice whose replacement doesn't fit → ErrNoSpace
+	if err := RewriteMachoStrings(p, func(s string) string { return s + "/way/too/long/to/fit/in/the/slot/xxxxxxxxxxxx" }); !errors.Is(err, ErrNoSpace) {
+		t.Errorf("fat grow = %v want ErrNoSpace", err)
+	}
+}
+
+func TestFat64MachO(t *testing.T) {
+	p := buildFat(t, true,
+		[]machoCmd{{lcIDDylib, "/opt/x/v1+brewing/lib/liba.dylib"}},
+		[]machoCmd{{lcRpath, "/opt/pkgx+brewing"}},
+	)
+	if !isMachO(p) {
+		t.Error("fat64 binary not recognised as Mach-O")
+	}
+	ss, err := ReadMachoStrings(p)
+	if err != nil || len(ss) != 2 || ss[0] != "/opt/x/v1+brewing/lib/liba.dylib" || ss[1] != "/opt/pkgx+brewing" {
+		t.Fatalf("ReadMachoStrings fat64 = %v %v", ss, err)
+	}
+	if err := RewriteMachoStrings(p, func(s string) string { return strings.ReplaceAll(s, "+brewing", "") }); err != nil {
+		t.Fatal(err)
+	}
+	ss, _ = ReadMachoStrings(p)
+	if len(ss) != 2 || ss[0] != "/opt/x/v1/lib/liba.dylib" || ss[1] != "/opt/pkgx" {
+		t.Errorf("fat64 rewrite = %v", ss)
+	}
+}
+
+func TestFatMachOBadInputs(t *testing.T) {
+	be := binary.BigEndian
+	dir := t.TempDir()
+	write := func(name string, b []byte) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	// FAT_MAGIC with zero images → macho.NewFatFile error
+	b := make([]byte, 8)
+	be.PutUint32(b, 0xcafebabe)
+	p := write("empty", b)
+	if isMachO(p) {
+		t.Error("no-image fat should not be Mach-O")
+	}
+	if _, err := ReadMachoStrings(p); err == nil {
+		t.Error("expected error on no-image fat")
+	}
+	// FAT_MAGIC_64 whose fat_arch_64 table is truncated
+	b = make([]byte, 12)
+	be.PutUint32(b, fatMagic64)
+	be.PutUint32(b[4:], 1)
+	p = write("trunc", b)
+	if _, err := ReadMachoStrings(p); err == nil {
+		t.Error("expected error on truncated fat_arch_64 table")
+	}
+	// FAT_MAGIC_64 whose slice offset/size point outside the file
+	b = make([]byte, 8+32)
+	be.PutUint32(b, fatMagic64)
+	be.PutUint32(b[4:], 1)
+	be.PutUint64(b[8+8:], 1<<40) // offset far past EOF
+	be.PutUint64(b[8+16:], 64)
+	p = write("oob", b)
+	if isMachO(p) {
+		t.Error("out-of-bounds slice should not be Mach-O")
+	}
+	if _, err := ReadMachoStrings(p); err == nil {
+		t.Error("expected error on out-of-bounds fat slice")
 	}
 }
