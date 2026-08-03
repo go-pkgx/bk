@@ -176,6 +176,10 @@ func SanitizedEnv(home, pkgxDir string) []string {
 		// MAKEFLAGS no-ops every regen rule, so the shipped generated files are
 		// used as-is. (make-only; a recipe's own direct autoreconf is untouched.)
 		"MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true MAKEINFO=true",
+		// Builds run as root in the CI container; autotools' "you should not run
+		// configure as root" check would abort otherwise. Bypassing it is the
+		// standard build-sandbox posture (Homebrew/distros do the same).
+		"FORCE_UNSAFE_CONFIGURE=1",
 	}
 	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "PKGX_PANTRY_DIR", "PKGX_PANTRY_PATH", "GITHUB_TOKEN"} {
 		if v, ok := os.LookupEnv(k); ok {
