@@ -216,18 +216,18 @@ func TestBuildCopiesProps(t *testing.T) {
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
 	project := "acme.org/tool"
 
-	// a recipe dir with a props/ tree: a 0644 patch and an executable helper in
-	// a sub-directory, exercising file + nested-dir + mode-preservation paths.
+	// the recipe dir IS props/: a 0644 patch at its root and an executable helper
+	// in a sub-directory, exercising file + nested-dir + mode-preservation paths.
 	recipeDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(recipeDir, "props", "sub"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(recipeDir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	patch := filepath.Join(recipeDir, "props", "patch.txt")
+	patch := filepath.Join(recipeDir, "patch.txt")
 	if err := os.WriteFile(patch, []byte("the patch"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	os.Chmod(patch, 0o644)
-	script := filepath.Join(recipeDir, "props", "sub", "run.sh")
+	script := filepath.Join(recipeDir, "sub", "run.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -268,14 +268,17 @@ func TestBuildNoProps(t *testing.T) {
 	tenv(t)
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
 	project := "acme.org/tool"
-	// RecipeDir set but with NO props/ → build succeeds, nothing copied.
-	r := okRunner(project, tgt)
-	r.RecipeDir = t.TempDir()
-	if _, err := r.Build(okRecipe(), project, "*", tgt, tgt, ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(config.Compute(project, "1.2.3", tgt).Build, "props")); !os.IsNotExist(err) {
-		t.Errorf("props dir should not exist: %v", err)
+	// No props copied when RecipeDir is unset (the != "" guard) or points at a
+	// path that does not exist (the osStat guard). Both build fine, no props/.
+	for _, rd := range []string{"", filepath.Join(t.TempDir(), "nope")} {
+		r := okRunner(project, tgt)
+		r.RecipeDir = rd
+		if _, err := r.Build(okRecipe(), project, "*", tgt, tgt, ""); err != nil {
+			t.Fatalf("RecipeDir=%q: %v", rd, err)
+		}
+		if _, err := os.Stat(filepath.Join(config.Compute(project, "1.2.3", tgt).Build, "props")); !os.IsNotExist(err) {
+			t.Errorf("RecipeDir=%q: props dir should not exist: %v", rd, err)
+		}
 	}
 }
 

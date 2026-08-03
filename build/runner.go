@@ -34,10 +34,10 @@ type Runner struct {
 	Concurrency int
 	PkgxBin     string
 	BashPath    string
-	// RecipeDir is the pantry project directory holding the recipe (package.yml).
-	// When it contains a props/ dir, those auxiliary files (patches, scripts) are
-	// copied into the build tree so recipes can reference them as `props/foo` or
-	// via the {{props}} moustache. Empty disables the behaviour.
+	// RecipeDir is the pantry project directory holding the recipe (package.yml)
+	// and its sibling files. It is copied into the build tree as `props/` so
+	// recipes can reference those files as `props/foo` or via the {{props}}
+	// moustache (pkgx's convention). Empty disables the behaviour.
 	RecipeDir string
 }
 
@@ -92,13 +92,15 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		}
 	}
 
-	// copy the recipe's props/ (patches, helper scripts) into the build tree so
-	// relative `props/foo` and {{props}}/foo references resolve.
+	// Expose the recipe's own directory as `props/` in the build tree — pkgx's
+	// convention: a recipe references its sibling files (patches, helper scripts)
+	// as `props/foo` or via the {{props}} moustache, where `props` IS the recipe
+	// directory (e.g. gnu.org/tar's props/iconv.patch is projects/gnu.org/tar/
+	// iconv.patch). Copy the whole recipe dir (package.yml included, harmless).
 	propsDir := filepath.Join(paths.Build, "props")
 	if r.RecipeDir != "" {
-		propsSrc := filepath.Join(r.RecipeDir, "props")
-		if _, err := osStat(propsSrc); err == nil {
-			if err := copyProps(propsSrc, propsDir); err != nil {
+		if _, err := osStat(r.RecipeDir); err == nil {
+			if err := copyProps(r.RecipeDir, propsDir); err != nil {
 				return res, fmt.Errorf("copy props: %w", err)
 			}
 		}

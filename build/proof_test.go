@@ -11,18 +11,16 @@ import (
 )
 
 // TestProofPropsInBuildDir is a focused end-to-end proof: a recipe whose script
-// runs `test -f props/iconv.patch` succeeds only because the RecipeDir's props/
-// was copied into the build tree the wrapped script cd's into.
+// runs `test -f props/iconv.patch` succeeds only because the RecipeDir (which IS
+// props/, pkgx-style) was copied into the build tree the wrapped script cd's into.
 func TestProofPropsInBuildDir(t *testing.T) {
 	tenv(t)
 	tgt, _ := target.Resolve()
 	project := "gnu.org/tar"
 
+	// iconv.patch sits at the recipe-dir root (like projects/gnu.org/tar/iconv.patch)
 	recipeDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(recipeDir, "props"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(recipeDir, "props", "iconv.patch"), []byte("PATCH"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(recipeDir, "iconv.patch"), []byte("PATCH"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
