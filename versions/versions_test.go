@@ -57,6 +57,19 @@ func TestResolveGithub(t *testing.T) {
 	}
 }
 
+func TestResolveGithubDropsVPrefix(t *testing.T) {
+	saveSeams(t)
+	// github tags carry a leading "v" and the recipe has no strip → the result
+	// is normalised to the pkgx tag form (no v), matching dist bottle tags.
+	gitLsRemoteTags = func(string) ([]string, error) {
+		return []string{"v5.8.2", "v5.8.3"}, nil
+	}
+	v, err := Resolve(map[string]any{"github": "tukaani-project/xz"}, "*")
+	if err != nil || v != "5.8.3" {
+		t.Fatalf("Resolve = %q, %v; want 5.8.3 (v stripped)", v, err)
+	}
+}
+
 // TestResolveGithubSuffixForms accepts every "list tags" spelling.
 func TestResolveGithubSuffixForms(t *testing.T) {
 	saveSeams(t)

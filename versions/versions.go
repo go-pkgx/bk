@@ -155,7 +155,18 @@ func selectVersion(candidates []string, strips, ignores []*regexp.Regexp, constr
 	if best == nil {
 		return "", fmt.Errorf("versions: no candidate version matched")
 	}
-	return bestStr, nil
+	return dropVPrefix(bestStr), nil
+}
+
+// dropVPrefix strips a leading "v" before a digit ("v5.8.3" -> "5.8.3"), matching
+// pkgx's tag normalisation (dist bottles are tagged without the v). Recipes whose
+// `strip:` already removes the v are unaffected; this only catches github-tag
+// specs that don't.
+func dropVPrefix(s string) string {
+	if len(s) > 1 && s[0] == 'v' && s[1] >= '0' && s[1] <= '9' {
+		return s[1:]
+	}
+	return s
 }
 
 // githubRepoURL derives https://github.com/<owner>/<repo> from a `github:`
