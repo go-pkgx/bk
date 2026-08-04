@@ -48,8 +48,8 @@ func (t Target) Slug() string { return t.Platform + "/" + t.Arch }
 var (
 	supportedPlatforms = map[string]bool{"darwin": true, "linux": true, "windows": true}
 	supportedArches    = map[string]bool{"x86-64": true, "aarch64": true}
-	// llvm.org/mingw-w64 cross triples (see go-pkgx/winbottles:
-	// x86_64-w64-mingw32-clang / aarch64-w64-mingw32-clang).
+	// llvm.org/mingw-w64 cross triples (see the go-pkgx/packages Windows
+	// factories: x86_64-w64-mingw32-clang / aarch64-w64-mingw32-clang).
 	windowsTriples = map[string]string{
 		"x86-64":  "x86_64-w64-mingw32",
 		"aarch64": "aarch64-w64-mingw32",
