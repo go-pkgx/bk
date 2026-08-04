@@ -98,6 +98,71 @@ func TestWrapWindowsHostTmp(t *testing.T) {
 	}
 }
 
+func TestLibcToolchain(t *testing.T) {
+	got := LibcToolchain()
+	want := []string{"gnu.org/glibc", "gnu.org/gcc/libstdcxx"}
+	if len(got) != len(want) {
+		t.Fatalf("LibcToolchain() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("LibcToolchain()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestWrapPkgxLibc(t *testing.T) {
+	// native linux target with PkgxLibc => the clang.cfg block appears, gated on
+	// $BK_PKGX_LIBC, carrying the full envoy flag set.
+	s := Wrap(WrapOptions{
+		UserScript: "make", Target: linuxTgt(), Host: linuxTgt(), PkgxLibc: true,
+		PkgxDir: "/opt/pkgx",
+	})
+	for _, w := range []string{
+		`if [ -n "$BK_PKGX_LIBC" ]; then`,
+		`"$PKGX_DIR"/gnu.org/glibc/v*/lib/glibc-*/libc.so.6`,
+		`ld-linux*.so.*`,
+		`"$PKGX_DIR"/gnu.org/gcc/libstdcxx/v*/lib*/libgcc_s.so.1`,
+		`_bk_clang=$(readlink -f "$(command -v clang)")`,
+		`echo "-Wl,--dynamic-linker=$_bk_glibcld"`,
+		`echo "-Wl,--disable-new-dtags"`,
+		`> "$_bk_bin/clang.cfg"`,
+		`ln -sf clang.cfg "$_bk_bin/$_bk_a.cfg"`,
+	} {
+		if !strings.Contains(s, w) {
+			t.Errorf("PkgxLibc block missing %q in:\n%s", w, s)
+		}
+	}
+	// the block must sit before the `cd` into SRCROOT (so it runs pre-build)
+	if strings.Index(s, "$BK_PKGX_LIBC") > strings.Index(s, "cd ") {
+		t.Error("PkgxLibc block should precede cd into SRCROOT")
+	}
+}
+
+func TestWrapPkgxLibcSkips(t *testing.T) {
+	// OFF by default: no PkgxLibc field => no block.
+	if s := Wrap(WrapOptions{UserScript: "x", Target: linuxTgt(), Host: linuxTgt()}); strings.Contains(s, "BK_PKGX_LIBC") {
+		t.Error("PkgxLibc off by default must not emit the block")
+	}
+	// windows target => skipped (PE has no ELF interpreter).
+	if s := Wrap(WrapOptions{UserScript: "x", Target: winTgt(), Host: linuxTgt(), PkgxLibc: true}); strings.Contains(s, "BK_PKGX_LIBC") {
+		t.Error("windows target must not emit the PkgxLibc block")
+	}
+	// darwin target => skipped (Mach-O, not ELF).
+	if s := Wrap(WrapOptions{UserScript: "x", Target: darwinTgt(), Host: darwinTgt(), PkgxLibc: true}); strings.Contains(s, "BK_PKGX_LIBC") {
+		t.Error("darwin target must not emit the PkgxLibc block")
+	}
+	// cross-arch (Target.Arch != Host.Arch) => skipped: this host's loader is wrong.
+	cross := Wrap(WrapOptions{
+		UserScript: "x", PkgxLibc: true,
+		Target: target.Target{Platform: "linux", Arch: "aarch64"},
+		Host:   target.Target{Platform: "linux", Arch: "x86-64"},
+	})
+	if strings.Contains(cross, "BK_PKGX_LIBC") {
+		t.Error("cross-arch build must not emit the PkgxLibc block")
+	}
+}
+
 func TestWrapHasCompilerAndDefaults(t *testing.T) {
 	// HasCompiler suppresses the default llvm.org even on a linux host
 	s := Wrap(WrapOptions{UserScript: "x", Deps: []string{"gnu.org/gcc"}, Target: linuxTgt(), Host: linuxTgt(), HasCompiler: true})

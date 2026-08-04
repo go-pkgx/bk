@@ -23,6 +23,23 @@ type WrapOptions struct {
 	BashPath    string        // shebang interpreter (default /bin/bash)
 	HasCompiler bool          // a compiler (llvm.org / gnu.org/gcc) is already a dep
 	HasBinutils bool          // gnu.org/binutils is a dep (darwin AR/RANLIB workaround)
+	// PkgxLibc, when true, emits the EXPERIMENTAL "Isolation Phase B" block that
+	// writes a clang.cfg re-targeting clang at the pkgx gnu.org/glibc bottle, so
+	// produced binaries carry the pkgx ld-linux as their PT_INTERP instead of the
+	// build host's loader (see docs/from-scratch-toolchain.md). OFF by default;
+	// the emitted shell is itself additionally gated on $BK_PKGX_LIBC at run time,
+	// and only fires for a native (Target.Arch == Host.Arch) linux target.
+	PkgxLibc bool
+}
+
+// LibcToolchain is the set of implicit toolchain bottles the PkgxLibc mechanism
+// needs on the `pkgx +…` closure (clang itself comes from llvm.org, already
+// added by depPlus): the relocatable glibc (crt + libc + ld-linux) and the gcc
+// bottle that carries libgcc_s.so.1 (the unwinder). EXPERIMENTAL — a caller
+// wires this into the dep closure only under BK_PKGX_LIBC; it is not yet added
+// by build.EvalDeps.
+func LibcToolchain() []string {
+	return []string{"gnu.org/glibc", "gnu.org/gcc/libstdcxx"}
 }
 
 // Wrap assembles the complete, runnable build script: a sanitized env, the
@@ -63,6 +80,9 @@ func Wrap(o WrapOptions) string {
 	for _, f := range wrapFlags(o.Target, o.PkgxDir, o.HasBinutils) {
 		b.WriteString(f + "\n")
 	}
+	if blk := pkgxLibcBlock(o); blk != "" {
+		b.WriteString(blk)
+	}
 	b.WriteString("env -u GH_TOKEN -u GITHUB_TOKEN\n\n")
 
 	b.WriteString("set -x\n")
@@ -85,6 +105,39 @@ func (o WrapOptions) depPlus() string {
 		parts = append(parts, `"+llvm.org"`)
 	}
 	return strings.Join(parts, " ")
+}
+
+// pkgxLibcBlock renders the EXPERIMENTAL clang.cfg-generation shell for the
+// PkgxLibc switch. It returns "" (no output) unless PkgxLibc is set for a native
+// linux target — a windows target (PE, no ELF interpreter) and a cross-arch
+// build (the loader must be the TARGET arch's, not this host's) are skipped, so
+// the mechanism is inert everywhere it cannot be correct. The emitted shell is
+// itself guarded on $BK_PKGX_LIBC so it is a runtime no-op unless the operator
+// opts in, and it locates the pkgx glibc/gcc bottles + the real clang purely
+// from the already-eval'd $PKGX_DIR (globbing the pkgx layout), then writes a
+// clang.cfg beside the real clang and points clang++/clang-cpp/<versioned>.cfg
+// at it — the envoy pattern (docs/from-scratch-toolchain.md).
+func pkgxLibcBlock(o WrapOptions) string {
+	if !o.PkgxLibc || o.Target.Platform != "linux" || o.Target.Arch != o.Host.Arch {
+		return ""
+	}
+	return `if [ -n "$BK_PKGX_LIBC" ]; then
+  _bk_glibclib=$(dirname "$(ls "$PKGX_DIR"/gnu.org/glibc/v*/lib/glibc-*/libc.so.6 2>/dev/null | sort | tail -1)")
+  _bk_glibcld=$(ls "$_bk_glibclib"/ld-linux*.so.* 2>/dev/null | head -1)
+  _bk_gcclib=$(dirname "$(ls "$PKGX_DIR"/gnu.org/gcc/libstdcxx/v*/lib*/libgcc_s.so.1 2>/dev/null | head -1)")
+  _bk_clang=$(readlink -f "$(command -v clang)")
+  _bk_bin=$(dirname "$_bk_clang")
+  {
+    echo "-B$_bk_glibclib"
+    echo "-L$_bk_glibclib"
+    echo "-Wl,--dynamic-linker=$_bk_glibcld"
+    echo "-Wl,-rpath,$_bk_glibclib"
+    echo "-Wl,-rpath,$_bk_gcclib"
+    echo "-Wl,--disable-new-dtags"
+  } > "$_bk_bin/clang.cfg"
+  for _bk_a in clang++ clang-cpp "$(basename "$_bk_clang")"; do ln -sf clang.cfg "$_bk_bin/$_bk_a.cfg"; done
+fi
+`
 }
 
 // tmpdirLine sets TMPDIR (POSIX) or TMP/TEMP (windows host) under $HOME.
