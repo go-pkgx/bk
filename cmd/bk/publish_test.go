@@ -30,7 +30,8 @@ type miniOCI struct {
 
 func newMiniOCI() *miniOCI {
 	m := &miniOCI{}
-	blobs := map[string]int{} // digest -> size
+	blobs := map[string]int{}        // digest -> size
+	manifests := map[string][]byte{} // tag or digest -> manifest/index body
 	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		switch {
@@ -56,6 +57,7 @@ func newMiniOCI() *miniOCI {
 				w.WriteHeader(404)
 			}
 		case strings.Contains(p, "/manifests/"):
+			ref := p[strings.LastIndex(p, "/")+1:]
 			switch r.Method {
 			case "PUT":
 				body, _ := io.ReadAll(r.Body)
@@ -68,10 +70,35 @@ func newMiniOCI() *miniOCI {
 					w.Header().Set("OCI-Subject", man.Subject.Digest)
 				}
 				s := sha256.Sum256(body)
-				w.Header().Set("Docker-Content-Digest", "sha256:"+hex.EncodeToString(s[:]))
+				dg := "sha256:" + hex.EncodeToString(s[:])
+				manifests[ref] = body // by tag (or digest, if pushed by digest)
+				manifests[dg] = body  // always addressable by digest
+				w.Header().Set("Docker-Content-Digest", dg)
 				w.WriteHeader(201)
-			default: // HEAD/GET → not found (fresh index)
-				w.WriteHeader(404)
+			default: // HEAD/GET — serve the stored manifest so read-modify-write
+				// of the version-tag index (bottle's reconcile) can read it back.
+				body, ok := manifests[ref]
+				if !ok {
+					w.WriteHeader(404)
+					return
+				}
+				var probe struct {
+					MediaType string `json:"mediaType"`
+				}
+				_ = json.Unmarshal(body, &probe)
+				if probe.MediaType == "" {
+					probe.MediaType = "application/vnd.oci.image.manifest.v1+json"
+				}
+				s := sha256.Sum256(body)
+				w.Header().Set("Docker-Content-Digest", "sha256:"+hex.EncodeToString(s[:]))
+				w.Header().Set("Content-Type", probe.MediaType)
+				w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+				if r.Method == "GET" {
+					w.WriteHeader(200)
+					_, _ = w.Write(body)
+				} else {
+					w.WriteHeader(200)
+				}
 			}
 		default:
 			w.WriteHeader(404)
