@@ -83,6 +83,70 @@ func TestParseSchemaError(t *testing.T) {
 	}
 }
 
+func TestParseListVersionsPreservesRawScalar(t *testing.T) {
+	// The crux: yaml.v3 coerces the unquoted 3.0 to float64(3) when decoding
+	// into `any`, which would render as "3". Parse must re-read the sequence's
+	// verbatim scalar text so the candidate stays exactly "3.0", and likewise
+	// keep an int "7" and a dotted "7.0.6" intact.
+	src := "versions:\n  - 3.0\n  - 7\n  - 7.0.6\nbuild: echo hi\ntest: true\n"
+	r, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, ok := r.Versions.([]any)
+	if !ok {
+		t.Fatalf("Versions = %T; want []any", r.Versions)
+	}
+	want := []any{"3.0", "7", "7.0.6"}
+	if len(list) != len(want) {
+		t.Fatalf("Versions = %v; want %v", list, want)
+	}
+	for i, w := range want {
+		if list[i] != w {
+			t.Errorf("Versions[%d] = %#v; want %#v (raw scalar text)", i, list[i], w)
+		}
+	}
+}
+
+func TestParseMapVersionsUnchanged(t *testing.T) {
+	// The github/url map form must pass through as a map, untouched.
+	r, err := Parse([]byte(curlRecipe))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := r.Versions.(map[string]any)
+	if !ok || m["github"] != "curl/curl/releases" {
+		t.Errorf("Versions = %#v; want github map", r.Versions)
+	}
+}
+
+func TestParseNoVersionsKey(t *testing.T) {
+	// A recipe with no versions key leaves Versions nil (loop finds nothing).
+	r, err := Parse([]byte("build: echo hi\ntest: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Versions != nil {
+		t.Errorf("Versions = %#v; want nil", r.Versions)
+	}
+}
+
+func TestParseEmptyDocument(t *testing.T) {
+	// An empty document decodes without error and has no content node, so the
+	// raw-scalar extraction must short-circuit (not index a nil node) and let
+	// the schema step reject the null document normally — no panic.
+	if _, err := Parse([]byte("")); err == nil || !strings.Contains(err.Error(), "schema validation") {
+		t.Errorf("empty document: expected schema error, got %v", err)
+	}
+}
+
+func TestParseMalformedYAML(t *testing.T) {
+	// Malformed YAML fails the first (node) unmarshal, not the struct decode.
+	if _, err := Parse([]byte("build: [unterminated\n")); err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Errorf("expected decode error, got %v", err)
+	}
+}
+
 func TestToJSONValue(t *testing.T) {
 	in := map[string]any{
 		"a": map[any]any{1: "x", "b": []any{int(2), int64(3), "s", true, nil}},

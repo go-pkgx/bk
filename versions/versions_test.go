@@ -132,6 +132,33 @@ func TestResolveConstraintAndIgnore(t *testing.T) {
 	}
 }
 
+func TestResolveListForm(t *testing.T) {
+	saveSeams(t)
+	// A single-entry hardcoded list: the entry is both the version and the
+	// tag, and its raw scalar text ("3.0") must survive verbatim — NOT be
+	// re-rendered as "3" (which would 404 the distributable URL).
+	if v, tag, err := Resolve([]any{"3.0"}, "*"); err != nil || v != "3.0" || tag != "3.0" {
+		t.Errorf("single-entry list = %q %q %v; want 3.0/3.0", v, tag, err)
+	}
+	// Multi-entry list with no constraint selects the max.
+	if v, tag, err := Resolve([]any{"3.0", "3.1", "7", "7.0.6"}, ""); err != nil || v != "7.0.6" || tag != "7.0.6" {
+		t.Errorf("multi-entry max = %q %q %v; want 7.0.6", v, tag, err)
+	}
+	// A constraint picks the max satisfying it, not the overall max.
+	if v, _, err := Resolve([]any{"3.0", "3.1", "7", "7.0.6"}, "^3"); err != nil || v != "3.1" {
+		t.Errorf("constrained list = %q %v; want 3.1", v, err)
+	}
+	// An int/string/float mix (as pantry hands it over: verbatim scalar text)
+	// preserves each entry's exact text.
+	if v, tag, err := Resolve([]any{"7", "3.0"}, "^3"); err != nil || v != "3.0" || tag != "3.0" {
+		t.Errorf("mixed-text list = %q %q %v; want 3.0/3.0", v, tag, err)
+	}
+	// An empty list has no candidates.
+	if _, _, err := Resolve([]any{}, "*"); err == nil {
+		t.Error("empty list: expected no-candidate error")
+	}
+}
+
 func TestResolveUnparseableCandidatesSkipped(t *testing.T) {
 	saveSeams(t)
 	httpGet = func(string) (string, error) { return "foo 1.2.3 bar", nil }

@@ -73,12 +73,30 @@ var (
 // "v1.2.3" or "openssl-3.5.0"); for the url/match path it is the matched
 // string before any strip. Recipes interpolate it in GitHub release URLs
 // like `.../releases/download/{{version.tag}}/{{version.tag}}.tar.gz`.
+//
+// A list-form `versions:` (an explicit, hardcoded set of candidate versions)
+// decodes as a []any of the entries' verbatim scalar text (pantry preserves
+// that text so e.g. "3.0" is not coerced to "3"). Those entries ARE the
+// candidates: there is no upstream github/url resolution, no strip/ignore, and
+// the winning candidate is its own {{version.tag}}.
 func Resolve(spec any, constraint string) (string, string, error) {
-	m, ok := spec.(map[string]any)
-	if !ok {
+	switch v := spec.(type) {
+	case map[string]any:
+		return resolveMap(v, constraint)
+	case []any:
+		candidates := make([]string, 0, len(v))
+		for _, e := range v {
+			candidates = append(candidates, fmt.Sprint(e))
+		}
+		return selectVersion(candidates, nil, nil, constraint)
+	default:
 		return "", "", fmt.Errorf("versions: unsupported version spec %T", spec)
 	}
+}
 
+// resolveMap handles the github/url map form of `versions:`, listing upstream
+// tags (or matching an upstream listing) and selecting via the loose semver.
+func resolveMap(m map[string]any, constraint string) (string, string, error) {
 	strips, err := regexList(m["strip"])
 	if err != nil {
 		return "", "", err

@@ -5,7 +5,6 @@
 package pantry
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -80,15 +79,52 @@ func Validate(data []byte) error {
 // the typed struct first (so a type mismatch is reported precisely), then
 // checks the whole document against the authoritative schema.
 func Parse(data []byte) (*Recipe, error) {
-	var r Recipe
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	if err := dec.Decode(&r); err != nil {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
 		return nil, fmt.Errorf("pantry: decode: %w", err)
 	}
+	var r Recipe
+	if err := root.Decode(&r); err != nil {
+		return nil, fmt.Errorf("pantry: decode: %w", err)
+	}
+	// A list-form `versions:` enumerates candidate versions verbatim. yaml.v3
+	// coerces unquoted numeric scalars when decoding into `any` (3.0 becomes
+	// float64(3), losing the ".0"), which would corrupt the distributable URL
+	// that interpolates {{version.raw}}. Re-read the sequence's raw scalar text
+	// straight from the YAML node so each candidate keeps its exact source form.
+	r.Versions = rawListVersions(&root, r.Versions)
 	if err := Validate(data); err != nil {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// rawListVersions returns the verbatim scalar text of a list-form `versions:`
+// sequence as a []any of strings, so a candidate like "3.0" is preserved
+// exactly rather than coerced. For any other form (the github/url map, or an
+// absent versions key) it returns decoded unchanged.
+func rawListVersions(root *yaml.Node, decoded any) any {
+	// A successful root.Decode into the Recipe struct guarantees a mapping
+	// document; only the empty-document case has no content.
+	if len(root.Content) == 0 {
+		return decoded
+	}
+	m := root.Content[0]
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value != "versions" {
+			continue
+		}
+		node := m.Content[i+1]
+		if node.Kind != yaml.SequenceNode {
+			return decoded
+		}
+		out := make([]any, 0, len(node.Content))
+		for _, c := range node.Content {
+			out = append(out, c.Value)
+		}
+		return out
+	}
+	return decoded
 }
 
 // toJSONValue normalises a yaml.v3-decoded value into the plain types the JSON
