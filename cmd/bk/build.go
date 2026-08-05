@@ -21,6 +21,9 @@ import (
 // buildFactory builds a wired Runner; overridden in tests.
 var buildFactory = realBuildRunner
 
+// lookPath resolves a binary name to an absolute path; a seam for tests.
+var lookPath = exec.LookPath
+
 // pickVersion adapts bottle.PickVersion (which returns a Ver) to the Runner's
 // string-version contract.
 func pickVersion(project, constraint string) (string, error) {
@@ -72,7 +75,17 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	}
 	project := rest[0]
 
-	runner := buildFactory(*pkgx)
+	// Resolve the pkgx binary to an absolute path: the build script runs under a
+	// sanitized PATH (/usr/bin:/bin:/usr/sbin:/sbin) that excludes /usr/local/bin
+	// and ~/.local/bin, so a bare "pkgx" would not be found for the deps eval. If
+	// resolution fails, keep the value as given (explicit paths still work and the
+	// original error stays clear).
+	pkgxBin := *pkgx
+	if abs, err := lookPath(pkgxBin); err == nil {
+		pkgxBin = abs
+	}
+
+	runner := buildFactory(pkgxBin)
 	runner.RecipeDir = filepath.Dir(*recipe)
 
 	data, err := os.ReadFile(*recipe)

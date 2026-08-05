@@ -56,14 +56,40 @@ func DepSpecs(deps map[string]any, tgt target.Target) []string {
 	flat := reduceDepMap(deps, tgt)
 	specs := make([]string, 0, len(flat))
 	for p, c := range flat {
-		if c == "" || c == "*" {
-			specs = append(specs, p)
-		} else {
-			specs = append(specs, p+"@"+c)
-		}
+		specs = append(specs, depSpec(p, c))
 	}
 	sort.Strings(specs)
 	return specs
+}
+
+// depSpec renders a single project+constraint pair as a pkgx pkgspec. pkgx
+// (v2.10.3) parses the operator forms differently: a range operator (^ ~ > <)
+// is appended DIRECTLY to the project (`cmake.org^3`, `gnu.org/gmp>=6`); an
+// exact `=X.Y.Z` and a bare numeric constraint use `@` (`foo@1.2.3`, `foo@3`);
+// `*`/empty is a bare project. Appending `@` to a range operator
+// (`cmake.org@^3`) makes pkgx reject it with "invalid semver".
+func depSpec(project, constraint string) string {
+	switch {
+	case constraint == "" || constraint == "*":
+		return project
+	case strings.HasPrefix(constraint, "^"), strings.HasPrefix(constraint, "~"),
+		strings.HasPrefix(constraint, ">"), strings.HasPrefix(constraint, "<"):
+		return project + constraint
+	case strings.HasPrefix(constraint, "="):
+		return project + "@" + strings.TrimPrefix(constraint, "=")
+	default:
+		return project + "@" + constraint
+	}
+}
+
+// specProject extracts the bare project name from a rendered pkgspec, stopping
+// at the first version delimiter (@ or a range operator) so dedup keys match
+// regardless of the constraint form.
+func specProject(spec string) string {
+	if i := strings.IndexAny(spec, "@^~<>="); i >= 0 {
+		return spec[:i]
+	}
+	return spec
 }
 
 // DepTokens resolves each recipe dependency (runtime + build) to a version and
@@ -144,7 +170,7 @@ func EvalDeps(runtime, buildDeps map[string]any, tgt target.Target) []string {
 	var out []string
 	add := func(specs []string) {
 		for _, s := range specs {
-			key := strings.SplitN(s, "@", 2)[0]
+			key := specProject(s)
 			if !seen[key] {
 				seen[key] = true
 				out = append(out, s)

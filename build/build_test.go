@@ -25,13 +25,13 @@ func TestDepSpecs(t *testing.T) {
 	}
 	// linux target: openssl + linux sub + x86-64 sub; darwin/windows/aarch64 dropped
 	got := DepSpecs(deps, lin())
-	want := []string{"arch.only@2", "gnu.org/A", "openssl.org@^1.1"}
+	want := []string{"arch.only@2", "gnu.org/A", "openssl.org^1.1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("linux DepSpecs = %v want %v", got, want)
 	}
 	// windows/x86-64 target: openssl + windows sub (bare) + x86-64 sub
 	got = DepSpecs(deps, win())
-	want = []string{"arch.only@2", "llvm.org/mingw-w64", "openssl.org@^1.1"}
+	want = []string{"arch.only@2", "llvm.org/mingw-w64", "openssl.org^1.1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("windows DepSpecs = %v want %v", got, want)
 	}
@@ -41,6 +41,50 @@ func TestDepSpecs(t *testing.T) {
 	}
 	if len(DepSpecs(nil, lin())) != 0 {
 		t.Error("nil deps")
+	}
+}
+
+// TestDepSpecConstraintShapes exercises every rendering branch: range operators
+// (^ ~ > <) append directly, exact = strips to @, bare numeric keeps @, star is
+// bare. These match how pkgx v2.10.3 actually parses each form.
+func TestDepSpecConstraintShapes(t *testing.T) {
+	cases := []struct {
+		project, constraint, want string
+	}{
+		{"cmake.org", "^3", "cmake.org^3"},
+		{"cmake.org", "~3.31", "cmake.org~3.31"},
+		{"gnu.org/gmp", ">=6", "gnu.org/gmp>=6"},
+		{"foo", "<2", "foo<2"},
+		{"foo", "3", "foo@3"},
+		{"bar", "=1.2.3", "bar@1.2.3"},
+		{"baz", "*", "baz"},
+		{"qux", "", "qux"},
+	}
+	for _, c := range cases {
+		if got := depSpec(c.project, c.constraint); got != c.want {
+			t.Errorf("depSpec(%q,%q)=%q want %q", c.project, c.constraint, got, c.want)
+		}
+		if got := DepSpecs(map[string]any{c.project: c.constraint}, lin()); len(got) != 1 || got[0] != c.want {
+			t.Errorf("DepSpecs %q:%q = %v want [%q]", c.project, c.constraint, got, c.want)
+		}
+	}
+}
+
+// TestSpecProject checks project extraction across every delimiter form so that
+// EvalDeps dedup keys are stable regardless of constraint shape.
+func TestSpecProject(t *testing.T) {
+	for spec, want := range map[string]string{
+		"cmake.org^3":    "cmake.org",
+		"foo@3":          "foo",
+		"gnu.org/gmp>=6": "gnu.org/gmp",
+		"bar~1.2":        "bar",
+		"baz<2":          "baz",
+		"qux=1":          "qux",
+		"plain":          "plain",
+	} {
+		if got := specProject(spec); got != want {
+			t.Errorf("specProject(%q)=%q want %q", spec, got, want)
+		}
 	}
 }
 
@@ -85,7 +129,7 @@ func TestBaseToolchainAndEvalDeps(t *testing.T) {
 		map[string]any{"freedesktop.org/pkg-config": "^0.29"}, // already in base → dedup
 		lin(),
 	)
-	if !contains(got, "openssl.org@^1.1") || !contains(got, "gnu.org/autoconf") {
+	if !contains(got, "openssl.org^1.1") || !contains(got, "gnu.org/autoconf") {
 		t.Errorf("EvalDeps missing entries: %v", got)
 	}
 	// pkg-config appears exactly once (base's bare form wins)

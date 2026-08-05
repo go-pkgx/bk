@@ -64,7 +64,7 @@ func TestBuildHappyPath(t *testing.T) {
 	b, _ := os.ReadFile(res.ScriptPath)
 	s := string(b)
 	// the script wires deps + base toolchain + the user script + a cd to srcroot
-	if !strings.Contains(s, `"+openssl.org@^1.1"`) || !strings.Contains(s, `"+gnu.org/autoconf"`) || !strings.Contains(s, "make install") {
+	if !strings.Contains(s, `"+openssl.org^1.1"`) || !strings.Contains(s, `"+gnu.org/autoconf"`) || !strings.Contains(s, "make install") {
 		t.Errorf("script missing pieces:\n%s", s)
 	}
 	// no dist → no bottle

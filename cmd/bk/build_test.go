@@ -132,6 +132,35 @@ func TestBuildCommandErrors(t *testing.T) {
 	}
 }
 
+func TestBuildResolvesPkgxPath(t *testing.T) {
+	tempEnv(t)
+	oldF, oldL := buildFactory, lookPath
+	defer func() { buildFactory, lookPath = oldF, oldL }()
+
+	var gotBin string
+	base := stubFactory("test.org/x")
+	buildFactory = func(p string) *build.Runner { gotBin = p; return base(p) }
+	rec := writeRecipe(t)
+
+	// LookPath succeeds → the absolute path is handed to the factory.
+	lookPath = func(name string) (string, error) { return "/abs/" + name, nil }
+	if c, _, e := run2(t, "build", "--recipe", rec, "test.org/x"); c != 0 {
+		t.Fatalf("build: code=%d err=%q", c, e)
+	}
+	if gotBin != "/abs/pkgx" {
+		t.Errorf("resolved pkgx = %q, want /abs/pkgx", gotBin)
+	}
+
+	// LookPath fails → the flag value is kept as given.
+	lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	if c, _, e := run2(t, "build", "--recipe", rec, "--pkgx", "/explicit/pkgx", "test.org/x"); c != 0 {
+		t.Fatalf("build: code=%d err=%q", c, e)
+	}
+	if gotBin != "/explicit/pkgx" {
+		t.Errorf("unresolved pkgx = %q, want /explicit/pkgx", gotBin)
+	}
+}
+
 func TestRunBash(t *testing.T) {
 	ok := filepath.Join(t.TempDir(), "ok.sh")
 	os.WriteFile(ok, []byte("#!/bin/bash\nexit 0\n"), 0o755)
