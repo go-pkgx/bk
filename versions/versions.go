@@ -62,23 +62,30 @@ var (
 	execCommand = exec.Command
 )
 
-// Resolve returns the version string (as it appears upstream, for
-// {{version.raw}}) selected from a recipe's `versions:` spec, honouring an
+// Resolve returns both the version string (as it appears upstream, for
+// {{version.raw}}) and the raw upstream git tag it was resolved from (for
+// {{version.tag}}) selected from a recipe's `versions:` spec, honouring an
 // optional constraint ("" or "*" = latest). spec is pantry.Recipe.Versions,
 // an `any` unmarshalled from YAML.
-func Resolve(spec any, constraint string) (string, error) {
+//
+// The returned tag is the pre-strip candidate that produced the winning
+// version: for the github path it is the `refs/tags/`-trimmed tag (e.g.
+// "v1.2.3" or "openssl-3.5.0"); for the url/match path it is the matched
+// string before any strip. Recipes interpolate it in GitHub release URLs
+// like `.../releases/download/{{version.tag}}/{{version.tag}}.tar.gz`.
+func Resolve(spec any, constraint string) (string, string, error) {
 	m, ok := spec.(map[string]any)
 	if !ok {
-		return "", fmt.Errorf("versions: unsupported version spec %T", spec)
+		return "", "", fmt.Errorf("versions: unsupported version spec %T", spec)
 	}
 
 	strips, err := regexList(m["strip"])
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	ignores, err := regexList(m["ignore"])
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	var candidates []string
@@ -87,11 +94,11 @@ func Resolve(spec any, constraint string) (string, error) {
 		gh, _ := m["github"].(string)
 		repoURL, err := githubRepoURL(gh)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		tags, err := gitLsRemoteTags(repoURL)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		for _, t := range tags {
 			candidates = append(candidates, strings.TrimPrefix(t, "refs/tags/"))
@@ -100,39 +107,41 @@ func Resolve(spec any, constraint string) (string, error) {
 		u, _ := m["url"].(string)
 		matchRaw, _ := m["match"].(string)
 		if u == "" || matchRaw == "" {
-			return "", fmt.Errorf("versions: url spec needs both url and match")
+			return "", "", fmt.Errorf("versions: url spec needs both url and match")
 		}
 		re, err := compileDelim(matchRaw)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		body, err := httpGet(u)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		candidates = re.FindAllString(body, -1)
 	default:
-		return "", fmt.Errorf("versions: spec has neither github nor url")
+		return "", "", fmt.Errorf("versions: spec has neither github nor url")
 	}
 
 	return selectVersion(candidates, strips, ignores, constraint)
 }
 
 // selectVersion applies strip (remove) then ignore (discard) to each
-// candidate, parses the survivors with the loose semver, and returns the
-// original (post-strip) string of the max version satisfying constraint.
-func selectVersion(candidates []string, strips, ignores []*regexp.Regexp, constraint string) (string, error) {
+// candidate, parses the survivors with the loose semver, and returns both the
+// (post-strip, v-normalised) version string of the max version satisfying
+// constraint and the raw pre-strip candidate that produced it (the upstream
+// git tag, for {{version.tag}}).
+func selectVersion(candidates []string, strips, ignores []*regexp.Regexp, constraint string) (string, string, error) {
 	var rng *semver.Range
 	if constraint != "" && constraint != "*" {
 		r, err := semver.ParseRange(constraint)
 		if err != nil {
-			return "", fmt.Errorf("versions: bad constraint %q: %w", constraint, err)
+			return "", "", fmt.Errorf("versions: bad constraint %q: %w", constraint, err)
 		}
 		rng = r
 	}
 
 	var best *semver.Version
-	var bestStr string
+	var bestStr, bestTag string
 	for _, c := range candidates {
 		s := c
 		for _, re := range strips {
@@ -149,13 +158,13 @@ func selectVersion(candidates []string, strips, ignores []*regexp.Regexp, constr
 			continue
 		}
 		if best == nil || v.Compare(best) > 0 {
-			best, bestStr = v, s
+			best, bestStr, bestTag = v, s, c
 		}
 	}
 	if best == nil {
-		return "", fmt.Errorf("versions: no candidate version matched")
+		return "", "", fmt.Errorf("versions: no candidate version matched")
 	}
-	return dropVPrefix(bestStr), nil
+	return dropVPrefix(bestStr), bestTag, nil
 }
 
 // dropVPrefix strips a leading "v" before a digit ("v5.8.3" -> "5.8.3"), matching

@@ -39,7 +39,7 @@ func okRecipe() *pantry.Recipe {
 func okRunner(project string, tgt target.Target) *Runner {
 	return &Runner{
 		PickVersion:    func(string, string) (string, error) { return "1.2.3", nil },
-		ResolveVersion: func(any, string) (string, error) { return "1.2.3", nil },
+		ResolveVersion: func(any, string) (string, string, error) { return "1.2.3", "v1.2.3", nil },
 		Fetch:          func(string, string, int) error { return nil },
 		FetchGit:       func(string, string, string) error { return nil },
 		Touch:          func(string) error { return nil },
@@ -76,6 +76,38 @@ func TestBuildHappyPath(t *testing.T) {
 	if err != nil || res2.BottlePath != "" {
 		t.Errorf("no-dist: %+v %v", res2, err)
 	}
+}
+
+// TestBuildVersionTagExpands proves end-to-end that a distributable URL using
+// {{version.tag}} (and the space-padded {{ version.tag }}) is fetched with the
+// raw git tag from ResolveVersion — the exact bug that 404'd ~89 recipes — and
+// that an empty tag falls back to the version string.
+func TestBuildVersionTagExpands(t *testing.T) {
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	distURL := "https://gh/o/r/releases/download/{{version.tag}}/{{ version.tag }}.tar.gz"
+
+	run := func(tag, wantURL string) {
+		tenv(t)
+		r := okRunner("acme.org/tool", tgt)
+		r.ResolveVersion = func(any, string) (string, string, error) { return "1.2.3", tag, nil }
+		var fetched string
+		r.Fetch = func(url, dest string, _ int) error {
+			fetched = url
+			return os.MkdirAll(dest, 0o755)
+		}
+		rec := okRecipe()
+		rec.Distributable = distURL
+		if _, err := r.Build(rec, "acme.org/tool", "*", tgt, tgt, ""); err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		if fetched != wantURL {
+			t.Fatalf("fetched %q; want %q", fetched, wantURL)
+		}
+	}
+	// raw git tag v1.2.3 → both moustache spellings expand to it
+	run("v1.2.3", "https://gh/o/r/releases/download/v1.2.3/v1.2.3.tar.gz")
+	// empty tag → fall back to the version string
+	run("", "https://gh/o/r/releases/download/1.2.3/1.2.3.tar.gz")
 }
 
 func TestBuildWithResolveDep(t *testing.T) {
@@ -132,7 +164,7 @@ func TestBuildErrorBranches(t *testing.T) {
 	}
 
 	cases := map[string]func(r *Runner){
-		"resolveversion": func(r *Runner) { r.ResolveVersion = func(any, string) (string, error) { return "", errBoom } },
+		"resolveversion": func(r *Runner) { r.ResolveVersion = func(any, string) (string, string, error) { return "", "", errBoom } },
 		"removeall":      func(r *Runner) { osRemoveAll = func(string) error { return errBoom } },
 		"mkdirall":       func(r *Runner) { osMkdirAll = func(string, os.FileMode) error { return errBoom } },
 		"mkdir-home": func(r *Runner) {
@@ -187,25 +219,25 @@ func TestBuildSourceAndGenerateErrors(t *testing.T) {
 
 func TestSourcesOf(t *testing.T) {
 	// a scalar string yields a single candidate
-	got, err := sourcesOf("https://x/v{{version.raw}}.tgz", "1.2.3")
+	got, err := sourcesOf("https://x/v{{version.raw}}.tgz", "1.2.3", "v1.2.3")
 	if err != nil || len(got) != 1 || got[0].url != "https://x/v1.2.3.tgz" || got[0].git {
 		t.Errorf("string dist = %+v %v", got, err)
 	}
 	// a map yields a single candidate; string strip-components parses
-	got, err = sourcesOf(map[string]any{"url": "u-{{version.major}}", "strip-components": "2"}, "3.4.5")
+	got, err = sourcesOf(map[string]any{"url": "u-{{version.major}}", "strip-components": "2"}, "3.4.5", "v3.4.5")
 	if err != nil || len(got) != 1 || got[0].url != "u-3" || got[0].strip != 2 {
 		t.Errorf("map dist = %+v %v", got, err)
 	}
 	// git via ref + int strip
-	got, _ = sourcesOf(map[string]any{"url": "g", "ref": "r{{version.minor}}", "strip-components": 1}, "3.4.5")
+	got, _ = sourcesOf(map[string]any{"url": "g", "ref": "r{{version.minor}}", "strip-components": 1}, "3.4.5", "v3.4.5")
 	if len(got) != 1 || !got[0].git || got[0].ref != "r4" || got[0].strip != 1 {
 		t.Errorf("git dist = %+v", got)
 	}
 	// missing url + unsupported type
-	if _, err := sourcesOf(map[string]any{}, "1"); err == nil {
+	if _, err := sourcesOf(map[string]any{}, "1", "1"); err == nil {
 		t.Error("expected missing-url error")
 	}
-	if _, err := sourcesOf(42, "1"); err == nil {
+	if _, err := sourcesOf(42, "1", "1"); err == nil {
 		t.Error("expected unsupported-type error")
 	}
 	// list form: EVERY entry is returned, in order — the canonical source first,
@@ -213,7 +245,7 @@ func TestSourcesOf(t *testing.T) {
 	got, err = sourcesOf([]any{
 		map[string]any{"url": "https://up/v{{version.raw}}.tgz", "strip-components": 1},
 		map[string]any{"url": "https://mirror/v{{version.raw}}.tgz", "strip-components": 2},
-	}, "1.2.3")
+	}, "1.2.3", "v1.2.3")
 	if err != nil || len(got) != 2 {
 		t.Fatalf("list dist = %+v %v", got, err)
 	}
@@ -224,16 +256,39 @@ func TestSourcesOf(t *testing.T) {
 		t.Errorf("list mirror = %+v", got[1])
 	}
 	// a bare string entry in a list is equally valid
-	if got, _ = sourcesOf([]any{"https://x/v{{version.raw}}.tgz"}, "1.2.3"); len(got) != 1 || got[0].url != "https://x/v1.2.3.tgz" {
+	if got, _ = sourcesOf([]any{"https://x/v{{version.raw}}.tgz"}, "1.2.3", "v1.2.3"); len(got) != 1 || got[0].url != "https://x/v1.2.3.tgz" {
 		t.Errorf("list-of-string dist = %+v", got)
 	}
 	// an empty list has no candidates → error
-	if _, err := sourcesOf([]any{}, "1"); err == nil {
+	if _, err := sourcesOf([]any{}, "1", "1"); err == nil {
 		t.Error("expected empty-list error")
 	}
 	// a bad entry inside a list surfaces its error
-	if _, err := sourcesOf([]any{map[string]any{}}, "1"); err == nil {
+	if _, err := sourcesOf([]any{map[string]any{}}, "1", "1"); err == nil {
 		t.Error("expected bad-entry error inside list")
+	}
+}
+
+// TestSourcesOfVersionTag is the regression proof for the {{version.tag}} bug:
+// a GitHub release download URL that interpolates the raw git tag must expand
+// to the tag (both the tight and the space-padded moustache form), NOT keep a
+// literal {{version.tag}} that 404s at fetch. It also covers the empty-tag
+// fallback to the version string.
+func TestSourcesOfVersionTag(t *testing.T) {
+	// v-prefixed tag, both {{version.tag}} and {{ version.tag }} spellings.
+	got, err := sourcesOf("https://gh/o/r/releases/download/{{version.tag}}/{{ version.tag }}.tar.gz", "1.2.3", "v1.2.3")
+	if err != nil || len(got) != 1 || got[0].url != "https://gh/o/r/releases/download/v1.2.3/v1.2.3.tar.gz" {
+		t.Fatalf("v-tag dist = %+v %v", got, err)
+	}
+	// a non-"v" upstream tag (e.g. openssl-3.5.0) is preserved verbatim.
+	got, err = sourcesOf("https://gh/openssl/openssl/releases/download/{{version.tag}}/openssl-{{version.raw}}.tar.gz", "3.5.0", "openssl-3.5.0")
+	if err != nil || len(got) != 1 || got[0].url != "https://gh/openssl/openssl/releases/download/openssl-3.5.0/openssl-3.5.0.tar.gz" {
+		t.Fatalf("non-v-tag dist = %+v %v", got, err)
+	}
+	// empty tag falls back to the version string so the token still expands.
+	got, err = sourcesOf("https://x/{{version.tag}}.tgz", "4.5.6", "")
+	if err != nil || len(got) != 1 || got[0].url != "https://x/4.5.6.tgz" {
+		t.Fatalf("empty-tag fallback dist = %+v %v", got, err)
 	}
 }
 

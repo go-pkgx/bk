@@ -33,7 +33,7 @@ func stubFactory(project string) func(string) *build.Runner {
 	return func(string) *build.Runner {
 		return &build.Runner{
 			PickVersion:    func(string, string) (string, error) { return "1.0.0", nil },
-			ResolveVersion: func(any, string) (string, error) { return "1.0.0", nil },
+			ResolveVersion: func(any, string) (string, string, error) { return "1.0.0", "v1.0.0", nil },
 			Fetch:          func(string, string, int) error { return nil },
 			FetchGit:       func(string, string, string) error { return nil },
 			Touch:          func(string) error { return nil },
@@ -125,7 +125,7 @@ func TestBuildCommandErrors(t *testing.T) {
 	t.Setenv("BREWKIT_TARGET", "")
 	// Build error (factory whose PickVersion fails)
 	buildFactory = func(string) *build.Runner {
-		return &build.Runner{ResolveVersion: func(any, string) (string, error) { return "", os.ErrInvalid }}
+		return &build.Runner{ResolveVersion: func(any, string) (string, string, error) { return "", "", os.ErrInvalid }}
 	}
 	if c, _, _ := run2(t, "build", "--recipe", rec, "p"); c != 1 {
 		t.Errorf("build-error code=%d", c)

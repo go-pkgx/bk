@@ -58,12 +58,9 @@ func TestVersion(t *testing.T) {
 
 func TestVersionBuildAndTag(t *testing.T) {
 	toks := Version("v1.1.1w+deb-3", "version")
-	// strips leading v; build after '+'; tag after '-'
+	// strips leading v; build is everything after '+' (may itself contain '-')
 	if got, _ := find(toks, "version.build"); got != "deb-3" {
 		t.Errorf("build = %q", got)
-	}
-	if got, _ := find(toks, "version.tag"); got != "3" {
-		// core "1.1.1w" -> tag split on '-' gives nothing here; tag came from build side
 	}
 	// short version pads missing components with 0
 	short := Version("2", "v")
@@ -75,10 +72,14 @@ func TestVersionBuildAndTag(t *testing.T) {
 	}
 }
 
+// TestVersionTag proves Version no longer derives a version.tag from a
+// pre-release suffix: a "-rc1" is dropped from the numeric fields (raw = the
+// bare core), and NO version.tag token is emitted — the real {{version.tag}}
+// (the upstream git tag) is supplied by the build runner, not here.
 func TestVersionTag(t *testing.T) {
 	toks := Version("1.2.3-rc1", "version")
-	if got, ok := find(toks, "version.tag"); !ok || got != "rc1" {
-		t.Errorf("tag = %q,%v", got, ok)
+	if _, ok := find(toks, "version.tag"); ok {
+		t.Error("Version must not emit version.tag (runner supplies the git tag)")
 	}
 	if got, _ := find(toks, "version.raw"); got != "1.2.3" {
 		t.Errorf("raw core = %q", got)

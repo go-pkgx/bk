@@ -20,8 +20,10 @@ type Runner struct {
 	PickVersion func(project, constraint string) (string, error)
 	// ResolveVersion resolves the MAIN project version from the recipe's own
 	// `versions:` spec, so it matches the distributable URL's {{version.raw}}
-	// rather than dist's already-built (possibly normalised) bottle list.
-	ResolveVersion func(spec any, constraint string) (string, error)
+	// rather than dist's already-built (possibly normalised) bottle list. It
+	// also returns the raw upstream git tag the version was resolved from, for
+	// the {{version.tag}} moustache used in GitHub release download URLs.
+	ResolveVersion func(spec any, constraint string) (version, tag string, err error)
 	Fetch          func(url, dest string, strip int) error
 	FetchGit       func(repo, ref, dest string) error
 	Touch          func(dir string) error
@@ -53,11 +55,17 @@ type Result struct {
 // and, when distOut != "", packages a bottle there.
 func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, host target.Target, distOut string) (Result, error) {
 	var res Result
-	version, err := r.ResolveVersion(recipe.Versions, constraint)
+	version, tag, err := r.ResolveVersion(recipe.Versions, constraint)
 	if err != nil {
 		return res, fmt.Errorf("resolve version: %w", err)
 	}
 	res.Version = version
+	// {{version.tag}} = the raw upstream git tag the version resolved from.
+	// Some url-form specs have no meaningful tag; fall back to the version so
+	// the token still expands rather than staying literal (→ a fetch 404).
+	if tag == "" {
+		tag = version
+	}
 
 	paths := config.Compute(project, version, tgt)
 	res.Install = paths.Install
@@ -75,7 +83,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 
 	// fetch source
 	if recipe.Distributable != nil {
-		srcs, err := sourcesOf(recipe.Distributable, version)
+		srcs, err := sourcesOf(recipe.Distributable, version, tag)
 		if err != nil {
 			return res, err
 		}
@@ -123,6 +131,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	deps := EvalDeps(recipe.Dependencies, buildDeps(recipe), tgt)
 	toks := moustache.Prefix(paths.BuildInstall)
 	toks = append(toks, moustache.Version(version, "version")...)
+	toks = append(toks, moustache.Token{From: "version.tag", To: tag})
 	toks = append(toks, moustache.Host(tgt.Arch, tgt.Triple, tgt.Platform, r.concurrency())...)
 	toks = append(toks,
 		moustache.Token{From: "srcroot", To: paths.Build},
@@ -238,8 +247,15 @@ func oneSource(dist any, toks []moustache.Token) (source, error) {
 // candidate per entry, in order — the canonical source first and fallback
 // mirrors after (e.g. freetype.org ships the savannah tarball plus a mirror) —
 // so Build can retry the next mirror when one is unreachable.
-func sourcesOf(dist any, version string) ([]source, error) {
+func sourcesOf(dist any, version, tag string) ([]source, error) {
 	toks := moustache.Version(version, "version")
+	// GitHub release download URLs interpolate {{version.tag}} (the raw upstream
+	// git tag). Include it so the distributable URL fetches rather than 404ing on
+	// a literal, unexpanded token. An empty tag falls back to the version string.
+	if tag == "" {
+		tag = version
+	}
+	toks = append(toks, moustache.Token{From: "version.tag", To: tag})
 	if lst, ok := dist.([]any); ok {
 		if len(lst) == 0 {
 			return nil, fmt.Errorf("distributable list is empty")

@@ -34,16 +34,18 @@ func Version(version, prefix string) []Token {
 		build = core[i+1:]
 		core = core[:i]
 	}
-	// tag = a trailing pre-release after '-' (pkgx keeps it as version.tag)
-	tag := ""
+	// A trailing pre-release after '-' is dropped for the numeric fields but
+	// kept in .raw. NOTE: .tag is NOT derived here — it is the ORIGINAL upstream
+	// git tag the version was resolved from and is supplied by the build runner
+	// (see build.Runner.Build). Conflating a pre-release suffix with the git tag
+	// was wrong and produced literal, unexpanded {{version.tag}} tokens.
 	if i := strings.IndexByte(core, '-'); i >= 0 {
-		tag = core[i+1:]
 		core = core[:i]
 	}
 	nums := numericParts(core)
 	major, minor, patch := nth(nums, 0), nth(nums, 1), nth(nums, 2)
 
-	toks := []Token{
+	return []Token{
 		{prefix, itoa(major) + "." + itoa(minor) + "." + itoa(patch)},
 		{prefix + ".major", itoa(major)},
 		{prefix + ".minor", itoa(minor)},
@@ -52,10 +54,6 @@ func Version(version, prefix string) []Token {
 		{prefix + ".build", build},
 		{prefix + ".raw", core},
 	}
-	if tag != "" {
-		toks = append(toks, Token{prefix + ".tag", tag})
-	}
-	return toks
 }
 
 // Dep is an installed dependency contributing deps.<Project>.* tokens.

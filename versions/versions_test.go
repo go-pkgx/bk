@@ -33,9 +33,13 @@ func TestResolveURLNcurses(t *testing.T) {
 		"match": `/ncurses-\d+(\.\d+)+.tar.gz/`,
 		"strip": []any{"/ncurses-/", "/.tar.gz/"},
 	}
-	v, err := Resolve(spec, "*")
+	v, tag, err := Resolve(spec, "*")
 	if err != nil || v != "6.5" {
 		t.Fatalf("Resolve = %q, %v; want 6.5", v, err)
+	}
+	// version.tag is the raw pre-strip matched string (upstream file name).
+	if tag != "ncurses-6.5.tar.gz" {
+		t.Fatalf("tag = %q; want ncurses-6.5.tar.gz", tag)
 	}
 }
 
@@ -48,12 +52,33 @@ func TestResolveGithub(t *testing.T) {
 		return []string{"v1.2.0", "v1.10.0", "v1.3.0"}, nil
 	}
 	spec := map[string]any{"github": "owner/repo", "strip": "/v/"}
-	v, err := Resolve(spec, "")
+	v, tag, err := Resolve(spec, "")
 	if err != nil || v != "1.10.0" {
 		t.Fatalf("Resolve = %q, %v; want 1.10.0", v, err)
 	}
+	// version.tag = the raw git tag (v-prefixed), not the stripped version.
+	if tag != "v1.10.0" {
+		t.Fatalf("tag = %q; want v1.10.0", tag)
+	}
 	if gotURL != "https://github.com/owner/repo" {
 		t.Errorf("repoURL = %q", gotURL)
+	}
+}
+
+// TestResolveGithubNonVTag proves a non-"v" upstream tag (e.g. openssl-3.5.0)
+// is preserved verbatim as version.tag while the version strips to 3.5.0.
+func TestResolveGithubNonVTag(t *testing.T) {
+	saveSeams(t)
+	gitLsRemoteTags = func(string) ([]string, error) {
+		return []string{"openssl-3.4.0", "openssl-3.5.0"}, nil
+	}
+	spec := map[string]any{"github": "openssl/openssl", "strip": "/openssl-/"}
+	v, tag, err := Resolve(spec, "*")
+	if err != nil || v != "3.5.0" {
+		t.Fatalf("Resolve = %q, %v; want 3.5.0", v, err)
+	}
+	if tag != "openssl-3.5.0" {
+		t.Fatalf("tag = %q; want openssl-3.5.0", tag)
 	}
 }
 
@@ -64,9 +89,13 @@ func TestResolveGithubDropsVPrefix(t *testing.T) {
 	gitLsRemoteTags = func(string) ([]string, error) {
 		return []string{"v5.8.2", "v5.8.3"}, nil
 	}
-	v, err := Resolve(map[string]any{"github": "tukaani-project/xz"}, "*")
+	v, tag, err := Resolve(map[string]any{"github": "tukaani-project/xz"}, "*")
 	if err != nil || v != "5.8.3" {
 		t.Fatalf("Resolve = %q, %v; want 5.8.3 (v stripped)", v, err)
+	}
+	// The version drops the v, but version.tag keeps the real git tag.
+	if tag != "v5.8.3" {
+		t.Fatalf("tag = %q; want v5.8.3", tag)
 	}
 }
 
@@ -77,9 +106,12 @@ func TestResolveGithubSuffixForms(t *testing.T) {
 		return []string{"refs/tags/1.0.0", "refs/tags/1.1.0"}, nil
 	}
 	for _, gh := range []string{"o/r", "o/r/tags", "o/r/releases", "o/r/releases/tags"} {
-		v, err := Resolve(map[string]any{"github": gh}, "*")
+		v, tag, err := Resolve(map[string]any{"github": gh}, "*")
 		if err != nil || v != "1.1.0" {
 			t.Errorf("%s: Resolve = %q, %v; want 1.1.0", gh, v, err)
+		}
+		if tag != "1.1.0" {
+			t.Errorf("%s: tag = %q; want 1.1.0", gh, tag)
 		}
 	}
 }
@@ -90,13 +122,13 @@ func TestResolveConstraintAndIgnore(t *testing.T) {
 		return []string{"1.2.0", "1.5.0", "2.0.0"}, nil
 	}
 	// constraint filters out 2.0.0, so max satisfying ^1 is 1.5.0.
-	if v, err := Resolve(map[string]any{"github": "o/r"}, "^1"); err != nil || v != "1.5.0" {
-		t.Errorf("constraint: %q %v", v, err)
+	if v, tag, err := Resolve(map[string]any{"github": "o/r"}, "^1"); err != nil || v != "1.5.0" || tag != "1.5.0" {
+		t.Errorf("constraint: %q %q %v", v, tag, err)
 	}
 	// ignore drops the 1.x line, leaving 2.0.0.
 	spec := map[string]any{"github": "o/r", "ignore": `/^1\./`}
-	if v, err := Resolve(spec, "*"); err != nil || v != "2.0.0" {
-		t.Errorf("ignore: %q %v", v, err)
+	if v, tag, err := Resolve(spec, "*"); err != nil || v != "2.0.0" || tag != "2.0.0" {
+		t.Errorf("ignore: %q %q %v", v, tag, err)
 	}
 }
 
@@ -105,8 +137,8 @@ func TestResolveUnparseableCandidatesSkipped(t *testing.T) {
 	httpGet = func(string) (string, error) { return "foo 1.2.3 bar", nil }
 	// match grabs words; "foo"/"bar" are unparseable and skipped, 1.2.3 wins.
 	spec := map[string]any{"url": "u", "match": `/[a-z0-9.]+/`}
-	if v, err := Resolve(spec, "*"); err != nil || v != "1.2.3" {
-		t.Errorf("Resolve = %q %v; want 1.2.3", v, err)
+	if v, tag, err := Resolve(spec, "*"); err != nil || v != "1.2.3" || tag != "1.2.3" {
+		t.Errorf("Resolve = %q %q %v; want 1.2.3", v, tag, err)
 	}
 }
 
@@ -137,7 +169,7 @@ func TestResolveErrors(t *testing.T) {
 			if tc.setup != nil {
 				tc.setup()
 			}
-			if _, err := Resolve(tc.spec, tc.constraint); err == nil {
+			if _, _, err := Resolve(tc.spec, tc.constraint); err == nil {
 				t.Errorf("%s: expected error", name)
 			}
 		})
