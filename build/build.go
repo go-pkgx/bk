@@ -201,7 +201,14 @@ func SanitizedEnv(home, pkgxDir string) []string {
 		// found", exit 127). Passing these as make variable overrides via
 		// MAKEFLAGS no-ops every regen rule, so the shipped generated files are
 		// used as-is. (make-only; a recipe's own direct autoreconf is untouched.)
-		"MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true MAKEINFO=true",
+		//
+		// MAKEINFO is deliberately NOT no-op'd: unlike the AUTO* tools it does not
+		// regenerate the build system — it produces .info manuals that some
+		// recipes then INSTALL (glibc's manual/subdir_install installs libc.info).
+		// Forcing MAKEINFO=true made that step emit nothing, so the subsequent
+		// `install libc.info*` failed. The real makeinfo ships in the base
+		// toolchain (gnu.org/texinfo), so let it run.
+		"MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true",
 		// Builds run as root in the CI container; autotools' "you should not run
 		// configure as root" check would abort otherwise. Bypassing it is the
 		// standard build-sandbox posture (Homebrew/distros do the same).

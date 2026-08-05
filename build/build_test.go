@@ -190,7 +190,7 @@ func TestSanitizedEnv(t *testing.T) {
 	os.Unsetenv("PKGX_PANTRY_DIR")
 	env := SanitizedEnv("/h", "/pkgx")
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "GITHUB_TOKEN=secret", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true MAKEINFO=true", "FORCE_UNSAFE_CONFIGURE=1"} {
+	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "GITHUB_TOKEN=secret", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true", "FORCE_UNSAFE_CONFIGURE=1"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("SanitizedEnv missing %q in %v", want, env)
 		}
