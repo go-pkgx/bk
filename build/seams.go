@@ -4,6 +4,8 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"github.com/go-pkgx/bk/buildscript"
 )
 
 // logf is a seam over log.Printf so Build's mirror-fallback notice is emitted
@@ -29,3 +31,7 @@ var (
 // copyProps is a seam over copyPropsTree so Build's copy-error branch is
 // testable without a real filesystem failure.
 var copyProps = copyPropsTree
+
+// writeLibexec is a seam over buildscript.WriteLibexec so Build's shim-write
+// error branch is testable.
+var writeLibexec = buildscript.WriteLibexec

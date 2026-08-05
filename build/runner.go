@@ -149,10 +149,17 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	if err != nil {
 		return res, fmt.Errorf("generate: %w", err)
 	}
+	// Materialise the build-shim helpers (fix-shebangs.ts, …) into a per-build
+	// libexec dir alongside the generated script, and prepend it to PATH via
+	// BrewkitPath so recipes that exec them (`fix-shebangs.ts bin/*`) resolve.
+	libexecDir := paths.Build + ".libexec"
+	if err := writeLibexec(libexecDir); err != nil {
+		return res, fmt.Errorf("write libexec: %w", err)
+	}
 	script := buildscript.Wrap(buildscript.WrapOptions{
 		UserScript: user, Deps: deps, Target: tgt, Host: host,
 		Home: paths.Home, SrcRoot: paths.Build, PkgxDir: config.PkgxDir(),
-		PkgxBin: r.PkgxBin, BashPath: r.BashPath,
+		PkgxBin: r.PkgxBin, BashPath: r.BashPath, BrewkitPath: libexecDir,
 	})
 	res.ScriptPath = paths.Build + ".sh"
 	if err := osWriteFile(res.ScriptPath, []byte(script), 0o755); err != nil {

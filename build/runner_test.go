@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-pkgx/bk/buildscript"
 	"github.com/go-pkgx/bk/config"
 	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bk/pantry"
@@ -161,12 +162,15 @@ func TestBuildErrorBranches(t *testing.T) {
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
 	restore := func() {
 		osRemoveAll, osMkdirAll, osWriteFile, osRename = os.RemoveAll, os.MkdirAll, os.WriteFile, os.Rename
+		writeLibexec = buildscript.WriteLibexec
 	}
 
 	cases := map[string]func(r *Runner){
-		"resolveversion": func(r *Runner) { r.ResolveVersion = func(any, string) (string, string, error) { return "", "", errBoom } },
-		"removeall":      func(r *Runner) { osRemoveAll = func(string) error { return errBoom } },
-		"mkdirall":       func(r *Runner) { osMkdirAll = func(string, os.FileMode) error { return errBoom } },
+		"resolveversion": func(r *Runner) {
+			r.ResolveVersion = func(any, string) (string, string, error) { return "", "", errBoom }
+		},
+		"removeall": func(r *Runner) { osRemoveAll = func(string) error { return errBoom } },
+		"mkdirall":  func(r *Runner) { osMkdirAll = func(string, os.FileMode) error { return errBoom } },
 		"mkdir-home": func(r *Runner) {
 			n := 0
 			osMkdirAll = func(p string, m os.FileMode) error {
@@ -176,14 +180,15 @@ func TestBuildErrorBranches(t *testing.T) {
 				return os.MkdirAll(p, m)
 			}
 		},
-		"fetch":       func(r *Runner) { r.Fetch = func(string, string, int) error { return errBoom } },
-		"touch":       func(r *Runner) { r.Touch = func(string) error { return errBoom } },
-		"writefile":   func(r *Runner) { osWriteFile = func(string, []byte, os.FileMode) error { return errBoom } },
-		"run":         func(r *Runner) { r.Run = func(string, []string) error { return errBoom } },
-		"rename":      func(r *Runner) { osRename = func(string, string) error { return errBoom } },
-		"fixup":       func(r *Runner) { r.FixUp = func(fixup.Options) error { return errBoom } },
-		"writebottle": func(r *Runner) { r.WriteBottle = func(_, _, _, _, _, _ string) (string, error) { return "", errBoom } },
-		"resolvedep":  func(r *Runner) { r.ResolveDep = func(string, string) (string, error) { return "", errBoom } },
+		"fetch":        func(r *Runner) { r.Fetch = func(string, string, int) error { return errBoom } },
+		"touch":        func(r *Runner) { r.Touch = func(string) error { return errBoom } },
+		"writefile":    func(r *Runner) { osWriteFile = func(string, []byte, os.FileMode) error { return errBoom } },
+		"writelibexec": func(r *Runner) { writeLibexec = func(string) error { return errBoom } },
+		"run":          func(r *Runner) { r.Run = func(string, []string) error { return errBoom } },
+		"rename":       func(r *Runner) { osRename = func(string, string) error { return errBoom } },
+		"fixup":        func(r *Runner) { r.FixUp = func(fixup.Options) error { return errBoom } },
+		"writebottle":  func(r *Runner) { r.WriteBottle = func(_, _, _, _, _, _ string) (string, error) { return "", errBoom } },
+		"resolvedep":   func(r *Runner) { r.ResolveDep = func(string, string) (string, error) { return "", errBoom } },
 	}
 	for name, mut := range cases {
 		t.Run(name, func(t *testing.T) {
