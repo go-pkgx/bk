@@ -31,7 +31,7 @@ func TestWrapLinux(t *testing.T) {
 		`export TMPDIR="$HOME/tmp"; mkdir -p "$TMPDIR"`,
 		"export FORCE_UNSAFE_CONFIGURE=1",
 		`export LDFLAGS="-pie $LDFLAGS"`,
-		`export CFLAGS="-fPIC $CFLAGS"`,
+		`export CFLAGS="-fPIC -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion $CFLAGS"`,
 		`export CXXFLAGS="-fPIC $CXXFLAGS"`,
 		"env -u GH_TOKEN -u GITHUB_TOKEN",
 		`cd "/bk/build"`,
@@ -45,6 +45,23 @@ func TestWrapLinux(t *testing.T) {
 	// no darwin/windows-only bits
 	if strings.Contains(s, "MACOSX_DEPLOYMENT_TARGET") || strings.Contains(s, "rpath") {
 		t.Error("linux script has darwin flags")
+	}
+}
+
+func TestWrapLinuxArm64Flags(t *testing.T) {
+	// linux/aarch64: the C23-relaxation CFLAGS apply, but without -fPIC (default
+	// on arm64) and without the x86-64 -pie LDFLAGS / -fPIC CXXFLAGS.
+	s := Wrap(WrapOptions{
+		UserScript: "make", Deps: []string{"x"},
+		Target: target.Target{Platform: "linux", Arch: "aarch64"},
+		Host:   target.Target{Platform: "linux", Arch: "aarch64"},
+		PkgxDir: "/opt/pkgx",
+	})
+	if !strings.Contains(s, `export CFLAGS="-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion $CFLAGS"`) {
+		t.Errorf("arm64 CFLAGS wrong:\n%s", s)
+	}
+	if strings.Contains(s, "-fPIC") || strings.Contains(s, "-pie") || strings.Contains(s, "CXXFLAGS") {
+		t.Errorf("arm64 got x86-64-only flags:\n%s", s)
 	}
 }
 

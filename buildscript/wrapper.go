@@ -111,8 +111,19 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils bool) []string {
 	if ldflags != "" {
 		out = append(out, `export LDFLAGS="`+ldflags+` $LDFLAGS"`)
 	}
-	if tgt.Platform == "linux" && tgt.Arch == "x86-64" {
-		out = append(out, `export CFLAGS="-fPIC $CFLAGS"`, `export CXXFLAGS="-fPIC $CXXFLAGS"`)
+	if tgt.Platform == "linux" {
+		// Relax the C23 hard errors that gcc-14 / clang-16 turned on by default
+		// (implicit function/int declarations, int<->pointer conversions). Many
+		// long-standing C recipes still trip these and upstream has not adapted;
+		// the whole distro ecosystem (Fedora, Debian, …) demotes them back to
+		// warnings for the mass rebuild, so the toolchain default doesn't gate an
+		// otherwise-buildable recipe. C-only — CXXFLAGS keeps just the PIC flag.
+		cflags := "-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion"
+		if tgt.Arch == "x86-64" {
+			cflags = "-fPIC " + cflags
+			out = append(out, `export CXXFLAGS="-fPIC $CXXFLAGS"`)
+		}
+		out = append(out, `export CFLAGS="`+cflags+` $CFLAGS"`)
 	}
 	if tgt.Platform == "darwin" {
 		out = append(out, "export MACOSX_DEPLOYMENT_TARGET=11.0")
