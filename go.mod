@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/go-attest/sbom v0.1.0
 	github.com/go-attest/sign v0.1.0
-	github.com/go-pkgx/bottle v0.4.1-0.20260804100339-d357ae291136
+	github.com/go-pkgx/bottle v0.5.2
 	github.com/go-versions/semver v0.1.0
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
