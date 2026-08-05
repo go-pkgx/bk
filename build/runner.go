@@ -75,17 +75,30 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 
 	// fetch source
 	if recipe.Distributable != nil {
-		src, err := sourceOf(recipe.Distributable, version)
+		srcs, err := sourcesOf(recipe.Distributable, version)
 		if err != nil {
 			return res, err
 		}
-		if src.git {
-			err = r.FetchGit(src.url, src.ref, paths.Build)
-		} else {
-			err = r.Fetch(src.url, paths.Build, src.strip)
+		// A list-form distributable lists the canonical source first and fallback
+		// mirrors after. Try each in order; a transient failure on one mirror
+		// (e.g. a 502 from the primary) then falls through to the next rather than
+		// killing an otherwise-buildable recipe. Only fail if every candidate does.
+		var fetchErr error
+		for i, src := range srcs {
+			if src.git {
+				fetchErr = r.FetchGit(src.url, src.ref, paths.Build)
+			} else {
+				fetchErr = r.Fetch(src.url, paths.Build, src.strip)
+			}
+			if fetchErr == nil {
+				break
+			}
+			if i < len(srcs)-1 {
+				logf("fetch %s failed (%v); trying next mirror", src.url, fetchErr)
+			}
 		}
-		if err != nil {
-			return res, fmt.Errorf("fetch: %w", err)
+		if fetchErr != nil {
+			return res, fmt.Errorf("fetch: %w", fetchErr)
 		}
 		if err := r.Touch(paths.Build); err != nil {
 			return res, err
@@ -141,6 +154,17 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	if err := r.Run(res.ScriptPath, SanitizedEnv(paths.Home, config.PkgxDir())); err != nil {
 		return res, fmt.Errorf("run: %w", err)
 	}
+	// Stage the completed +brewing tree onto the final versioned prefix. The
+	// build and its install step have already succeeded; only this atomic rename
+	// remains. If the destination prefix already exists — the same version got
+	// built earlier in the dependency closure, or this is a re-run — it is a
+	// completed duplicate install and is safe to replace, so remove it first and
+	// let the rename proceed rather than fail with "file exists".
+	if _, err := osStat(paths.Install); err == nil {
+		if err := osRemoveAll(paths.Install); err != nil {
+			return res, fmt.Errorf("stage install: %w", err)
+		}
+	}
 	if err := osRename(paths.BuildInstall, paths.Install); err != nil {
 		return res, fmt.Errorf("stage install: %w", err)
 	}
@@ -182,10 +206,10 @@ type source struct {
 	ref   string
 }
 
-// sourceOf derives the fetch source from a recipe's distributable, applying the
-// version moustaches to the URL.
-func sourceOf(dist any, version string) (source, error) {
-	toks := moustache.Version(version, "version")
+// oneSource derives a single fetch source from a scalar (string) or map-form
+// distributable entry, applying the version moustaches to its fields. Each
+// entry keeps its own url / strip-components / git ref.
+func oneSource(dist any, toks []moustache.Token) (source, error) {
 	switch d := dist.(type) {
 	case string:
 		return source{url: moustache.Apply(d, toks)}, nil
@@ -204,18 +228,37 @@ func sourceOf(dist any, version string) (source, error) {
 			return s, fmt.Errorf("distributable has no url")
 		}
 		return s, nil
-	case []any:
-		// A sequence lists the canonical distributable first, with fallback
-		// mirrors after (e.g. openssl.org ships the upstream tarball plus a
-		// GitHub-release mirror). The primary entry is authoritative, so derive
-		// the source from it.
-		if len(d) == 0 {
-			return source{}, fmt.Errorf("distributable list is empty")
-		}
-		return sourceOf(d[0], version)
 	default:
 		return source{}, fmt.Errorf("unsupported distributable %T", dist)
 	}
+}
+
+// sourcesOf derives the ordered candidate fetch sources from a recipe's
+// distributable. A scalar or map yields a single candidate; a list yields one
+// candidate per entry, in order — the canonical source first and fallback
+// mirrors after (e.g. freetype.org ships the savannah tarball plus a mirror) —
+// so Build can retry the next mirror when one is unreachable.
+func sourcesOf(dist any, version string) ([]source, error) {
+	toks := moustache.Version(version, "version")
+	if lst, ok := dist.([]any); ok {
+		if len(lst) == 0 {
+			return nil, fmt.Errorf("distributable list is empty")
+		}
+		srcs := make([]source, 0, len(lst))
+		for _, e := range lst {
+			s, err := oneSource(e, toks)
+			if err != nil {
+				return nil, err
+			}
+			srcs = append(srcs, s)
+		}
+		return srcs, nil
+	}
+	s, err := oneSource(dist, toks)
+	if err != nil {
+		return nil, err
+	}
+	return []source{s}, nil
 }
 
 func str(v any) string {

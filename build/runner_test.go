@@ -15,6 +15,9 @@ import (
 
 var errBoom = errors.New("boom")
 
+// origLogf snapshots the real logf seam so tests can mute it and restore after.
+var origLogf = logf
+
 // tenv points config at temp dirs so no real PKGX_DIR/data-home is touched.
 func tenv(t *testing.T) {
 	t.Setenv("PKGX_DIR", filepath.Join(t.TempDir(), "pkgx"))
@@ -182,42 +185,157 @@ func TestBuildSourceAndGenerateErrors(t *testing.T) {
 	}
 }
 
-func TestSourceOf(t *testing.T) {
-	if s, _ := sourceOf("https://x/v{{version.raw}}.tgz", "1.2.3"); s.url != "https://x/v1.2.3.tgz" || s.git {
-		t.Errorf("string dist = %+v", s)
+func TestSourcesOf(t *testing.T) {
+	// a scalar string yields a single candidate
+	got, err := sourcesOf("https://x/v{{version.raw}}.tgz", "1.2.3")
+	if err != nil || len(got) != 1 || got[0].url != "https://x/v1.2.3.tgz" || got[0].git {
+		t.Errorf("string dist = %+v %v", got, err)
 	}
-	s, err := sourceOf(map[string]any{"url": "u-{{version.major}}", "strip-components": "2"}, "3.4.5")
-	if err != nil || s.url != "u-3" || s.strip != 2 {
-		t.Errorf("map dist = %+v %v", s, err)
+	// a map yields a single candidate; string strip-components parses
+	got, err = sourcesOf(map[string]any{"url": "u-{{version.major}}", "strip-components": "2"}, "3.4.5")
+	if err != nil || len(got) != 1 || got[0].url != "u-3" || got[0].strip != 2 {
+		t.Errorf("map dist = %+v %v", got, err)
 	}
 	// git via ref + int strip
-	s, _ = sourceOf(map[string]any{"url": "g", "ref": "r{{version.minor}}", "strip-components": 1}, "3.4.5")
-	if !s.git || s.ref != "r4" || s.strip != 1 {
-		t.Errorf("git dist = %+v", s)
+	got, _ = sourcesOf(map[string]any{"url": "g", "ref": "r{{version.minor}}", "strip-components": 1}, "3.4.5")
+	if len(got) != 1 || !got[0].git || got[0].ref != "r4" || got[0].strip != 1 {
+		t.Errorf("git dist = %+v", got)
 	}
 	// missing url + unsupported type
-	if _, err := sourceOf(map[string]any{}, "1"); err == nil {
+	if _, err := sourcesOf(map[string]any{}, "1"); err == nil {
 		t.Error("expected missing-url error")
 	}
-	if _, err := sourceOf(42, "1"); err == nil {
+	if _, err := sourcesOf(42, "1"); err == nil {
 		t.Error("expected unsupported-type error")
 	}
-	// list form: the primary (first) entry is authoritative — its url and
-	// strip-components win; trailing fallback mirrors are ignored.
-	s, err = sourceOf([]any{
+	// list form: EVERY entry is returned, in order — the canonical source first,
+	// then fallback mirrors, each keeping its own url + strip-components.
+	got, err = sourcesOf([]any{
 		map[string]any{"url": "https://up/v{{version.raw}}.tgz", "strip-components": 1},
-		map[string]any{"url": "https://mirror/v{{version.raw}}.tgz"},
+		map[string]any{"url": "https://mirror/v{{version.raw}}.tgz", "strip-components": 2},
 	}, "1.2.3")
-	if err != nil || s.url != "https://up/v1.2.3.tgz" || s.strip != 1 {
-		t.Errorf("list dist = %+v %v", s, err)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("list dist = %+v %v", got, err)
 	}
-	// a bare string primary is equally valid
-	if s, _ = sourceOf([]any{"https://x/v{{version.raw}}.tgz"}, "1.2.3"); s.url != "https://x/v1.2.3.tgz" {
-		t.Errorf("list-of-string dist = %+v", s)
+	if got[0].url != "https://up/v1.2.3.tgz" || got[0].strip != 1 {
+		t.Errorf("list primary = %+v", got[0])
 	}
-	// an empty list has no primary → error
-	if _, err := sourceOf([]any{}, "1"); err == nil {
+	if got[1].url != "https://mirror/v1.2.3.tgz" || got[1].strip != 2 {
+		t.Errorf("list mirror = %+v", got[1])
+	}
+	// a bare string entry in a list is equally valid
+	if got, _ = sourcesOf([]any{"https://x/v{{version.raw}}.tgz"}, "1.2.3"); len(got) != 1 || got[0].url != "https://x/v1.2.3.tgz" {
+		t.Errorf("list-of-string dist = %+v", got)
+	}
+	// an empty list has no candidates → error
+	if _, err := sourcesOf([]any{}, "1"); err == nil {
 		t.Error("expected empty-list error")
+	}
+	// a bad entry inside a list surfaces its error
+	if _, err := sourcesOf([]any{map[string]any{}}, "1"); err == nil {
+		t.Error("expected bad-entry error inside list")
+	}
+}
+
+// TestBuildFetchMirrorFallback proves a list-form distributable retries the
+// next mirror when an earlier candidate fails, and only fails when all do.
+func TestBuildFetchMirrorFallback(t *testing.T) {
+	defer func() { logf = origLogf }()
+	logf = func(string, ...any) {} // mute the fallback notice
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	project := "acme.org/tool"
+	dist := []any{
+		map[string]any{"url": "https://primary/v{{version.raw}}.tgz", "strip-components": 1},
+		map[string]any{"url": "https://mirror/v{{version.raw}}.tgz", "strip-components": 1},
+	}
+
+	// first candidate fails, second succeeds → build proceeds
+	t.Run("second-succeeds", func(t *testing.T) {
+		tenv(t)
+		r := okRunner(project, tgt)
+		rec := okRecipe()
+		rec.Distributable = dist
+		var tried []string
+		r.Fetch = func(url, _ string, _ int) error {
+			tried = append(tried, url)
+			if strings.Contains(url, "primary") {
+				return errBoom
+			}
+			return nil
+		}
+		if _, err := r.Build(rec, project, "*", tgt, tgt, ""); err != nil {
+			t.Fatalf("fallback build should succeed: %v", err)
+		}
+		if len(tried) != 2 || !strings.Contains(tried[0], "primary") || !strings.Contains(tried[1], "mirror") {
+			t.Errorf("tried order = %v", tried)
+		}
+	})
+
+	// every candidate fails → the build fails with a fetch error
+	t.Run("all-fail", func(t *testing.T) {
+		tenv(t)
+		r := okRunner(project, tgt)
+		rec := okRecipe()
+		rec.Distributable = dist
+		r.Fetch = func(string, string, int) error { return errBoom }
+		if _, err := r.Build(rec, project, "*", tgt, tgt, ""); err == nil {
+			t.Error("expected fetch error when all mirrors fail")
+		}
+	})
+}
+
+// TestBuildStageInstallDestExists drives the dest-exists rename branch with real
+// os calls: Run leaves both the +brewing tree AND the final prefix in place, so
+// stage-install must remove the stale prefix and then rename successfully.
+func TestBuildStageInstallDestExists(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	project := "acme.org/tool"
+	r := okRunner(project, tgt)
+	r.Run = func(string, []string) error {
+		p := config.Compute(project, "1.2.3", tgt)
+		if err := os.MkdirAll(p.BuildInstall, 0o755); err != nil {
+			return err
+		}
+		// a prior/duplicate install already occupies the final versioned prefix
+		return os.MkdirAll(p.Install, 0o755)
+	}
+	if _, err := r.Build(okRecipe(), project, "*", tgt, tgt, ""); err != nil {
+		t.Fatalf("dest-exists rename should succeed: %v", err)
+	}
+	if _, err := os.Stat(config.Compute(project, "1.2.3", tgt).Install); err != nil {
+		t.Errorf("final prefix missing after stage: %v", err)
+	}
+}
+
+// TestBuildStageInstallRemoveError covers the dest-exists RemoveAll failure: the
+// final prefix reports as present but cannot be removed, so stage-install errors.
+func TestBuildStageInstallRemoveError(t *testing.T) {
+	tenv(t)
+	defer func() { osStat, osRemoveAll = os.Stat, os.RemoveAll }()
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	project := "acme.org/tool"
+	r := okRunner(project, tgt)
+	install := config.Compute(project, "1.2.3", tgt).Install
+	// Only the stage-install removal (after the build runs) must fail; the initial
+	// cleanup loop's removals of the same prefix must still succeed.
+	ran := false
+	realRun := r.Run
+	r.Run = func(p string, e []string) error { ran = true; return realRun(p, e) }
+	osStat = func(name string) (os.FileInfo, error) {
+		if name == install {
+			return nil, nil // report the final prefix as present at stage time
+		}
+		return os.Stat(name)
+	}
+	osRemoveAll = func(name string) error {
+		if name == install && ran {
+			return errBoom // ...but at stage time it cannot be removed
+		}
+		return os.RemoveAll(name)
+	}
+	if _, err := r.Build(okRecipe(), project, "*", tgt, tgt, ""); err == nil {
+		t.Error("expected stage-install remove error")
 	}
 }
 

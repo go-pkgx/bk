@@ -1,9 +1,14 @@
 package build
 
 import (
+	"log"
 	"os"
 	"time"
 )
+
+// logf is a seam over log.Printf so Build's mirror-fallback notice is emitted
+// through a single, silenceable sink (tests swap it to capture / mute output).
+var logf = log.Printf
 
 // osChtimes is a seam so TouchAutotools' error branch is testable.
 var osChtimes = func(name string, atime, mtime time.Time) error {
