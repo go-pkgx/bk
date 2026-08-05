@@ -204,6 +204,15 @@ func sourceOf(dist any, version string) (source, error) {
 			return s, fmt.Errorf("distributable has no url")
 		}
 		return s, nil
+	case []any:
+		// A sequence lists the canonical distributable first, with fallback
+		// mirrors after (e.g. openssl.org ships the upstream tarball plus a
+		// GitHub-release mirror). The primary entry is authoritative, so derive
+		// the source from it.
+		if len(d) == 0 {
+			return source{}, fmt.Errorf("distributable list is empty")
+		}
+		return sourceOf(d[0], version)
 	default:
 		return source{}, fmt.Errorf("unsupported distributable %T", dist)
 	}

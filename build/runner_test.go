@@ -202,6 +202,23 @@ func TestSourceOf(t *testing.T) {
 	if _, err := sourceOf(42, "1"); err == nil {
 		t.Error("expected unsupported-type error")
 	}
+	// list form: the primary (first) entry is authoritative — its url and
+	// strip-components win; trailing fallback mirrors are ignored.
+	s, err = sourceOf([]any{
+		map[string]any{"url": "https://up/v{{version.raw}}.tgz", "strip-components": 1},
+		map[string]any{"url": "https://mirror/v{{version.raw}}.tgz"},
+	}, "1.2.3")
+	if err != nil || s.url != "https://up/v1.2.3.tgz" || s.strip != 1 {
+		t.Errorf("list dist = %+v %v", s, err)
+	}
+	// a bare string primary is equally valid
+	if s, _ = sourceOf([]any{"https://x/v{{version.raw}}.tgz"}, "1.2.3"); s.url != "https://x/v1.2.3.tgz" {
+		t.Errorf("list-of-string dist = %+v", s)
+	}
+	// an empty list has no primary → error
+	if _, err := sourceOf([]any{}, "1"); err == nil {
+		t.Error("expected empty-list error")
+	}
 }
 
 // restorePropSeams resets the props-copy os seams after a test mutates them.
