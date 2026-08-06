@@ -149,12 +149,94 @@ func expandEnv(env map[string]any, opts Options) string {
 	for k := range reduced {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys) // deterministic output
-	var lines []string
+	sort.Strings(keys) // stable, deterministic base order
+	// Render each value once; we both scan it for references and emit it.
+	val := make(map[string]string, len(keys))
 	for _, k := range keys {
-		lines = append(lines, "export "+k+"="+posixQuote(envValue(reduced[k], opts)))
+		val[k] = posixQuote(envValue(reduced[k], opts))
+	}
+	var lines []string
+	for _, k := range orderEnvKeys(keys, val) {
+		lines = append(lines, "export "+k+"="+val[k])
 	}
 	return strings.Join(lines, "\n")
+}
+
+// orderEnvKeys orders env keys so that whenever one variable's value references
+// another ($OTHER / ${OTHER}), the referenced variable is exported first. Bash
+// assigns eagerly, so a forward reference otherwise expands to empty — e.g. a
+// recipe declaring PCDIR and ARGS="… --with-pkg-config-libdir=$PCDIR" would, if
+// sorted alphabetically (ARGS before PCDIR), pass an empty libdir. It falls back
+// to the given (alphabetical) order for independent variables and to break any
+// reference cycle, so output stays deterministic.
+func orderEnvKeys(keys []string, val map[string]string) []string {
+	deps := make(map[string]map[string]bool, len(keys))
+	for _, a := range keys {
+		set := map[string]bool{}
+		for _, b := range keys {
+			if a != b && referencesVar(val[a], b) {
+				set[b] = true
+			}
+		}
+		deps[a] = set
+	}
+	emitted := make(map[string]bool, len(keys))
+	out := make([]string, 0, len(keys))
+	for len(out) < len(keys) {
+		progressed := false
+		for _, k := range keys { // alphabetical scan keeps ties stable
+			if emitted[k] {
+				continue
+			}
+			ready := true
+			for b := range deps[k] {
+				if !emitted[b] {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				out = append(out, k)
+				emitted[k] = true
+				progressed = true
+			}
+		}
+		if !progressed { // reference cycle: emit the first remaining key, break it
+			for _, k := range keys {
+				if !emitted[k] {
+					out = append(out, k)
+					emitted[k] = true
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// referencesVar reports whether s contains a shell reference to name ($name or
+// ${name}). A bare $name requires a non-identifier boundary after it so $PC does
+// not match $PCDIR.
+func referencesVar(s, name string) bool {
+	if strings.Contains(s, "${"+name+"}") {
+		return true
+	}
+	pat := "$" + name
+	for i := 0; ; {
+		j := strings.Index(s[i:], pat)
+		if j < 0 {
+			return false
+		}
+		end := i + j + len(pat)
+		if end >= len(s) || !isIdentChar(s[end]) {
+			return true
+		}
+		i = end
+	}
+}
+
+func isIdentChar(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // platformReduce merges platform-keyed sub-maps (darwin|linux|windows[/arch] or

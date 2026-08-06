@@ -172,6 +172,42 @@ func TestPlatformReduceOsArchKeyAndScalarBaseList(t *testing.T) {
 	}
 }
 
+func TestExpandEnvOrdersReferencesFirst(t *testing.T) {
+	o := opts("linux", "x86-64", "1")
+	// ARGS references $PCDIR; alphabetically ARGS sorts first, but PCDIR must be
+	// exported first so the reference isn't empty. PCB checks that $PC does not
+	// spuriously match $PCDIR (boundary), and ${PCDIR} the braced form.
+	env := map[string]any{
+		"PCDIR": "/opt/x/v1/lib/pkgconfig",
+		"ARGS":  "--libdir=$PCDIR",
+		"BRACED": "x${PCDIR}y",
+		"PC":    "standalone",
+	}
+	out := expandEnv(env, o)
+	pcdir := strings.Index(out, `export PCDIR=`)
+	args := strings.Index(out, `export ARGS=`)
+	braced := strings.Index(out, `export BRACED=`)
+	if pcdir < 0 || args < 0 || braced < 0 {
+		t.Fatalf("missing exports:\n%s", out)
+	}
+	if !(pcdir < args) || !(pcdir < braced) {
+		t.Errorf("PCDIR must precede its referrers:\n%s", out)
+	}
+	// $PC (a different, standalone var) must NOT be treated as referenced by ARGS.
+	if referencesVar(`"--libdir=$PCDIR"`, "PC") {
+		t.Error("$PCDIR must not be read as a reference to PC")
+	}
+}
+
+func TestExpandEnvReferenceCycleBreaks(t *testing.T) {
+	// A→B and B→A: unsatisfiable, but both must still be emitted (deterministically).
+	env := map[string]any{"A": "$B", "B": "$A"}
+	out := expandEnv(env, opts("linux", "x86-64", "1"))
+	if !strings.Contains(out, `export A=`) || !strings.Contains(out, `export B=`) {
+		t.Errorf("cycle must still emit both:\n%s", out)
+	}
+}
+
 func TestPosixQuoteTrailingTrim(t *testing.T) {
 	// a value ending in a quote yields a trailing "" pair that is trimmed
 	if q := posixQuote(`x"`); q != `"x"` {
