@@ -2,9 +2,10 @@ package versions
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -14,9 +15,9 @@ var errBoom = errors.New("boom")
 // saveSeams snapshots every injectable seam and restores it after the test.
 func saveSeams(t *testing.T) {
 	t.Helper()
-	hg, glt, hgr, ira, ec := httpGet, gitLsRemoteTags, httpGetRaw, ioReadAll, execCommand
+	hg, glt, hgr, ira := httpGet, gitLsRemoteTags, httpGetRaw, ioReadAll
 	t.Cleanup(func() {
-		httpGet, gitLsRemoteTags, httpGetRaw, ioReadAll, execCommand = hg, glt, hgr, ira, ec
+		httpGet, gitLsRemoteTags, httpGetRaw, ioReadAll = hg, glt, hgr, ira
 	})
 }
 
@@ -62,6 +63,39 @@ func TestResolveGithub(t *testing.T) {
 	}
 	if gotURL != "https://github.com/owner/repo" {
 		t.Errorf("repoURL = %q", gotURL)
+	}
+}
+
+func TestResolveGitlab(t *testing.T) {
+	saveSeams(t)
+	var gotURL string
+	gitLsRemoteTags = func(repoURL string) ([]string, error) {
+		gotURL = repoURL
+		return []string{"v2.1.0", "v2.3.0", "v2.2.0"}, nil
+	}
+	// default host + decorative /tags suffix
+	v, tag, err := Resolve(map[string]any{"gitlab": "group/project/tags", "strip": "/v/"}, "")
+	if err != nil || v != "2.3.0" || tag != "v2.3.0" {
+		t.Fatalf("gitlab default = %q/%q %v", v, tag, err)
+	}
+	if gotURL != "https://gitlab.com/group/project" {
+		t.Errorf("default-host URL = %q", gotURL)
+	}
+	// self-hosted "host:" prefix + nested subgroup path
+	if _, _, err := Resolve(map[string]any{"gitlab": "gitlab.gnome.org:GNOME/pango/tags"}, "*"); err != nil {
+		t.Fatalf("gitlab custom host: %v", err)
+	}
+	if gotURL != "https://gitlab.gnome.org/GNOME/pango" {
+		t.Errorf("custom-host URL = %q", gotURL)
+	}
+	// invalid spec (no group/project) → error, no ls-remote
+	if _, _, err := Resolve(map[string]any{"gitlab": "loneword"}, "*"); err == nil {
+		t.Error("expected invalid-gitlab-spec error")
+	}
+	// a failing ls-remote propagates
+	gitLsRemoteTags = func(string) ([]string, error) { return nil, errBoom }
+	if _, _, err := Resolve(map[string]any{"gitlab": "group/project"}, "*"); err == nil {
+		t.Error("expected gitlab ls-remote error to propagate")
 	}
 }
 
@@ -248,14 +282,6 @@ func TestGithubRepoURL(t *testing.T) {
 	}
 }
 
-func TestParseLsRemote(t *testing.T) {
-	out := "sha1\trefs/tags/v1.0.0\n\nsha2\trefs/heads/main\nsha3\trefs/tags/v2.0.0\n"
-	got := parseLsRemote(out)
-	if len(got) != 2 || got[0] != "v1.0.0" || got[1] != "v2.0.0" {
-		t.Errorf("parseLsRemote = %v", got)
-	}
-}
-
 func TestHTTPGetSeam(t *testing.T) {
 	saveSeams(t)
 	// success
@@ -287,21 +313,56 @@ func TestHTTPGetSeam(t *testing.T) {
 	}
 }
 
+// gitAdvertisement builds a git smart-HTTP upload-pack ref advertisement
+// (the GET /info/refs?service=git-upload-pack body) from ordered name→sha refs;
+// the first ref carries the \x00-delimited capabilities, per the protocol.
+func gitAdvertisement(refs [][2]string) string {
+	pkt := func(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
+	var b strings.Builder
+	b.WriteString(pkt("# service=git-upload-pack\n") + "0000")
+	for i, r := range refs {
+		line := r[1] + " " + r[0]
+		if i == 0 {
+			line += "\x00symref=HEAD:refs/heads/main agent=test"
+		}
+		b.WriteString(pkt(line + "\n"))
+	}
+	b.WriteString("0000")
+	return b.String()
+}
+
 func TestGitLsRemoteTagsSeam(t *testing.T) {
 	saveSeams(t)
-	// success: fake git prints ls-remote-shaped output.
-	execCommand = func(string, ...string) *exec.Cmd {
-		return exec.Command("printf", "sha1\\trefs/tags/v1.0.0\\nsha2\\trefs/tags/v2.0.0\\n")
+	// Pure-Go go-git ls-remote against a smart-HTTP server advertising tags.
+	adv := gitAdvertisement([][2]string{
+		{"HEAD", "1111111111111111111111111111111111111111"},
+		{"refs/heads/main", "1111111111111111111111111111111111111111"},
+		{"refs/tags/v1.0.0", "2222222222222222222222222222222222222222"},
+		{"refs/tags/v2.0.0", "3333333333333333333333333333333333333333"},
+		{"refs/tags/v2.0.0^{}", "4444444444444444444444444444444444444444"}, // peeled → dropped
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+		_, _ = io.WriteString(w, adv)
+	}))
+	defer srv.Close()
+	tags, err := gitLsRemoteTags(srv.URL)
+	if err != nil {
+		t.Fatalf("ls-remote: %v", err)
 	}
-	tags, err := gitLsRemoteTags("https://github.com/o/r")
-	if err != nil || len(tags) != 2 || tags[0] != "v1.0.0" || tags[1] != "v2.0.0" {
-		t.Fatalf("tags = %v, err %v", tags, err)
+	got := map[string]bool{}
+	for _, tg := range tags {
+		got[tg] = true
 	}
-	// failure: non-zero exit.
-	execCommand = func(string, ...string) *exec.Cmd {
-		return exec.Command("sh", "-c", "exit 3")
+	if len(tags) != 2 || !got["v1.0.0"] || !got["v2.0.0"] {
+		t.Fatalf("tags = %v (want v1.0.0,v2.0.0; HEAD/branch excluded, ^{} dropped)", tags)
 	}
-	if _, err := gitLsRemoteTags("https://github.com/o/r"); err == nil {
-		t.Error("git failure: want error")
+	// a server that does not speak the protocol → error
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "nope", http.StatusNotFound)
+	}))
+	defer bad.Close()
+	if _, err := gitLsRemoteTags(bad.URL); err == nil {
+		t.Error("bad server: want error")
 	}
 }

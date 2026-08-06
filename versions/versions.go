@@ -17,10 +17,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"regexp"
 	"strings"
 
+	gogit "github.com/go-git/go-git/v5"
+	gitconfig "github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/go-versions/semver"
 )
 
@@ -45,21 +47,30 @@ var (
 		return string(body), nil
 	}
 
-	// gitLsRemoteTags lists a repo's tag names via
-	// `git ls-remote --tags --refs <repoURL>` (not the GitHub API, which
-	// rate-limits unauthenticated CI at 60 req/h).
+	// gitLsRemoteTags lists a repo's tag names with go-git's pure-Go remote
+	// listing — NOT a shell-out to the `git` binary (keeps bk portable /
+	// dependency-free) and NOT the GitHub API (which rate-limits unauthenticated
+	// CI at 60 req/h). go-git speaks the smart-HTTP ref advertisement in-process
+	// and works for any Git host (GitHub and GitLab alike). Short() strips the
+	// leading refs/tags/; peeled "^{}" entries are skipped.
 	gitLsRemoteTags = func(repoURL string) ([]string, error) {
-		out, err := execCommand("git", "ls-remote", "--tags", "--refs", repoURL).Output()
+		rem := gogit.NewRemote(memory.NewStorage(), &gitconfig.RemoteConfig{Name: "origin", URLs: []string{repoURL}})
+		refs, err := rem.List(&gogit.ListOptions{})
 		if err != nil {
-			return nil, fmt.Errorf("versions: git ls-remote %s: %w", repoURL, err)
+			return nil, fmt.Errorf("versions: ls-remote %s: %w", repoURL, err)
 		}
-		return parseLsRemote(string(out)), nil
+		var tags []string
+		for _, ref := range refs {
+			if ref.Name().IsTag() && !strings.HasSuffix(ref.Name().String(), "^{}") {
+				tags = append(tags, ref.Name().Short())
+			}
+		}
+		return tags, nil
 	}
 
 	// Low-level stdlib references (no body of their own to cover here).
-	httpGetRaw  = http.Get
-	ioReadAll   = io.ReadAll
-	execCommand = exec.Command
+	httpGetRaw = http.Get
+	ioReadAll  = io.ReadAll
 )
 
 // Resolve returns both the version string (as it appears upstream, for
@@ -111,6 +122,19 @@ func resolveMap(m map[string]any, constraint string) (string, string, error) {
 	case m["github"] != nil:
 		gh, _ := m["github"].(string)
 		repoURL, err := githubRepoURL(gh)
+		if err != nil {
+			return "", "", err
+		}
+		tags, err := gitLsRemoteTags(repoURL)
+		if err != nil {
+			return "", "", err
+		}
+		for _, t := range tags {
+			candidates = append(candidates, strings.TrimPrefix(t, "refs/tags/"))
+		}
+	case m["gitlab"] != nil:
+		gl, _ := m["gitlab"].(string)
+		repoURL, err := gitlabRepoURL(gl)
 		if err != nil {
 			return "", "", err
 		}
@@ -208,6 +232,24 @@ func githubRepoURL(gh string) (string, error) {
 	return "https://github.com/" + parts[0] + "/" + parts[1], nil
 }
 
+// gitlabRepoURL turns a pantry `gitlab:` spec into a clone URL. The spec is
+// "[host:]group/project[/…][/tags]": an optional "host:" prefix selects a
+// self-hosted GitLab (default gitlab.com), a trailing "/tags" is decorative, and
+// the remaining path — which may be nested through subgroups — is the project.
+// GitLab serves tags over the same `git ls-remote` as GitHub, so only the URL
+// differs.
+func gitlabRepoURL(gl string) (string, error) {
+	host, path := "gitlab.com", gl
+	if i := strings.IndexByte(gl, ':'); i >= 0 {
+		host, path = gl[:i], gl[i+1:]
+	}
+	path = strings.Trim(strings.TrimSuffix(strings.Trim(path, "/"), "/tags"), "/")
+	if host == "" || !strings.Contains(path, "/") {
+		return "", fmt.Errorf("versions: invalid gitlab spec %q", gl)
+	}
+	return "https://" + host + "/" + path, nil
+}
+
 // regexList compiles a strip/ignore value, which may be absent, a single
 // /regex/ (or bare) string, or a list of them.
 func regexList(v any) ([]*regexp.Regexp, error) {
@@ -263,18 +305,3 @@ func matchesAny(res []*regexp.Regexp, s string) bool {
 	return false
 }
 
-// parseLsRemote extracts tag names from `git ls-remote --tags --refs` output,
-// whose lines look like "<sha>\trefs/tags/<tag>".
-func parseLsRemote(out string) []string {
-	var tags []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if i := strings.Index(line, "refs/tags/"); i >= 0 {
-			tags = append(tags, line[i+len("refs/tags/"):])
-		}
-	}
-	return tags
-}
