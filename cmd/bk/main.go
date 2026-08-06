@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bk/target"
@@ -20,7 +21,17 @@ import (
 
 var osExit = os.Exit
 
-func main() { osExit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+func main() {
+	// Multi-call ("busybox-style") dispatch: bk is materialised into a build's
+	// libexec dir as symlinks named after brewkit shims. When a recipe execs one
+	// (e.g. `fix-shebangs.ts bin/*`), argv[0] is the symlink path, so its
+	// basename selects the pure-Go helper — no shell interpreter is involved.
+	if filepath.Base(os.Args[0]) == "fix-shebangs.ts" {
+		osExit(fixShebangs(os.Args[1:], os.Stderr))
+		return
+	}
+	osExit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
 
 func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bk", flag.ContinueOnError)
