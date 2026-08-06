@@ -14,6 +14,7 @@ import (
 	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bottle"
+	"mvdan.cc/sh/v3/interp"
 )
 
 const miniRecipe = "distributable: https://x/v{{version.raw}}.tgz\nbuild:\n  script:\n    - make\ntest: \"true\"\n"
@@ -162,15 +163,34 @@ func TestBuildResolvesPkgxPath(t *testing.T) {
 }
 
 func TestRunBash(t *testing.T) {
+	// success: a trivial script runs to completion in the pure-Go interpreter.
 	ok := filepath.Join(t.TempDir(), "ok.sh")
-	os.WriteFile(ok, []byte("#!/bin/bash\nexit 0\n"), 0o755)
+	os.WriteFile(ok, []byte("#!/bin/bash\nexport X=1\nif [ \"$X\" = 1 ]; then :; fi\nexit 0\n"), 0o755)
 	if err := runBash(ok, []string{"PATH=/usr/bin:/bin"}); err != nil {
 		t.Errorf("runBash ok: %v", err)
 	}
+	// non-zero exit → the interpreter returns an error.
 	bad := filepath.Join(t.TempDir(), "bad.sh")
 	os.WriteFile(bad, []byte("#!/bin/bash\nexit 3\n"), 0o755)
 	if err := runBash(bad, nil); err == nil {
 		t.Error("runBash should error on exit 3")
+	}
+	// open error: a path that does not exist.
+	if err := runBash(filepath.Join(t.TempDir(), "nope.sh"), nil); err == nil {
+		t.Error("runBash should error on a missing script")
+	}
+	// parse error: malformed shell syntax.
+	mal := filepath.Join(t.TempDir(), "mal.sh")
+	os.WriteFile(mal, []byte("if then fi\n"), 0o755)
+	if err := runBash(mal, nil); err == nil {
+		t.Error("runBash should error on a parse failure")
+	}
+	// interpreter-constructor error: forced via the seam.
+	origNew := newInterp
+	newInterp = func(...interp.RunnerOption) (*interp.Runner, error) { return nil, errBoom }
+	defer func() { newInterp = origNew }()
+	if err := runBash(ok, nil); err == nil {
+		t.Error("runBash should propagate an interp.New error")
 	}
 }
 

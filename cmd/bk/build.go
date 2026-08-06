@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +17,9 @@ import (
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bk/versions"
 	"github.com/go-pkgx/bottle"
+	"mvdan.cc/sh/v3/expand"
+	"mvdan.cc/sh/v3/interp"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // buildFactory builds a wired Runner; overridden in tests.
@@ -24,6 +28,10 @@ var buildFactory = realBuildRunner
 // lookPath resolves a binary name to an absolute path; a seam for tests.
 var lookPath = exec.LookPath
 
+// newInterp constructs the pure-Go shell interpreter; a seam so runBash's
+// constructor-error branch is testable.
+var newInterp = interp.New
+
 // pickVersion adapts bottle.PickVersion (which returns a Ver) to the Runner's
 // string-version contract.
 func pickVersion(project, constraint string) (string, error) {
@@ -31,12 +39,28 @@ func pickVersion(project, constraint string) (string, error) {
 	return v.Raw, err
 }
 
-// runBash executes the generated build script under the sanitized env.
+// runBash executes the generated build script under the sanitized env using
+// mvdan.cc/sh's pure-Go interpreter — no `/bin/bash` binary. External build
+// tools (gcc/make/cmake/pkgx) are still exec'd (that is the pkgx toolchain, not
+// a shell dependency); only the shell language itself runs in-process.
 func runBash(scriptPath string, env []string) error {
-	cmd := exec.Command("/bin/bash", scriptPath)
-	cmd.Env = env
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
+	f, err := os.Open(scriptPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	prog, err := syntax.NewParser().Parse(f, scriptPath)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", scriptPath, err)
+	}
+	r, err := newInterp(
+		interp.Env(expand.ListEnviron(env...)),
+		interp.StdIO(os.Stdin, os.Stdout, os.Stderr),
+	)
+	if err != nil {
+		return err
+	}
+	return r.Run(context.Background(), prog)
 }
 
 // realBuildRunner wires the real bk/bottle implementations into a Runner. Every
