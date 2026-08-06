@@ -12,11 +12,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/ulikunitz/xz"
 )
 
@@ -25,7 +25,8 @@ func restoreSeams(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		httpGet = http.Get
-		execCommand = exec.Command
+		gitPlainClone = gogit.PlainClone
+		osRemoveAll = os.RemoveAll
 		osMkdirAll = os.MkdirAll
 		osSymlink = os.Symlink
 		osOpenFile = os.OpenFile
@@ -585,27 +586,52 @@ func TestSafeTargetSkipsFullyStripped(t *testing.T) {
 
 func TestFetchGit(t *testing.T) {
 	restoreSeams(t)
-	var gotArgs []string
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		gotArgs = append([]string{name}, args...)
-		return exec.Command("true")
+	osRemoveAll = func(string) error { return nil }
+	var refs, dests []string
+	gitPlainClone = func(dest string, isBare bool, o *gogit.CloneOptions) (*gogit.Repository, error) {
+		refs = append(refs, o.ReferenceName.String())
+		dests = append(dests, dest)
+		if isBare || o.Depth != 1 || o.URL != "https://example.com/r.git" {
+			// the "git+" prefix must be stripped to a plain transport scheme
+			t.Errorf("clone opts = bare:%v depth:%d url:%q", isBare, o.Depth, o.URL)
+		}
+		return nil, nil // succeed on the first (tag) attempt
 	}
-	if err := FetchGit("https://example.com/r.git", "v1.2.3", "/tmp/dest"); err != nil {
+	if err := FetchGit("git+https://example.com/r.git", "v1.2.3", "/tmp/dest"); err != nil {
 		t.Fatalf("FetchGit: %v", err)
 	}
-	want := []string{"git", "clone", "--depth", "1", "--branch", "v1.2.3", "https://example.com/r.git", "/tmp/dest"}
-	if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
-		t.Fatalf("args = %v; want %v", gotArgs, want)
+	if len(refs) != 1 || refs[0] != "refs/tags/v1.2.3" || dests[0] != "/tmp/dest" {
+		t.Fatalf("expected one tag-ref clone into dest, got refs=%v dests=%v", refs, dests)
+	}
+}
+
+func TestFetchGitBranchFallback(t *testing.T) {
+	restoreSeams(t)
+	osRemoveAll = func(string) error { return nil }
+	var refs []string
+	gitPlainClone = func(_ string, _ bool, o *gogit.CloneOptions) (*gogit.Repository, error) {
+		refs = append(refs, o.ReferenceName.String())
+		if o.ReferenceName.IsTag() {
+			return nil, errors.New("reference not found")
+		}
+		return nil, nil // the ref is a branch, not a tag → second attempt wins
+	}
+	if err := FetchGit("https://x/r.git", "main", "/tmp/dest"); err != nil {
+		t.Fatalf("branch fallback: %v", err)
+	}
+	if len(refs) != 2 || refs[0] != "refs/tags/main" || refs[1] != "refs/heads/main" {
+		t.Fatalf("expected tag then branch attempt, got %v", refs)
 	}
 }
 
 func TestFetchGitError(t *testing.T) {
 	restoreSeams(t)
-	execCommand = func(string, ...string) *exec.Cmd {
-		return exec.Command("sh", "-c", "echo clone failed >&2; exit 3")
+	osRemoveAll = func(string) error { return nil }
+	gitPlainClone = func(string, bool, *gogit.CloneOptions) (*gogit.Repository, error) {
+		return nil, errors.New("clone failed")
 	}
-	err := FetchGit("https://example.com/r.git", "main", "/tmp/dest")
+	err := FetchGit("https://x/r.git", "v1", "/tmp/dest")
 	if err == nil || !strings.Contains(err.Error(), "clone failed") {
-		t.Fatalf("err = %v; want clone failed output", err)
+		t.Fatalf("err = %v; want clone failed", err)
 	}
 }

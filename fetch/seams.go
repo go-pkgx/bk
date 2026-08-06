@@ -5,7 +5,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
+
+	gogit "github.com/go-git/go-git/v5"
 )
 
 // osWriteFlags is how extracted regular files are opened.
@@ -17,13 +18,14 @@ const osWriteFlags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 // exercise every error-handling path; production uses the real functions
 // verbatim.
 var (
-	httpGet     = http.Get
-	execCommand = exec.Command
-	osMkdirAll  = os.MkdirAll
-	osSymlink   = os.Symlink
-	osOpenFile  = os.OpenFile
-	ioCopy      = io.Copy
-	zipOpen     = defaultZipOpen
+	httpGet       = http.Get
+	gitPlainClone = gogit.PlainClone
+	osRemoveAll   = os.RemoveAll
+	osMkdirAll    = os.MkdirAll
+	osSymlink     = os.Symlink
+	osOpenFile    = os.OpenFile
+	ioCopy        = io.Copy
+	zipOpen       = defaultZipOpen
 )
 
 // defaultZipOpen opens a file inside a zip archive for reading.

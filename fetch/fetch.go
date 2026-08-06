@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/ulikunitz/xz"
 )
 
@@ -81,15 +83,30 @@ func Fetch(url, destDir string, stripComponents int) error {
 	}
 }
 
-// FetchGit shallow-clones ref of repoURL into destDir using the system git
-// binary: `git clone --depth 1 --branch <ref> <repoURL> <destDir>`.
+// FetchGit shallow-clones ref of repoURL into destDir with go-git's pure-Go
+// clone — NO `git` binary dependency. `git clone --branch <ref>` accepts either
+// a tag or a branch, so try the ref as a tag first, then as a branch (cleaning
+// the destination between attempts, since PlainClone needs an empty target).
 func FetchGit(repoURL, ref, destDir string) error {
-	cmd := execCommand("git", "clone", "--depth", "1", "--branch", ref, repoURL, destDir)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("fetch: git clone %s@%s: %w: %s", repoURL, ref, err, strings.TrimSpace(string(out)))
+	// pkgx marks a git distributable with a "git+" URL prefix (e.g.
+	// git+https://github.com/o/r); strip it to the plain transport scheme that
+	// go-git (and git) actually speak.
+	repoURL = strings.TrimPrefix(repoURL, "git+")
+	var lastErr error
+	for _, rn := range []plumbing.ReferenceName{
+		plumbing.NewTagReferenceName(ref),
+		plumbing.NewBranchReferenceName(ref),
+	} {
+		_ = osRemoveAll(destDir)
+		_, err := gitPlainClone(destDir, false, &gogit.CloneOptions{
+			URL: repoURL, ReferenceName: rn, Depth: 1, SingleBranch: true, Tags: gogit.NoTags,
+		})
+		if err == nil {
+			return nil
+		}
+		lastErr = err
 	}
-	return nil
+	return fmt.Errorf("fetch: git clone %s@%s: %w", repoURL, ref, lastErr)
 }
 
 // detect maps a URL to an archive kind by extension, ignoring any query
