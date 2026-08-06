@@ -172,6 +172,23 @@ func resolveMap(m map[string]any, constraint string) (string, string, error) {
 // (post-strip, v-normalised) version string of the max version satisfying
 // constraint and the raw pre-strip candidate that produced it (the upstream
 // git tag, for {{version.tag}}).
+// calverDashRE matches an all-numeric, dash-separated version — a date-style
+// CalVer such as 2025-08-12 (or 2024-1) — with no other characters.
+var calverDashRE = regexp.MustCompile(`^\d+(-\d+)+$`)
+
+// calverToDotted rewrites such a CalVer to dotted form (2025-08-12 → 2025.08.12)
+// so the loose semver parses it; semver otherwise reads the first '-' as the
+// start of a pre-release and the version fails to parse. Zero-padding is kept so
+// {{version.raw}} round-trips (recipes map dots↔dashes, e.g. ca-certs does
+// `tr . -` to rebuild cacert-YYYY-MM-DD.pem). Non-CalVer strings are unchanged,
+// so this can only rescue candidates that would otherwise be skipped.
+func calverToDotted(s string) string {
+	if calverDashRE.MatchString(s) {
+		return strings.ReplaceAll(s, "-", ".")
+	}
+	return s
+}
+
 func selectVersion(candidates []string, strips, ignores []*regexp.Regexp, constraint string) (string, string, error) {
 	var rng *semver.Range
 	if constraint != "" && constraint != "*" {
@@ -189,6 +206,7 @@ func selectVersion(candidates []string, strips, ignores []*regexp.Regexp, constr
 		for _, re := range strips {
 			s = re.ReplaceAllString(s, "")
 		}
+		s = calverToDotted(s)
 		if matchesAny(ignores, s) {
 			continue
 		}

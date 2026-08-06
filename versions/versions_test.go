@@ -44,6 +44,31 @@ func TestResolveURLNcurses(t *testing.T) {
 	}
 }
 
+// TestResolveURLCalVer covers the date-style CalVer path (curl.se/ca-certs):
+// dash-separated all-numeric versions are rewritten to dotted form so they
+// parse and the highest date wins, with zero-padding preserved in version.raw.
+func TestResolveURLCalVer(t *testing.T) {
+	saveSeams(t)
+	listing := `cacert-2025-05-20.pem cacert-2025-08-12.pem cacert-2026-03-19.pem`
+	httpGet = func(string) (string, error) { return listing, nil }
+	spec := map[string]any{
+		"url":   "https://curl.se/docs/caextract.html",
+		"match": `/cacert-2\d+-\d+-\d+.pem/`,
+		"strip": []any{"/cacert-/", "/\\.pem/"},
+	}
+	v, tag, err := Resolve(spec, "*")
+	if err != nil || v != "2026.03.19" {
+		t.Fatalf("Resolve = %q, %v; want 2026.03.19 (padded, dotted)", v, err)
+	}
+	if tag != "cacert-2026-03-19.pem" {
+		t.Fatalf("tag = %q; want cacert-2026-03-19.pem", tag)
+	}
+	// direct unit check of both branches
+	if calverToDotted("2025-08-12") != "2025.08.12" || calverToDotted("1.2.3") != "1.2.3" {
+		t.Error("calverToDotted branches")
+	}
+}
+
 // TestResolveGithub proves github tags select the semver (not lexical) max.
 func TestResolveGithub(t *testing.T) {
 	saveSeams(t)
