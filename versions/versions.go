@@ -25,6 +25,10 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/storage/memory"
+	// onigmo is our pure-Go Onigmo regex engine: recipe strip/ignore/match
+	// patterns may use lookahead/lookbehind/backrefs that Go's stdlib regexp
+	// (RE2) rejects (e.g. gopls's match `/v\d+\.\d+\.\d+(?=["<])/`).
+	onigmo "github.com/go-onigmo/engine"
 	"github.com/go-versions/semver"
 )
 
@@ -123,7 +127,7 @@ func resolveMap(m map[string]any, constraint string) (string, string, error) {
 // It is the single source of the per-source listing logic shared by Resolve
 // (which then picks the max satisfying a constraint) and List (which returns
 // them all). Callers apply strips/ignores via selectVersion or listVersions.
-func gatherCandidates(m map[string]any) (candidates []string, strips, ignores []*regexp.Regexp, err error) {
+func gatherCandidates(m map[string]any) (candidates []string, strips, ignores []*onigmo.Regexp, err error) {
 	strips, err = regexList(m["strip"])
 	if err != nil {
 		return nil, nil, nil, err
@@ -214,7 +218,7 @@ type VersionTag struct {
 func List(spec any) ([]VersionTag, error) {
 	var (
 		candidates      []string
-		strips, ignores []*regexp.Regexp
+		strips, ignores []*onigmo.Regexp
 	)
 	switch v := spec.(type) {
 	case map[string]any:
@@ -238,7 +242,7 @@ func List(spec any) ([]VersionTag, error) {
 // resolved version string, and returns every distinct VersionTag sorted
 // descending. The Tag is the raw pre-strip candidate (the upstream git tag /
 // listing match), matching Resolve's version.tag semantics.
-func listVersions(candidates []string, strips, ignores []*regexp.Regexp) ([]VersionTag, error) {
+func listVersions(candidates []string, strips, ignores []*onigmo.Regexp) ([]VersionTag, error) {
 	type entry struct {
 		v  *semver.Version
 		vt VersionTag
@@ -310,7 +314,7 @@ func npmRegistryURL(pkg string) string {
 	return "https://registry.npmjs.org/" + pkg
 }
 
-func selectVersion(candidates []string, strips, ignores []*regexp.Regexp, constraint string) (string, string, error) {
+func selectVersion(candidates []string, strips, ignores []*onigmo.Regexp, constraint string) (string, string, error) {
 	var rng *semver.Range
 	if constraint != "" && constraint != "*" {
 		r, err := semver.ParseRange(constraint)
@@ -391,7 +395,7 @@ func gitlabRepoURL(gl string) (string, error) {
 
 // regexList compiles a strip/ignore value, which may be absent, a single
 // /regex/ (or bare) string, or a list of them.
-func regexList(v any) ([]*regexp.Regexp, error) {
+func regexList(v any) ([]*onigmo.Regexp, error) {
 	switch t := v.(type) {
 	case nil:
 		return nil, nil
@@ -400,9 +404,9 @@ func regexList(v any) ([]*regexp.Regexp, error) {
 		if err != nil {
 			return nil, err
 		}
-		return []*regexp.Regexp{re}, nil
+		return []*onigmo.Regexp{re}, nil
 	case []any:
-		out := make([]*regexp.Regexp, 0, len(t))
+		out := make([]*onigmo.Regexp, 0, len(t))
 		for _, x := range t {
 			s, ok := x.(string)
 			if !ok {
@@ -422,12 +426,12 @@ func regexList(v any) ([]*regexp.Regexp, error) {
 
 // compileDelim compiles s as a Go regexp, stripping surrounding /.../ slashes
 // (pkgx's regex delimiters) first.
-func compileDelim(s string) (*regexp.Regexp, error) {
+func compileDelim(s string) (*onigmo.Regexp, error) {
 	p := s
 	if len(p) >= 2 && strings.HasPrefix(p, "/") && strings.HasSuffix(p, "/") {
 		p = p[1 : len(p)-1]
 	}
-	re, err := regexp.Compile(p)
+	re, err := onigmo.Compile(p)
 	if err != nil {
 		return nil, fmt.Errorf("versions: bad regex %q: %w", s, err)
 	}
@@ -435,7 +439,7 @@ func compileDelim(s string) (*regexp.Regexp, error) {
 }
 
 // matchesAny reports whether s matches any of the regexes.
-func matchesAny(res []*regexp.Regexp, s string) bool {
+func matchesAny(res []*onigmo.Regexp, s string) bool {
 	for _, re := range res {
 		if re.MatchString(s) {
 			return true

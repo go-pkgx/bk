@@ -48,6 +48,8 @@ github.com/go-git/go-git-fixtures/v4 v4.3.2-0.20231010084843-55a94097c399 h1:eMj
 github.com/go-git/go-git-fixtures/v4 v4.3.2-0.20231010084843-55a94097c399/go.mod h1:1OCfN199q1Jm3HZlxleg+Dw/mwps2Wbk9frAWm+4FII=
 github.com/go-git/go-git/v5 v5.19.2 h1:wkfn7vOlUBu8ivAWKBWisTiwJK4jYHzTF8Ndv1LyGqY=
 github.com/go-git/go-git/v5 v5.19.2/go.mod h1:QqCBE1EFN5ddFmrliLQ3/ntRCUjZU3EJuwuB/jWEHjk=
+github.com/go-onigmo/engine v0.1.1 h1:UzdLKNcfhNKI0KbPgsnX/ybubFMteYweYqs5aRclITk=
+github.com/go-onigmo/engine v0.1.1/go.mod h1:SjAmDKU7Nue1Epvlc0rmUjqhg+uYBymfD1JG4Ajeccc=
 github.com/go-pkgx/bottle v0.5.3 h1:bQSEgpjzqudEK0kDkTQYVEKVRhXJsnZaBLNx8DcZdN0=
 github.com/go-pkgx/bottle v0.5.3/go.mod h1:8ve+b+5J3CHhCeBNLM6bPulIUADQmN9wPNkdmcF39Yo=
 github.com/go-quicktest/qt v1.101.0 h1:O1K29Txy5P2OK0dGo59b7b0LR6wKfIhttaAhHUyn7eI=

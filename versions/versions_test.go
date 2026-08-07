@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -259,6 +260,34 @@ func TestResolveUnparseableCandidatesSkipped(t *testing.T) {
 	spec := map[string]any{"url": "u", "match": `/[a-z0-9.]+/`}
 	if v, tag, err := Resolve(spec, "*"); err != nil || v != "1.2.3" || tag != "1.2.3" {
 		t.Errorf("Resolve = %q %q %v; want 1.2.3", v, tag, err)
+	}
+}
+
+// TestResolveLookaheadMatch proves that a recipe `match:` using a lookahead —
+// which Go's stdlib regexp (RE2) rejects outright — compiles and matches via our
+// go-onigmo engine. This is gopls's real spec form: a version followed by a
+// closing quote or angle bracket in an HTML/JSON listing, excluding versions
+// that are not so followed.
+func TestResolveLookaheadMatch(t *testing.T) {
+	saveSeams(t)
+	httpGet = func(string) (string, error) {
+		return `href="v1.2.3" and v9.9.9 bare and <v4.5.6"`, nil
+	}
+	// v9.9.9 is followed by a space, so the (?=["<]) lookahead excludes it;
+	// v1.2.3 and v4.5.6 are each followed by a quote and win.
+	spec := map[string]any{"url": "u", "match": `/v\d+\.\d+\.\d+(?=["<])/`}
+	got, err := List(spec)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var vs []string
+	for _, vt := range got {
+		vs = append(vs, vt.Version)
+	}
+	// List returns newest-first; both survivors, 9.9.9 excluded by lookahead.
+	want := []string{"4.5.6", "1.2.3"}
+	if !reflect.DeepEqual(vs, want) {
+		t.Fatalf("lookahead List = %v; want %v", vs, want)
 	}
 }
 
