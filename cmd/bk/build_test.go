@@ -162,6 +162,43 @@ func TestBuildResolvesPkgxPath(t *testing.T) {
 	}
 }
 
+// TestBuildVersionFlag proves --version <v> is passed to the resolver as an
+// exact "=v" constraint, and its absence keeps the default "*".
+func TestBuildVersionFlag(t *testing.T) {
+	tempEnv(t)
+	old := buildFactory
+	defer func() { buildFactory = old }()
+
+	var gotConstraint string
+	buildFactory = func(string) *build.Runner {
+		base := stubFactory("test.org/x")("")
+		base.ResolveVersion = func(_ any, constraint string) (string, string, error) {
+			gotConstraint = constraint
+			// Return the version stubFactory's Run materialises, so the pipeline
+			// completes; only the captured constraint is under test here.
+			return "1.0.0", "v1.0.0", nil
+		}
+		return base
+	}
+	rec := writeRecipe(t)
+
+	// --version set → "=1.9.4"
+	if c, _, e := run2(t, "build", "--recipe", rec, "--version", "1.9.4", "test.org/x"); c != 0 {
+		t.Fatalf("build --version: code=%d err=%q", c, e)
+	}
+	if gotConstraint != "=1.9.4" {
+		t.Errorf("constraint = %q; want =1.9.4", gotConstraint)
+	}
+
+	// --version absent → "*"
+	if c, _, e := run2(t, "build", "--recipe", rec, "test.org/x"); c != 0 {
+		t.Fatalf("build no-version: code=%d err=%q", c, e)
+	}
+	if gotConstraint != "*" {
+		t.Errorf("constraint = %q; want *", gotConstraint)
+	}
+}
+
 func TestRunBash(t *testing.T) {
 	// success: a trivial script runs to completion in the pure-Go interpreter.
 	ok := filepath.Join(t.TempDir(), "ok.sh")

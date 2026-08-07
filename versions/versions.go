@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -109,26 +110,39 @@ func Resolve(spec any, constraint string) (string, string, error) {
 // resolveMap handles the github/url map form of `versions:`, listing upstream
 // tags (or matching an upstream listing) and selecting via the loose semver.
 func resolveMap(m map[string]any, constraint string) (string, string, error) {
-	strips, err := regexList(m["strip"])
+	candidates, strips, ignores, err := gatherCandidates(m)
 	if err != nil {
 		return "", "", err
 	}
-	ignores, err := regexList(m["ignore"])
+	return selectVersion(candidates, strips, ignores, constraint)
+}
+
+// gatherCandidates collects EVERY raw candidate version string for the
+// github/gitlab/npm/url map form of `versions:` (before any strip/ignore or
+// semver parse), together with the recipe's compiled strip and ignore regexes.
+// It is the single source of the per-source listing logic shared by Resolve
+// (which then picks the max satisfying a constraint) and List (which returns
+// them all). Callers apply strips/ignores via selectVersion or listVersions.
+func gatherCandidates(m map[string]any) (candidates []string, strips, ignores []*regexp.Regexp, err error) {
+	strips, err = regexList(m["strip"])
 	if err != nil {
-		return "", "", err
+		return nil, nil, nil, err
+	}
+	ignores, err = regexList(m["ignore"])
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
-	var candidates []string
 	switch {
 	case m["github"] != nil:
 		gh, _ := m["github"].(string)
 		repoURL, err := githubRepoURL(gh)
 		if err != nil {
-			return "", "", err
+			return nil, nil, nil, err
 		}
 		tags, err := gitLsRemoteTags(repoURL)
 		if err != nil {
-			return "", "", err
+			return nil, nil, nil, err
 		}
 		for _, t := range tags {
 			candidates = append(candidates, strings.TrimPrefix(t, "refs/tags/"))
@@ -137,11 +151,11 @@ func resolveMap(m map[string]any, constraint string) (string, string, error) {
 		gl, _ := m["gitlab"].(string)
 		repoURL, err := gitlabRepoURL(gl)
 		if err != nil {
-			return "", "", err
+			return nil, nil, nil, err
 		}
 		tags, err := gitLsRemoteTags(repoURL)
 		if err != nil {
-			return "", "", err
+			return nil, nil, nil, err
 		}
 		for _, t := range tags {
 			candidates = append(candidates, strings.TrimPrefix(t, "refs/tags/"))
@@ -150,13 +164,13 @@ func resolveMap(m map[string]any, constraint string) (string, string, error) {
 		pkg, _ := m["npm"].(string)
 		body, err := httpGet(npmRegistryURL(pkg))
 		if err != nil {
-			return "", "", err
+			return nil, nil, nil, err
 		}
 		var doc struct {
 			Versions map[string]json.RawMessage `json:"versions"`
 		}
 		if err := json.Unmarshal([]byte(body), &doc); err != nil {
-			return "", "", fmt.Errorf("versions: npm %s: %w", pkg, err)
+			return nil, nil, nil, fmt.Errorf("versions: npm %s: %w", pkg, err)
 		}
 		for v := range doc.Versions {
 			candidates = append(candidates, v)
@@ -165,22 +179,103 @@ func resolveMap(m map[string]any, constraint string) (string, string, error) {
 		u, _ := m["url"].(string)
 		matchRaw, _ := m["match"].(string)
 		if u == "" || matchRaw == "" {
-			return "", "", fmt.Errorf("versions: url spec needs both url and match")
+			return nil, nil, nil, fmt.Errorf("versions: url spec needs both url and match")
 		}
 		re, err := compileDelim(matchRaw)
 		if err != nil {
-			return "", "", err
+			return nil, nil, nil, err
 		}
 		body, err := httpGet(u)
 		if err != nil {
-			return "", "", err
+			return nil, nil, nil, err
 		}
 		candidates = re.FindAllString(body, -1)
 	default:
-		return "", "", fmt.Errorf("versions: spec has neither github nor url")
+		return nil, nil, nil, fmt.Errorf("versions: spec has neither github nor url")
 	}
+	return candidates, strips, ignores, nil
+}
 
-	return selectVersion(candidates, strips, ignores, constraint)
+// VersionTag pairs a resolved version string (post-strip, v-normalised, as
+// {{version.raw}}) with the pre-strip upstream tag it was resolved from (as
+// {{version.tag}}) — the same two values Resolve returns for a single version.
+type VersionTag struct {
+	Version string
+	Tag     string
+}
+
+// List returns EVERY candidate version from a recipe's `versions:` spec —
+// github/gitlab tags, an url+match listing, npm registry keys, or a hardcoded
+// list — with each candidate stripped, CalVer-normalised, ignore-filtered and
+// parsed by the loose semver; unparseable candidates are dropped. The result is
+// deduped by resolved version and sorted DESCENDING (newest first). The spec
+// semantics are identical to Resolve's; List simply keeps all survivors instead
+// of picking the max satisfying a constraint.
+func List(spec any) ([]VersionTag, error) {
+	var (
+		candidates      []string
+		strips, ignores []*regexp.Regexp
+	)
+	switch v := spec.(type) {
+	case map[string]any:
+		var err error
+		candidates, strips, ignores, err = gatherCandidates(v)
+		if err != nil {
+			return nil, err
+		}
+	case []any:
+		for _, e := range v {
+			candidates = append(candidates, fmt.Sprint(e))
+		}
+	default:
+		return nil, fmt.Errorf("versions: unsupported version spec %T", spec)
+	}
+	return listVersions(candidates, strips, ignores)
+}
+
+// listVersions applies strip then ignore to each candidate, parses the
+// survivors with the loose semver (dropping unparseable ones), dedups by
+// resolved version string, and returns every distinct VersionTag sorted
+// descending. The Tag is the raw pre-strip candidate (the upstream git tag /
+// listing match), matching Resolve's version.tag semantics.
+func listVersions(candidates []string, strips, ignores []*regexp.Regexp) ([]VersionTag, error) {
+	type entry struct {
+		v  *semver.Version
+		vt VersionTag
+	}
+	var entries []entry
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		s := c
+		for _, re := range strips {
+			s = re.ReplaceAllString(s, "")
+		}
+		s = calverToDotted(s)
+		if matchesAny(ignores, s) {
+			continue
+		}
+		v, err := semver.ParseVersion(s)
+		if err != nil {
+			continue
+		}
+		ver := dropVPrefix(s)
+		if seen[ver] {
+			continue
+		}
+		seen[ver] = true
+		entries = append(entries, entry{v: v, vt: VersionTag{Version: ver, Tag: c}})
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("versions: no candidate version matched")
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].v.Compare(entries[j].v) > 0
+	})
+	out := make([]VersionTag, len(entries))
+	for i, e := range entries {
+		out[i] = e.vt
+	}
+	return out, nil
 }
 
 // selectVersion applies strip (remove) then ignore (discard) to each

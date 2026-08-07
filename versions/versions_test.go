@@ -296,6 +296,119 @@ func TestResolveErrors(t *testing.T) {
 	}
 }
 
+// TestListGithub proves List returns EVERY parseable github tag, deduped by
+// resolved version and sorted descending, each carrying its raw pre-strip tag.
+func TestListGithub(t *testing.T) {
+	saveSeams(t)
+	gitLsRemoteTags = func(string) ([]string, error) {
+		// intentionally out of order, with a v-dup and an unparseable entry.
+		return []string{"v1.2.0", "v1.10.0", "1.10.0", "v1.3.0", "nightly"}, nil
+	}
+	got, err := List(map[string]any{"github": "owner/repo", "strip": ""})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	// "nightly" dropped (unparseable); v1.10.0 & 1.10.0 dedup to one 1.10.0.
+	want := []VersionTag{
+		{Version: "1.10.0", Tag: "v1.10.0"},
+		{Version: "1.3.0", Tag: "v1.3.0"},
+		{Version: "1.2.0", Tag: "v1.2.0"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("List = %v; want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("List[%d] = %v; want %v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestListStripAndIgnore covers the strip + ignore + tag-preservation branches:
+// the version is post-strip but the Tag stays the raw upstream candidate.
+func TestListStripAndIgnore(t *testing.T) {
+	saveSeams(t)
+	gitLsRemoteTags = func(string) ([]string, error) {
+		return []string{"openssl-3.4.0", "openssl-3.5.0", "openssl-1.0.0"}, nil
+	}
+	spec := map[string]any{"github": "openssl/openssl", "strip": "/openssl-/", "ignore": `/^1\./`}
+	got, err := List(spec)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []VersionTag{
+		{Version: "3.5.0", Tag: "openssl-3.5.0"},
+		{Version: "3.4.0", Tag: "openssl-3.4.0"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("List = %v; want %v (1.0.0 ignored)", got, want)
+	}
+}
+
+// TestListForm covers the []any (hardcoded list) spec: every entry is a
+// candidate, verbatim text preserved, sorted descending with no strip/ignore.
+func TestListForm(t *testing.T) {
+	saveSeams(t)
+	got, err := List([]any{"3.0", "3.1", "7", "7.0.6"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []VersionTag{
+		{Version: "7.0.6", Tag: "7.0.6"},
+		{Version: "7", Tag: "7"},
+		{Version: "3.1", Tag: "3.1"},
+		{Version: "3.0", Tag: "3.0"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("List = %v; want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("List[%d] = %v; want %v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestListNpmAndURL covers the remaining candidate sources through List.
+func TestListNpmAndURL(t *testing.T) {
+	saveSeams(t)
+	httpGet = func(string) (string, error) {
+		return `{"versions":{"1.0.0":{},"2.0.0":{},"1.5.0":{}}}`, nil
+	}
+	npm, err := List(map[string]any{"npm": "prettier"})
+	if err != nil || len(npm) != 3 || npm[0].Version != "2.0.0" || npm[2].Version != "1.0.0" {
+		t.Fatalf("npm List = %v %v", npm, err)
+	}
+	httpGet = func(string) (string, error) {
+		return `<a href="ncurses-6.3.tar.gz"><a href="ncurses-6.5.tar.gz">`, nil
+	}
+	url, err := List(map[string]any{
+		"url":   "https://ftp.gnu.org/gnu/ncurses/",
+		"match": `/ncurses-\d+(\.\d+)+.tar.gz/`,
+		"strip": []any{"/ncurses-/", "/.tar.gz/"},
+	})
+	if err != nil || len(url) != 2 || url[0].Version != "6.5" || url[0].Tag != "ncurses-6.5.tar.gz" {
+		t.Fatalf("url List = %v %v", url, err)
+	}
+}
+
+func TestListErrors(t *testing.T) {
+	saveSeams(t)
+	// unsupported spec type
+	if _, err := List("hello"); err == nil {
+		t.Error("string spec: want error")
+	}
+	// gatherCandidates error propagates (bad github spec)
+	if _, err := List(map[string]any{"github": "owner"}); err == nil {
+		t.Error("bad github: want error")
+	}
+	// no parseable candidate
+	gitLsRemoteTags = func(string) ([]string, error) { return []string{"nightly", "edge"}, nil }
+	if _, err := List(map[string]any{"github": "o/r"}); err == nil {
+		t.Error("no candidate: want error")
+	}
+}
+
 func TestRegexList(t *testing.T) {
 	if l, err := regexList(nil); err != nil || l != nil {
 		t.Errorf("nil: %v %v", l, err)

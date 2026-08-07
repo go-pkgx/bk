@@ -88,6 +88,7 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	dist := fs.String("dist", "", "output dir for the packaged bottle (omit to skip packaging)")
 	recipe := fs.String("recipe", "", "path to the package.yml recipe (required)")
+	version := fs.String("version", "", "exact version to build (default: latest resolvable)")
 	pkgx := fs.String("pkgx", "pkgx", "path to the pkgx binary used for the deps env")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -128,7 +129,14 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	res, err := runner.Build(rec, project, "*", tgt, target.Host(), *dist)
+	// A pinned --version becomes an exact `=` semver constraint so the resolver
+	// selects precisely that candidate; empty keeps the default "*" (latest).
+	constraint := "*"
+	if *version != "" {
+		constraint = "=" + *version
+	}
+
+	res, err := runner.Build(rec, project, constraint, tgt, target.Host(), *dist)
 	if err != nil {
 		fmt.Fprintln(stderr, "build failed:", err)
 		return 1
