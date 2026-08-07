@@ -14,6 +14,7 @@
 package versions
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -145,6 +146,21 @@ func resolveMap(m map[string]any, constraint string) (string, string, error) {
 		for _, t := range tags {
 			candidates = append(candidates, strings.TrimPrefix(t, "refs/tags/"))
 		}
+	case m["npm"] != nil:
+		pkg, _ := m["npm"].(string)
+		body, err := httpGet(npmRegistryURL(pkg))
+		if err != nil {
+			return "", "", err
+		}
+		var doc struct {
+			Versions map[string]json.RawMessage `json:"versions"`
+		}
+		if err := json.Unmarshal([]byte(body), &doc); err != nil {
+			return "", "", fmt.Errorf("versions: npm %s: %w", pkg, err)
+		}
+		for v := range doc.Versions {
+			candidates = append(candidates, v)
+		}
 	case m["url"] != nil:
 		u, _ := m["url"].(string)
 		matchRaw, _ := m["match"].(string)
@@ -187,6 +203,16 @@ func calverToDotted(s string) string {
 		return strings.ReplaceAll(s, "-", ".")
 	}
 	return s
+}
+
+// npmRegistryURL builds the npm registry document URL for a package. A scoped
+// name (@scope/name) must have its slash percent-encoded (@scope%2Fname); an
+// unscoped name is used as-is.
+func npmRegistryURL(pkg string) string {
+	if strings.HasPrefix(pkg, "@") {
+		pkg = strings.Replace(pkg, "/", "%2F", 1)
+	}
+	return "https://registry.npmjs.org/" + pkg
 }
 
 func selectVersion(candidates []string, strips, ignores []*regexp.Regexp, constraint string) (string, string, error) {

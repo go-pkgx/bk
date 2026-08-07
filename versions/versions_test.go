@@ -44,6 +44,40 @@ func TestResolveURLNcurses(t *testing.T) {
 	}
 }
 
+func TestResolveNpm(t *testing.T) {
+	saveSeams(t)
+	var gotURL string
+	httpGet = func(u string) (string, error) {
+		gotURL = u
+		return `{"name":"prettier","dist-tags":{"latest":"3.9.6"},"versions":{"3.9.5":{},"3.9.6":{},"2.0.0":{}}}`, nil
+	}
+	v, _, err := Resolve(map[string]any{"npm": "prettier"}, "*")
+	if err != nil || v != "3.9.6" {
+		t.Fatalf("npm resolve = %q %v; want 3.9.6", v, err)
+	}
+	if gotURL != "https://registry.npmjs.org/prettier" {
+		t.Errorf("unscoped URL = %q", gotURL)
+	}
+	// scoped name → slash percent-encoded
+	if got := npmRegistryURL("@angular/cli"); got != "https://registry.npmjs.org/@angular%2Fcli" {
+		t.Errorf("scoped URL = %q", got)
+	}
+	// a constrained pick over the registry versions
+	if v, _, err := Resolve(map[string]any{"npm": "prettier"}, "^2"); err != nil || v != "2.0.0" {
+		t.Errorf("npm ^2 = %q %v", v, err)
+	}
+	// malformed registry JSON → error
+	httpGet = func(string) (string, error) { return "not json", nil }
+	if _, _, err := Resolve(map[string]any{"npm": "x"}, "*"); err == nil {
+		t.Error("expected npm JSON parse error")
+	}
+	// httpGet failure propagates
+	httpGet = func(string) (string, error) { return "", errBoom }
+	if _, _, err := Resolve(map[string]any{"npm": "x"}, "*"); err == nil {
+		t.Error("expected npm fetch error")
+	}
+}
+
 // TestResolveURLCalVer covers the date-style CalVer path (curl.se/ca-certs):
 // dash-separated all-numeric versions are rewritten to dotted form so they
 // parse and the highest date wins, with zero-padding preserved in version.raw.
