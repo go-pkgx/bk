@@ -265,7 +265,7 @@ func TestResolveUnparseableCandidatesSkipped(t *testing.T) {
 
 // TestResolveLookaheadMatch proves that a recipe `match:` using a lookahead —
 // which Go's stdlib regexp (RE2) rejects outright — compiles and matches via our
-// go-onigmo engine. This is gopls's real spec form: a version followed by a
+// go-regexp/engine. This is gopls's real spec form: a version followed by a
 // closing quote or angle bracket in an HTML/JSON listing, excluding versions
 // that are not so followed.
 func TestResolveLookaheadMatch(t *testing.T) {

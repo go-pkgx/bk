@@ -28,7 +28,7 @@ import (
 	// onigmo is our pure-Go Onigmo regex engine: recipe strip/ignore/match
 	// patterns may use lookahead/lookbehind/backrefs that Go's stdlib regexp
 	// (RE2) rejects (e.g. gopls's match `/v\d+\.\d+\.\d+(?=["<])/`).
-	onigmo "github.com/go-onigmo/engine"
+	onigmo "github.com/go-regexp/engine"
 	"github.com/go-versions/semver"
 )
 
