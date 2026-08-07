@@ -178,10 +178,10 @@ func TestExpandEnvOrdersReferencesFirst(t *testing.T) {
 	// exported first so the reference isn't empty. PCB checks that $PC does not
 	// spuriously match $PCDIR (boundary), and ${PCDIR} the braced form.
 	env := map[string]any{
-		"PCDIR": "/opt/x/v1/lib/pkgconfig",
-		"ARGS":  "--libdir=$PCDIR",
+		"PCDIR":  "/opt/x/v1/lib/pkgconfig",
+		"ARGS":   "--libdir=$PCDIR",
 		"BRACED": "x${PCDIR}y",
-		"PC":    "standalone",
+		"PC":     "standalone",
 	}
 	out := expandEnv(env, o)
 	pcdir := strings.Index(out, `export PCDIR=`)

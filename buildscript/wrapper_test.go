@@ -53,8 +53,8 @@ func TestWrapLinuxArm64Flags(t *testing.T) {
 	// on arm64) and without the x86-64 -pie LDFLAGS / -fPIC CXXFLAGS.
 	s := Wrap(WrapOptions{
 		UserScript: "make", Deps: []string{"x"},
-		Target: target.Target{Platform: "linux", Arch: "aarch64"},
-		Host:   target.Target{Platform: "linux", Arch: "aarch64"},
+		Target:  target.Target{Platform: "linux", Arch: "aarch64"},
+		Host:    target.Target{Platform: "linux", Arch: "aarch64"},
 		PkgxDir: "/opt/pkgx",
 	})
 	if !strings.Contains(s, `export CFLAGS="-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion $CFLAGS"`) {

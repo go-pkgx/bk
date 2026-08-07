@@ -447,4 +447,3 @@ func matchesAny(res []*onigmo.Regexp, s string) bool {
 	}
 	return false
 }
-
