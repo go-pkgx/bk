@@ -166,6 +166,11 @@ func BaseToolchain() []string {
 		// drops it under any gcc, in every awk mode). 5.3.2 is the newest gawk with
 		// a working pkgx bottle; relax when a later 5.4.x fixes the regression.
 		"gnu.org/gawk@5.3",
+		// bison provides the yacc/bison grammar compiler. autotools packages that
+		// ship a .y grammar (e.g. gettext's gettext-runtime/intl/plural.y) regenerate
+		// the .c from it during the build via ylwrap; without bison that step fails
+		// with "bison: command not found" (Error 127). Provides bin/bison + bin/yacc.
+		"gnu.org/bison",
 		"freedesktop.org/pkg-config",
 	}
 }

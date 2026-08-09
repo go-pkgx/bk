@@ -129,6 +129,11 @@ func TestBaseToolchainAndEvalDeps(t *testing.T) {
 	if contains(base, "gnu.org/gawk") || !contains(base, "gnu.org/gawk@5.3") {
 		t.Errorf("gawk must be pinned to @5.3, got base = %v", base)
 	}
+	// bison is required so autotools packages that ship a .y grammar (gettext's
+	// plural.y) can regenerate the .c during the build (ylwrap → bison).
+	if !contains(base, "gnu.org/bison") {
+		t.Errorf("base toolchain must include gnu.org/bison, got %v", base)
+	}
 	if specProject("gnu.org/gawk@5.3") != "gnu.org/gawk" {
 		t.Errorf("specProject should strip @5.3 for dedup")
 	}
