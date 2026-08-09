@@ -123,6 +123,15 @@ func TestBaseToolchainAndEvalDeps(t *testing.T) {
 	if len(base) == 0 || !contains(base, "gnu.org/autoconf") || !contains(base, "gnu.org/texinfo") {
 		t.Errorf("base toolchain = %v", base)
 	}
+	// gawk is pinned to 5.3 (5.4.1 regressed autotools config-header generation,
+	// e.g. libpng's pnglibconf drops PNG_SETJMP_SUPPORTED). Guard against a revert
+	// to the bare/latest form, and confirm it still dedups by bare project.
+	if contains(base, "gnu.org/gawk") || !contains(base, "gnu.org/gawk@5.3") {
+		t.Errorf("gawk must be pinned to @5.3, got base = %v", base)
+	}
+	if specProject("gnu.org/gawk@5.3") != "gnu.org/gawk" {
+		t.Errorf("specProject should strip @5.3 for dedup")
+	}
 	// EvalDeps = base + runtime + build, deduped by project, sorted
 	got := EvalDeps(
 		map[string]any{"openssl.org": "^1.1"},

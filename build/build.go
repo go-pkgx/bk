@@ -158,7 +158,14 @@ func BaseToolchain() []string {
 	return []string{
 		"gnu.org/autoconf", "gnu.org/automake", "gnu.org/libtool", "gnu.org/m4",
 		"gnu.org/make", "gnu.org/gettext", "gnu.org/texinfo", "perl.org",
-		"gnu.org/sed", "gnu.org/coreutils", "gnu.org/grep", "gnu.org/gawk",
+		"gnu.org/sed", "gnu.org/coreutils", "gnu.org/grep",
+		// Pin gawk to 5.3: gawk 5.4.1 has a regression that silently mishandles
+		// the option-resolution scripts autotools packages use to generate config
+		// headers — e.g. libpng's pnglibconf generation drops PNG_SETJMP_SUPPORTED,
+		// which then breaks the build (isolated: gawk 5.2.x and 5.3.2 keep it, 5.4.1
+		// drops it under any gcc, in every awk mode). 5.3.2 is the newest gawk with
+		// a working pkgx bottle; relax when a later 5.4.x fixes the regression.
+		"gnu.org/gawk@5.3",
 		"freedesktop.org/pkg-config",
 	}
 }
