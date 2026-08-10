@@ -83,6 +83,28 @@ func Fetch(url, destDir string, stripComponents int) error {
 	}
 }
 
+// ExtractTarGzFile extracts the local gzip-compressed tar at src into destDir,
+// stripping strip leading path components (like `tar --strip-components=N`). It
+// reuses the same hardened extractor as Fetch, so absolute or dest-escaping
+// entries are rejected rather than written. bkpyvenv's poetry seal uses it to
+// unpack a freshly built sdist into the in-project venv's site-packages.
+func ExtractTarGzFile(src, destDir string, strip int) error {
+	f, err := osOpen(src)
+	if err != nil {
+		return fmt.Errorf("fetch: open %s: %w", src, err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("fetch: read gzip from %s: %w", src, err)
+	}
+	defer gz.Close()
+	if err := osMkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("fetch: create %s: %w", destDir, err)
+	}
+	return extractTar(tar.NewReader(gz), destDir, strip)
+}
+
 // FetchGit shallow-clones ref of repoURL into destDir with go-git's pure-Go
 // clone — NO `git` binary dependency. `git clone --branch <ref>` accepts either
 // a tag or a branch, so try the ref as a tag first, then as a branch (cleaning

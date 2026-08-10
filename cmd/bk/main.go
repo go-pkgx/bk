@@ -26,8 +26,12 @@ func main() {
 	// libexec dir as symlinks named after brewkit shims. When a recipe execs one
 	// (e.g. `fix-shebangs.ts bin/*`), argv[0] is the symlink path, so its
 	// basename selects the pure-Go helper — no shell interpreter is involved.
-	if filepath.Base(os.Args[0]) == "fix-shebangs.ts" {
+	switch filepath.Base(os.Args[0]) {
+	case "fix-shebangs.ts":
 		osExit(fixShebangs(os.Args[1:], os.Stderr))
+		return
+	case "bkpyvenv":
+		osExit(bkpyvenv(os.Args[1:], os.Stderr))
 		return
 	}
 	osExit(run(os.Args[1:], os.Stdout, os.Stderr))

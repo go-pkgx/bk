@@ -22,6 +22,7 @@ var (
 	gitPlainClone = gogit.PlainClone
 	osRemoveAll   = os.RemoveAll
 	osMkdirAll    = os.MkdirAll
+	osOpen        = os.Open
 	osSymlink     = os.Symlink
 	osOpenFile    = os.OpenFile
 	ioCopy        = io.Copy
