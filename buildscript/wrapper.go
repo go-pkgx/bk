@@ -99,17 +99,23 @@ func tmpdirLine(host target.Target) string {
 // target gets none (PEs have no rpath and mingw rejects -pie).
 func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils bool) []string {
 	var out []string
-	ldflags := ""
+	var ld []string
 	switch tgt.Platform {
 	case "darwin":
-		ldflags = "-Wl,-rpath," + pkgxDir
+		ld = append(ld, "-Wl,-rpath,"+pkgxDir)
 	case "linux":
+		// x86-64 needs -pie explicitly (aarch64 links PIE by default). Both arches
+		// get an absolute -Wl,-rpath,$PKGX_DIR so the linker emits a DT_RUNPATH
+		// *slot* the fixup pass can later rewrite $ORIGIN-relative. A literal
+		// "$ORIGIN" here would be mangled by shell/make re-expansion, so we pass
+		// the absolute PKGX_DIR and let fixup/rpath.go relocate it.
 		if tgt.Arch == "x86-64" {
-			ldflags = "-pie"
+			ld = append(ld, "-pie")
 		}
+		ld = append(ld, "-Wl,-rpath,"+pkgxDir)
 	}
-	if ldflags != "" {
-		out = append(out, `export LDFLAGS="`+ldflags+` $LDFLAGS"`)
+	if len(ld) > 0 {
+		out = append(out, `export LDFLAGS="`+strings.Join(ld, " ")+` $LDFLAGS"`)
 	}
 	if tgt.Platform == "linux" {
 		// Relax the C23 hard errors that gcc-14 / clang-16 turned on by default

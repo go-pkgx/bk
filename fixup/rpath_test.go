@@ -276,6 +276,38 @@ func TestFixRpathsOrchestrator(t *testing.T) {
 	}
 }
 
+func TestFixRpathsAddsOwnLib(t *testing.T) {
+	// The package's own lib dir is added $ORIGIN-relative even when the input
+	// RUNPATH does not already reference it: a bin/ ELF gets $ORIGIN/../lib and a
+	// lib/ ELF gets $ORIGIN/. — so a FROM-scratch bottle finds its sibling libs
+	// without LD_LIBRARY_PATH.
+	prefix := filepath.Join(t.TempDir(), "acme.org", "tool", "v1.0.0")
+	os.MkdirAll(filepath.Join(prefix, "bin"), 0o755)
+	os.MkdirAll(filepath.Join(prefix, "lib"), 0o755)
+	// An initial RUNPATH that keeps a $ORIGIN entry but does NOT mention …/lib.
+	// The in-place rewrite budget is the ORIGINAL string length, so a dropped
+	// foreign tail provides room for the (added) own-lib entry.
+	initial := "$ORIGIN/keepme:/foreign/" + strings.Repeat("x", 60)
+	src := buildELF64LE(t, initial, "libc.so.6", len(initial))
+	data, _ := os.ReadFile(src)
+	binExe := filepath.Join(prefix, "bin", "tool")
+	libExe := filepath.Join(prefix, "lib", "libtool.so.1")
+	os.WriteFile(binExe, data, 0o755)
+	os.WriteFile(libExe, data, 0o755)
+
+	if err := FixUp(Options{Prefix: prefix, Platform: "linux", Log: func(string) {}}); err != nil {
+		t.Fatal(err)
+	}
+	binRP, _ := ReadRunpath(binExe)
+	if binRP != "$ORIGIN/keepme:$ORIGIN/../lib" {
+		t.Errorf("bin/ own-lib rpath = %q, want $ORIGIN/keepme:$ORIGIN/../lib", binRP)
+	}
+	libRP, _ := ReadRunpath(libExe)
+	if libRP != "$ORIGIN/keepme:$ORIGIN/." {
+		t.Errorf("lib/ own-lib rpath = %q, want $ORIGIN/keepme:$ORIGIN/.", libRP)
+	}
+}
+
 func TestFixRpathsSkipsAndDarwin(t *testing.T) {
 	prefix := t.TempDir()
 	os.MkdirAll(filepath.Join(prefix, "bin"), 0o755)

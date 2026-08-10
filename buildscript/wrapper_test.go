@@ -30,7 +30,7 @@ func TestWrapLinux(t *testing.T) {
 		`export SRCROOT="/bk/build"`,
 		`export TMPDIR="$HOME/tmp"; mkdir -p "$TMPDIR"`,
 		"export FORCE_UNSAFE_CONFIGURE=1",
-		`export LDFLAGS="-pie $LDFLAGS"`,
+		`export LDFLAGS="-pie -Wl,-rpath,/opt/pkgx $LDFLAGS"`,
 		`export CFLAGS="-fPIC -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion $CFLAGS"`,
 		`export CXXFLAGS="-fPIC $CXXFLAGS"`,
 		"env -u GH_TOKEN -u GITHUB_TOKEN",
@@ -42,8 +42,9 @@ func TestWrapLinux(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", w, s)
 		}
 	}
-	// no darwin/windows-only bits
-	if strings.Contains(s, "MACOSX_DEPLOYMENT_TARGET") || strings.Contains(s, "rpath") {
+	// linux gets an rpath slot (relocated $ORIGIN-relative by fixup) but no
+	// darwin-only MACOSX_DEPLOYMENT_TARGET.
+	if strings.Contains(s, "MACOSX_DEPLOYMENT_TARGET") {
 		t.Error("linux script has darwin flags")
 	}
 }
@@ -59,6 +60,10 @@ func TestWrapLinuxArm64Flags(t *testing.T) {
 	})
 	if !strings.Contains(s, `export CFLAGS="-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion $CFLAGS"`) {
 		t.Errorf("arm64 CFLAGS wrong:\n%s", s)
+	}
+	// aarch64 links PIE by default: rpath slot, but no -pie / -fPIC / CXXFLAGS.
+	if !strings.Contains(s, `export LDFLAGS="-Wl,-rpath,/opt/pkgx $LDFLAGS"`) {
+		t.Errorf("arm64 LDFLAGS should carry the rpath slot only:\n%s", s)
 	}
 	if strings.Contains(s, "-fPIC") || strings.Contains(s, "-pie") || strings.Contains(s, "CXXFLAGS") {
 		t.Errorf("arm64 got x86-64-only flags:\n%s", s)

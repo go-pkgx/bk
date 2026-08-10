@@ -111,9 +111,10 @@ func TestSetRunpathDataError(t *testing.T) {
 	}
 }
 
-func TestRewriteRunpathEmptyResult(t *testing.T) {
+func TestRewriteRunpathOwnLibOnly(t *testing.T) {
 	// an ELF whose only RUNPATH entry is a foreign abs path (dropped) with no
-	// deps yields an empty rpath set → rewriteRunpath returns early (no write).
+	// deps still gets the package's own $ORIGIN/../lib written in — every dynamic
+	// ELF ends up with at least its sibling-lib reference.
 	prefix := filepath.Join(t.TempDir(), "acme.org", "tool", "v1.0.0")
 	os.MkdirAll(filepath.Join(prefix, "bin"), 0o755)
 	src := buildELF64LE(t, "/foreign/only/path", "libc.so.6", 32)
@@ -123,9 +124,9 @@ func TestRewriteRunpathEmptyResult(t *testing.T) {
 	if err := FixUp(Options{Prefix: prefix, Platform: "linux"}); err != nil {
 		t.Fatal(err)
 	}
-	// unchanged: still the foreign path (nothing was rewritten)
-	if rp, _ := ReadRunpath(exe); rp != "/foreign/only/path" {
-		t.Errorf("expected untouched runpath, got %q", rp)
+	// foreign path dropped, own-lib added
+	if rp, _ := ReadRunpath(exe); rp != "$ORIGIN/../lib" {
+		t.Errorf("expected own-lib rpath, got %q", rp)
 	}
 }
 

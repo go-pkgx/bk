@@ -206,11 +206,13 @@ func rewriteRunpath(exe string, opts Options) error {
 			}
 		}
 	}
+	// Always reference the package's OWN lib dir $ORIGIN-relative, so a bottle
+	// binary finds its sibling shared libs (…/lib) from a FROM-scratch image with
+	// no LD_LIBRARY_PATH. From bin/ this is $ORIGIN/../lib; from lib/ itself it is
+	// $ORIGIN/. — both resolve to the package lib dir. Deduped if already present.
+	add(originRel(filepath.Join(opts.Prefix, "lib"), exeDir))
 	for _, dep := range opts.DepPaths {
 		add(originRel(transformRpath(dep, projectDir), exeDir))
-	}
-	if len(rpaths) == 0 {
-		return nil
 	}
 	err := SetRunpath(exe, strings.Join(rpaths, ":"))
 	if errors.Is(err, ErrNoRunpath) || errors.Is(err, ErrNoSpace) {
