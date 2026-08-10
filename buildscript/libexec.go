@@ -13,8 +13,11 @@ import (
 // exec these by filename, e.g. `fix-shebangs.ts bin/*`. It is the single place
 // to add further brewkit libexec helpers bk chooses to satisfy.
 var shims = map[string]struct{}{
-	"fix-shebangs.ts": {},
-	"bkpyvenv":        {},
+	"fix-shebangs.ts":        {},
+	"bkpyvenv":               {},
+	"python-venv.sh":         {},
+	"python-venv.py":         {},
+	"python-venv-stubber.sh": {},
 }
 
 // seams so WriteLibexec's error branches are testable.
