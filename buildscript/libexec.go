@@ -14,6 +14,7 @@ import (
 // to add further brewkit libexec helpers bk chooses to satisfy.
 var shims = map[string]struct{}{
 	"fix-shebangs.ts": {},
+	"bkpyvenv":        {},
 }
 
 // seams so WriteLibexec's error branches are testable.

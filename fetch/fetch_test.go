@@ -28,6 +28,7 @@ func restoreSeams(t *testing.T) {
 		gitPlainClone = gogit.PlainClone
 		osRemoveAll = os.RemoveAll
 		osMkdirAll = os.MkdirAll
+		osOpen = os.Open
 		osSymlink = os.Symlink
 		osOpenFile = os.OpenFile
 		ioCopy = io.Copy
@@ -633,5 +634,49 @@ func TestFetchGitError(t *testing.T) {
 	err := FetchGit("https://x/r.git", "v1", "/tmp/dest")
 	if err == nil || !strings.Contains(err.Error(), "clone failed") {
 		t.Fatalf("err = %v; want clone failed", err)
+	}
+}
+
+// TestExtractTarGzFile covers the local-sdist extractor: the happy strip-1 path
+// and each error branch (open, gzip, dest mkdir).
+func TestExtractTarGzFile(t *testing.T) {
+	restoreSeams(t)
+
+	// happy: a gzip'd tar with a top dir stripped away → file lands under dest.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "pkg.tar.gz")
+	data := gzWrap(t, buildTar(t, []tarEntry{
+		{name: "pkg-1.0/", typ: tar.TypeDir, mode: 0o755},
+		{name: "pkg-1.0/mod.py", typ: tar.TypeReg, mode: 0o644, body: "print(1)\n"},
+	}))
+	if err := os.WriteFile(src, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "out")
+	if err := ExtractTarGzFile(src, dest, 1); err != nil {
+		t.Fatalf("ExtractTarGzFile: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "mod.py")); err != nil || string(b) != "print(1)\n" {
+		t.Errorf("extracted = %q, %v", b, err)
+	}
+
+	// open error: missing file.
+	if err := ExtractTarGzFile(filepath.Join(dir, "nope.tar.gz"), dest, 1); err == nil {
+		t.Error("expected open error")
+	}
+
+	// gzip error: not a gzip stream.
+	bad := filepath.Join(dir, "bad.tar.gz")
+	if err := os.WriteFile(bad, []byte("not gzip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExtractTarGzFile(bad, dest, 1); err == nil {
+		t.Error("expected gzip error")
+	}
+
+	// mkdir(dest) error via the seam.
+	osMkdirAll = failMkdirOn("out2")
+	if err := ExtractTarGzFile(src, filepath.Join(dir, "out2"), 1); err == nil {
+		t.Error("expected dest-mkdir error")
 	}
 }
