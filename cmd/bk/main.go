@@ -33,6 +33,15 @@ func main() {
 	case "bkpyvenv":
 		osExit(bkpyvenv(os.Args[1:], os.Stderr))
 		return
+	case "python-venv.sh":
+		osExit(pythonVenvSh(os.Args[1:], os.Stderr))
+		return
+	case "python-venv.py":
+		osExit(pythonVenvPy(os.Args[1:], os.Stderr))
+		return
+	case "python-venv-stubber.sh":
+		osExit(pythonVenvStubber(os.Args[1:], os.Stderr))
+		return
 	}
 	osExit(run(os.Args[1:], os.Stdout, os.Stderr))
 }

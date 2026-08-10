@@ -43,10 +43,11 @@ func TestWriteLibexecHappy(t *testing.T) {
 			t.Errorf("shim %q missing: %v", name, err)
 		}
 	}
-	// the two brewkit helpers bk satisfies must both be present: fix-shebangs.ts
-	// (relocatable shebangs) and bkpyvenv (python-venv stage/seal). A regression
-	// dropping either would break a whole class of recipes.
-	for _, want := range []string{"fix-shebangs.ts", "bkpyvenv"} {
+	// every brewkit helper bk satisfies must be present: fix-shebangs.ts
+	// (relocatable shebangs), bkpyvenv (new python-venv stage/seal) and the old
+	// python-venv.{sh,py}/stubber family. A regression dropping any would break a
+	// whole class of recipes.
+	for _, want := range []string{"fix-shebangs.ts", "bkpyvenv", "python-venv.sh", "python-venv.py", "python-venv-stubber.sh"} {
 		if _, ok := shims[want]; !ok {
 			t.Errorf("shim set missing %q", want)
 		}

@@ -20,11 +20,11 @@ var errBoomPy = errors.New("boom")
 // restores them, so a subtest can override freely: `defer restorePy(t)()`.
 func restorePy(t *testing.T) func() {
 	t.Helper()
-	getwd, run, output := pyGetwd, pyRun, pyOutput
+	getwd, run, output, runEnv := pyGetwd, pyRun, pyOutput, pyRunEnv
 	plainInit, worktree, commit, head, createTag := ggPlainInit, ggWorktree, ggCommit, ggHead, ggCreateTag
 	gitInitTag, now, glob, goos := pyGitInitTag, pyNow, pyGlob, pyGOOS
 	return func() {
-		pyGetwd, pyRun, pyOutput = getwd, run, output
+		pyGetwd, pyRun, pyOutput, pyRunEnv = getwd, run, output, runEnv
 		ggPlainInit, ggWorktree, ggCommit, ggHead, ggCreateTag = plainInit, worktree, commit, head, createTag
 		pyGitInitTag, pyNow, pyGlob, pyGOOS = gitInitTag, now, glob, goos
 	}
