@@ -8,9 +8,10 @@
 // build the version MUST come from the recipe's own `versions:` field so it
 // matches the distributable URL, which interpolates {{version.raw}}.
 //
-// The logic mirrors libpkgx's usePantry version handling: either list a
-// GitHub repo's git tags, or GET an upstream listing and regex-match version
-// strings, then strip/ignore/select via the loose pkgx-compatible semver.
+// The logic mirrors libpkgx's usePantry version handling: list a GitHub repo's
+// git tags or its REST Release names, or GET an upstream listing and
+// regex-match version strings, then strip/ignore/select via the loose
+// pkgx-compatible semver.
 package versions
 
 import (
@@ -18,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -74,10 +76,60 @@ var (
 		return tags, nil
 	}
 
+	// ghListReleases lists a GitHub repo's Release entries (their human `name`
+	// and underlying `tag_name`) via the REST Releases API. It exists because a
+	// repo's git TAGS are often not semver-parseable while its RELEASE names are:
+	// curl tags releases `curl-8_21_0` (space/underscore mess after a strip) but
+	// names the release `8.21.0`. Recipes select this source with the
+	// `github: owner/repo/releases` form; gatherCandidates routes here then.
+	//
+	// The GitHub REST API rate-limits UNAUTHENTICATED requests to 60/h — the very
+	// reason gitLsRemoteTags speaks go-git instead — so when GITHUB_TOKEN is set
+	// the request carries `Authorization: Bearer <token>` (plus the recommended
+	// `Accept: application/vnd.github+json`). Only page 1 is fetched
+	// (per_page=100 = the 100 newest releases, newest-first), which is ample for
+	// latest-version resolution.
+	ghListReleases = func(apiURL string) ([]ghRelease, error) {
+		req, err := http.NewRequest(http.MethodGet, apiURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("versions: releases %s: %w", apiURL, err)
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		if tok := osGetenv("GITHUB_TOKEN"); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		resp, err := httpDo(req)
+		if err != nil {
+			return nil, fmt.Errorf("versions: releases %s: %w", apiURL, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("versions: releases %s: %s", apiURL, resp.Status)
+		}
+		body, err := ioReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("versions: read %s: %w", apiURL, err)
+		}
+		var rels []ghRelease
+		if err := json.Unmarshal(body, &rels); err != nil {
+			return nil, fmt.Errorf("versions: releases %s: %w", apiURL, err)
+		}
+		return rels, nil
+	}
+
 	// Low-level stdlib references (no body of their own to cover here).
 	httpGetRaw = http.Get
 	ioReadAll  = io.ReadAll
+	httpDo     = http.DefaultClient.Do
+	osGetenv   = os.Getenv
 )
+
+// ghRelease is the slice of a GitHub Releases API entry bk needs: the human
+// display `name` and the underlying git `tag_name` it points at.
+type ghRelease struct {
+	Name    string `json:"name"`
+	TagName string `json:"tag_name"`
+}
 
 // Resolve returns both the version string (as it appears upstream, for
 // {{version.raw}}) and the raw upstream git tag it was resolved from (for
@@ -140,16 +192,44 @@ func gatherCandidates(m map[string]any) (candidates []string, strips, ignores []
 	switch {
 	case m["github"] != nil:
 		gh, _ := m["github"].(string)
-		repoURL, err := githubRepoURL(gh)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		tags, err := gitLsRemoteTags(repoURL)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		for _, t := range tags {
-			candidates = append(candidates, strings.TrimPrefix(t, "refs/tags/"))
+		// The github spec routes to one of two upstream listings: bare
+		// owner/repo (or .../tags) lists git TAGS via go-git, while
+		// owner/repo/releases lists Release entries via the REST API (release
+		// `name`, or `tag_name` for the .../releases/tags form).
+		mode := githubMode(gh)
+		if mode == ghTags {
+			repoURL, err := githubRepoURL(gh)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			tags, err := gitLsRemoteTags(repoURL)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			for _, t := range tags {
+				candidates = append(candidates, strings.TrimPrefix(t, "refs/tags/"))
+			}
+		} else {
+			owner, repo, err := githubOwnerRepo(gh)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			rels, err := ghListReleases(githubReleasesURL(owner, repo))
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			useTag := mode == ghReleaseTags
+			for _, r := range rels {
+				name := r.Name
+				if useTag {
+					name = r.TagName
+				} else if name == "" {
+					// A release with an empty display name falls back to its
+					// git tag_name (mirrors brewkit's release-name handling).
+					name = r.TagName
+				}
+				candidates = append(candidates, name)
+			}
 		}
 	case m["gitlab"] != nil:
 		gl, _ := m["gitlab"].(string)
@@ -363,16 +443,60 @@ func dropVPrefix(s string) string {
 	return s
 }
 
-// githubRepoURL derives https://github.com/<owner>/<repo> from a `github:`
-// value, accepting the bare owner/repo form and the owner/repo/tags,
-// owner/repo/releases and owner/repo/releases/tags suffixes (all mean "list
-// git tags").
-func githubRepoURL(gh string) (string, error) {
+// githubListMode classifies a `github:` spec by which upstream listing it
+// names: git tags, Release display names, or Release tag_names.
+type githubListMode int
+
+const (
+	ghTags         githubListMode = iota // owner/repo or owner/repo/tags
+	ghReleaseNames                       // owner/repo/releases
+	ghReleaseTags                        // owner/repo/releases/tags
+)
+
+// githubMode reports which upstream listing a `github:` spec selects, matching
+// brewkit's semantics: a bare owner/repo (or a decorative .../tags suffix)
+// lists git tags; a /releases path component lists the REST Releases API's
+// display names; /releases/tags lists those releases' tag_names. Only the
+// suffix after owner/repo is inspected, so a repo literally named "releases"
+// still lists tags.
+func githubMode(gh string) githubListMode {
+	parts := strings.Split(gh, "/")
+	for i := 2; i < len(parts); i++ {
+		if parts[i] == "releases" {
+			if i+1 < len(parts) && parts[i+1] == "tags" {
+				return ghReleaseTags
+			}
+			return ghReleaseNames
+		}
+	}
+	return ghTags
+}
+
+// githubOwnerRepo extracts the owner and repo from a `github:` value, accepting
+// the bare owner/repo form and any of the owner/repo/tags, owner/repo/releases
+// and owner/repo/releases/tags suffixes.
+func githubOwnerRepo(gh string) (owner, repo string, err error) {
 	parts := strings.Split(gh, "/")
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", fmt.Errorf("versions: invalid github spec %q", gh)
+		return "", "", fmt.Errorf("versions: invalid github spec %q", gh)
 	}
-	return "https://github.com/" + parts[0] + "/" + parts[1], nil
+	return parts[0], parts[1], nil
+}
+
+// githubRepoURL derives the git clone URL https://github.com/<owner>/<repo>
+// from a `github:` value (used for the tag-listing path via gitLsRemoteTags).
+func githubRepoURL(gh string) (string, error) {
+	owner, repo, err := githubOwnerRepo(gh)
+	if err != nil {
+		return "", err
+	}
+	return "https://github.com/" + owner + "/" + repo, nil
+}
+
+// githubReleasesURL builds the REST Releases API URL for a repo, capped at the
+// 100 newest releases (page 1) — ample for latest-version resolution.
+func githubReleasesURL(owner, repo string) string {
+	return "https://api.github.com/repos/" + owner + "/" + repo + "/releases?per_page=100"
 }
 
 // gitlabRepoURL turns a pantry `gitlab:` spec into a clone URL. The spec is

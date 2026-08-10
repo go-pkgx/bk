@@ -17,8 +17,10 @@ var errBoom = errors.New("boom")
 func saveSeams(t *testing.T) {
 	t.Helper()
 	hg, glt, hgr, ira := httpGet, gitLsRemoteTags, httpGetRaw, ioReadAll
+	glr, hd, og := ghListReleases, httpDo, osGetenv
 	t.Cleanup(func() {
 		httpGet, gitLsRemoteTags, httpGetRaw, ioReadAll = hg, glt, hgr, ira
+		ghListReleases, httpDo, osGetenv = glr, hd, og
 	})
 }
 
@@ -193,13 +195,19 @@ func TestResolveGithubDropsVPrefix(t *testing.T) {
 	}
 }
 
-// TestResolveGithubSuffixForms accepts every "list tags" spelling.
+// TestResolveGithubSuffixForms accepts every "list tags" spelling: the bare
+// owner/repo form and a decorative /tags suffix both list git tags.
 func TestResolveGithubSuffixForms(t *testing.T) {
 	saveSeams(t)
 	gitLsRemoteTags = func(string) ([]string, error) {
 		return []string{"refs/tags/1.0.0", "refs/tags/1.1.0"}, nil
 	}
-	for _, gh := range []string{"o/r", "o/r/tags", "o/r/releases", "o/r/releases/tags"} {
+	// The releases forms MUST NOT reach the git-tag seam.
+	ghListReleases = func(string) ([]ghRelease, error) {
+		t.Fatalf("tags form must not call ghListReleases")
+		return nil, nil
+	}
+	for _, gh := range []string{"o/r", "o/r/tags"} {
 		v, tag, err := Resolve(map[string]any{"github": gh}, "*")
 		if err != nil || v != "1.1.0" {
 			t.Errorf("%s: Resolve = %q, %v; want 1.1.0", gh, v, err)
@@ -207,6 +215,104 @@ func TestResolveGithubSuffixForms(t *testing.T) {
 		if tag != "1.1.0" {
 			t.Errorf("%s: tag = %q; want 1.1.0", gh, tag)
 		}
+	}
+}
+
+// TestGithubMode pins the tags-vs-releases-vs-releases/tags routing rule.
+func TestGithubMode(t *testing.T) {
+	cases := map[string]githubListMode{
+		"o/r":               ghTags,
+		"o/r/tags":          ghTags,
+		"o/r/releases":      ghReleaseNames,
+		"o/r/releases/tags": ghReleaseTags,
+		// a repo literally named "releases" still lists tags (suffix-only scan).
+		"o/releases": ghTags,
+	}
+	for gh, want := range cases {
+		if got := githubMode(gh); got != want {
+			t.Errorf("githubMode(%q) = %d; want %d", gh, got, want)
+		}
+	}
+}
+
+// TestResolveGithubReleases proves the curl-style case: git tags are messy but
+// Release NAMES are clean semver, so `github: owner/repo/releases` resolves via
+// release names. The strip `/^curl /` only affects the legacy "curl 7.88.0"
+// name; an empty-name release falls back to its tag_name.
+func TestResolveGithubReleases(t *testing.T) {
+	saveSeams(t)
+	var gotURL string
+	// If git tags were (wrongly) consulted they'd be unparseable and fail.
+	gitLsRemoteTags = func(string) ([]string, error) {
+		return []string{"curl-8_21_0", "tiny-curl-8_4_0", "rc-8_22_0-1"}, nil
+	}
+	ghListReleases = func(apiURL string) ([]ghRelease, error) {
+		gotURL = apiURL
+		return []ghRelease{
+			{Name: "8.21.0", TagName: "curl-8_21_0"},
+			{Name: "8.20", TagName: "curl-8_20_0"},
+			{Name: "curl 7.88.0", TagName: "curl-7_88_0"},
+			{Name: "", TagName: "v6.0.0"}, // empty name → falls back to tag_name
+		}, nil
+	}
+	spec := map[string]any{"github": "curl/curl/releases", "strip": "/^curl /"}
+	// Latest wins: 8.21.0.
+	v, tag, err := Resolve(spec, "*")
+	if err != nil || v != "8.21.0" || tag != "8.21.0" {
+		t.Fatalf("Resolve = %q/%q %v; want 8.21.0/8.21.0", v, tag, err)
+	}
+	if gotURL != "https://api.github.com/repos/curl/curl/releases?per_page=100" {
+		t.Errorf("releases URL = %q", gotURL)
+	}
+	// The full candidate set resolves as expected, incl. the space-stripped
+	// legacy name and the empty-name→tag_name fallback (v-prefix dropped).
+	got, err := List(spec)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var vs []string
+	for _, e := range got {
+		vs = append(vs, e.Version)
+	}
+	want := []string{"8.21.0", "8.20", "7.88.0", "6.0.0"}
+	if !reflect.DeepEqual(vs, want) {
+		t.Fatalf("List versions = %v; want %v", vs, want)
+	}
+	// A constraint picks the newest satisfying it, not the overall max.
+	if v, _, err := Resolve(spec, "^7"); err != nil || v != "7.88.0" {
+		t.Errorf("constrained = %q %v; want 7.88.0", v, err)
+	}
+}
+
+// TestResolveGithubReleaseTags proves the /releases/tags form lists each
+// release's tag_name (not its display name).
+func TestResolveGithubReleaseTags(t *testing.T) {
+	saveSeams(t)
+	ghListReleases = func(string) ([]ghRelease, error) {
+		return []ghRelease{
+			{Name: "8.21.0", TagName: "v8.21.0"},
+			{Name: "8.20.0", TagName: "v8.20.0"},
+		}, nil
+	}
+	// Uses tag_name "v8.21.0" → v dropped → 8.21.0, tag stays v8.21.0.
+	v, tag, err := Resolve(map[string]any{"github": "o/r/releases/tags"}, "*")
+	if err != nil || v != "8.21.0" || tag != "v8.21.0" {
+		t.Fatalf("Resolve = %q/%q %v; want 8.21.0/v8.21.0", v, tag, err)
+	}
+}
+
+// TestResolveGithubReleasesErrors covers the releases-path error branches:
+// an invalid owner/repo and a failing releases listing.
+func TestResolveGithubReleasesErrors(t *testing.T) {
+	saveSeams(t)
+	// owner/repo validation failure on the releases path.
+	if _, _, err := Resolve(map[string]any{"github": "owner//releases"}, "*"); err == nil {
+		t.Error("invalid owner/repo on releases path: want error")
+	}
+	// a failing releases listing propagates.
+	ghListReleases = func(string) ([]ghRelease, error) { return nil, errBoom }
+	if _, _, err := Resolve(map[string]any{"github": "o/r/releases"}, "*"); err == nil {
+		t.Error("releases listing error: want propagation")
 	}
 }
 
@@ -565,5 +671,88 @@ func TestGitLsRemoteTagsSeam(t *testing.T) {
 	defer bad.Close()
 	if _, err := gitLsRemoteTags(bad.URL); err == nil {
 		t.Error("bad server: want error")
+	}
+}
+
+// TestGhListReleasesSeam covers the default ghListReleases body: header/auth
+// wiring against a real httptest server plus every error branch. It mirrors
+// TestGitLsRemoteTagsSeam (real server for the happy path) and TestHTTPGetSeam
+// (seam overrides for the transport/read errors).
+func TestGhListReleasesSeam(t *testing.T) {
+	saveSeams(t)
+
+	// success WITH a token: the Authorization + Accept headers are set and the
+	// JSON array of {name,tag_name} is parsed.
+	var gotAuth, gotAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotAccept = r.Header.Get("Authorization"), r.Header.Get("Accept")
+		_, _ = io.WriteString(w, `[{"name":"8.21.0","tag_name":"curl-8_21_0"},{"name":"","tag_name":"v8.20.0"}]`)
+	}))
+	defer srv.Close()
+	osGetenv = func(k string) string {
+		if k == "GITHUB_TOKEN" {
+			return "sekret"
+		}
+		return ""
+	}
+	rels, err := ghListReleases(srv.URL)
+	if err != nil || len(rels) != 2 || rels[0].Name != "8.21.0" || rels[1].TagName != "v8.20.0" {
+		t.Fatalf("releases = %v %v", rels, err)
+	}
+	if gotAuth != "Bearer sekret" {
+		t.Errorf("Authorization = %q; want Bearer sekret", gotAuth)
+	}
+	if gotAccept != "application/vnd.github+json" {
+		t.Errorf("Accept = %q", gotAccept)
+	}
+
+	// success WITHOUT a token: no Authorization header is sent.
+	osGetenv = func(string) string { return "" }
+	if _, err := ghListReleases(srv.URL); err != nil {
+		t.Fatalf("no-token releases: %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization sent without token: %q", gotAuth)
+	}
+
+	// NewRequest error: an unparseable URL.
+	if _, err := ghListReleases("://bad"); err == nil {
+		t.Error("bad URL: want NewRequest error")
+	}
+
+	// transport (httpDo) error propagates.
+	httpDo = func(*http.Request) (*http.Response, error) { return nil, errBoom }
+	if _, err := ghListReleases("https://api.github.com/x"); err == nil {
+		t.Error("httpDo error: want error")
+	}
+
+	// non-200 status → error.
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "nope", http.StatusForbidden)
+	}))
+	defer bad.Close()
+	httpDo = http.DefaultClient.Do
+	if _, err := ghListReleases(bad.URL); err == nil {
+		t.Error("403: want error")
+	}
+
+	// read error via the ioReadAll seam (200 body, failing read).
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	defer ok.Close()
+	ioReadAll = func(io.Reader) ([]byte, error) { return nil, errBoom }
+	if _, err := ghListReleases(ok.URL); err == nil {
+		t.Error("read error: want error")
+	}
+	ioReadAll = io.ReadAll
+
+	// malformed JSON → parse error.
+	junk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `not json`)
+	}))
+	defer junk.Close()
+	if _, err := ghListReleases(junk.URL); err == nil {
+		t.Error("bad JSON: want parse error")
 	}
 }
