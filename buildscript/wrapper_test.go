@@ -140,3 +140,79 @@ func TestWrapHasCompilerAndDefaults(t *testing.T) {
 		t.Errorf("no-dep linux should still eval default llvm.org via `pkgx`: %s", s3)
 	}
 }
+
+func linuxArm64Tgt() target.Target { return target.Target{Platform: "linux", Arch: "aarch64"} }
+
+func TestWrapLibcPkgxLinuxX86(t *testing.T) {
+	s := Wrap(WrapOptions{
+		UserScript: "make install\n",
+		Deps:       []string{"zlib.net"},
+		Target:     linuxTgt(), Host: linuxTgt(),
+		Home: "/bk/home", SrcRoot: "/bk/build", PkgxDir: "/opt/pkgx",
+		PkgxBin: "/opt/pkgx/bin/pkgx", LibcPkgx: true,
+	})
+	wants := []string{
+		// glibc + kernel-headers + binutils bottles join the eval (headers/crt/libc + ar/ranlib).
+		`"+zlib.net" "+llvm.org" "+gnu.org/glibc" "+kernel.org/linux-headers" "+gnu.org/binutils"`,
+		// build-time resolution of each bottle prefix (noglob-safe subshell glob).
+		`export BK_GLIBC_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/gnu.org/glibc/v[0-9]*/ | sort -V | tail -n1)"`,
+		`export BK_GLIBC_LIB="$(set +f; printf '%s\n' "${BK_GLIBC_PREFIX}"lib/glibc-[0-9]*/ | sort -V | tail -n1)"`,
+		`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]*/ | sort -V | tail -n1)"`,
+		// compiler driver points at the bottle headers (glibc + kernel) / crt / libc + llvm runtime.
+		`--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt --unwindlib=none -fuse-ld=lld`,
+		// PT_INTERP = the bottle's x86-64 loader; DT_RPATH (disable-new-dtags) to it.
+		`-Wl,--dynamic-linker="${BK_GLIBC_LIB}ld-linux-x86-64.so.2" -Wl,-rpath,"$BK_GLIBC_LIB" -Wl,--disable-new-dtags`,
+	}
+	for _, w := range wants {
+		if !strings.Contains(s, w) {
+			t.Errorf("missing %q in:\n%s", w, s)
+		}
+	}
+	// The C23 relax + own-lib rpath still apply alongside the glibc targeting.
+	if !strings.Contains(s, "-Wno-implicit-function-declaration") || !strings.Contains(s, "-Wl,-rpath,/opt/pkgx") {
+		t.Errorf("base linux flags dropped in pkgx-libc mode:\n%s", s)
+	}
+	// CXXFLAGS also carries the sysroot (C++ headers), keeping -fPIC on x86-64.
+	if !strings.Contains(s, `export CXXFLAGS="--sysroot="$BK_GLIBC_PREFIX"`) {
+		t.Errorf("CXXFLAGS missing glibc sysroot:\n%s", s)
+	}
+}
+
+func TestWrapLibcPkgxArm64Loader(t *testing.T) {
+	s := Wrap(WrapOptions{
+		UserScript: "make\n", Target: linuxArm64Tgt(), Host: linuxArm64Tgt(),
+		PkgxDir: "/opt/pkgx", LibcPkgx: true,
+	})
+	if !strings.Contains(s, `ld-linux-aarch64.so.1`) {
+		t.Errorf("arm64 loader wrong:\n%s", s)
+	}
+	if strings.Contains(s, "ld-linux-x86-64") || strings.Contains(s, "-fPIC") {
+		t.Errorf("arm64 script leaked x86-64 flags:\n%s", s)
+	}
+	// arm64 CXXFLAGS carries the sysroot via the non-fPIC branch.
+	if !strings.Contains(s, `export CXXFLAGS="--sysroot="$BK_GLIBC_PREFIX"`) {
+		t.Errorf("arm64 CXXFLAGS missing sysroot:\n%s", s)
+	}
+}
+
+func TestWrapLibcPkgxNonLinuxIgnored(t *testing.T) {
+	// LibcPkgx only affects linux: darwin gets neither the glibc dep nor flags.
+	s := Wrap(WrapOptions{
+		UserScript: "make\n", Target: darwinTgt(), Host: linuxTgt(), LibcPkgx: true,
+	})
+	if strings.Contains(s, "gnu.org/glibc") || strings.Contains(s, "BK_GLIBC") || strings.Contains(s, "--dynamic-linker") {
+		t.Errorf("darwin target must ignore LibcPkgx:\n%s", s)
+	}
+}
+
+func TestGlibcLoader(t *testing.T) {
+	for _, c := range []struct{ arch, want string }{
+		{"x86-64", "ld-linux-x86-64.so.2"},
+		{"aarch64", "ld-linux-aarch64.so.1"},
+		{"arm64", "ld-linux-aarch64.so.1"},
+	} {
+		if got := glibcLoader(c.arch); got != c.want {
+			t.Errorf("glibcLoader(%q)=%q want %q", c.arch, got, c.want)
+		}
+	}
+}

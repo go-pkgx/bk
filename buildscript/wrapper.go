@@ -23,6 +23,14 @@ type WrapOptions struct {
 	BashPath    string        // shebang interpreter (default /bin/bash)
 	HasCompiler bool          // a compiler (llvm.org / gnu.org/gcc) is already a dep
 	HasBinutils bool          // gnu.org/binutils is a dep (darwin AR/RANLIB workaround)
+	// LibcPkgx targets the pkgx gnu.org/glibc bottle instead of the build
+	// container's system glibc (linux only): the output links its crt objects,
+	// libc and dynamic linker from the bottle, so the bottle owes nothing to the
+	// debian build container — the sovereign FROM-scratch end state. Opt-in
+	// (default off); the caller also adds gnu.org/glibc to Deps so the bottle is
+	// present in the eval. C-only for now: the pkgx llvm.org bottle ships no
+	// libc++/libunwind, so C++ recipes still need the system libstdc++.
+	LibcPkgx bool
 }
 
 // Wrap assembles the complete, runnable build script: a sanitized env, the
@@ -60,7 +68,7 @@ func Wrap(o WrapOptions) string {
 	b.WriteString(tmpdirLine(o.Host) + "\n")
 	b.WriteString("if [ -n \"$CI\" ]; then export FORCE_UNSAFE_CONFIGURE=1; fi\n")
 	b.WriteString("mkdir -p $HOME\n")
-	for _, f := range wrapFlags(o.Target, o.PkgxDir, o.HasBinutils) {
+	for _, f := range wrapFlags(o.Target, o.PkgxDir, o.HasBinutils, o.LibcPkgx) {
 		b.WriteString(f + "\n")
 	}
 	b.WriteString("env -u GH_TOKEN -u GITHUB_TOKEN\n\n")
@@ -84,6 +92,18 @@ func (o WrapOptions) depPlus() string {
 	if !o.HasCompiler && o.Target.Platform != "windows" && o.Host.Platform != "darwin" {
 		parts = append(parts, `"+llvm.org"`)
 	}
+	// pkgx-libc mode needs the gnu.org/glibc bottle present in the eval so its
+	// headers/crt/libc/loader are on disk under $PKGX_DIR for wrapFlags to point
+	// the compiler at (linux only). kernel.org/linux-headers supplies the Linux
+	// kernel headers (linux/*.h, asm/*.h) glibc's own headers include — glibc's
+	// recipe depends on it for exactly this reason; the bottle doesn't bundle
+	// them and --sysroot cuts off the container's copy.
+	if o.LibcPkgx && o.Target.Platform == "linux" {
+		// gnu.org/binutils supplies ar/ranlib (the pkgx llvm.org bottle ships
+		// llvm-ar, not a plain `ar`, and the sovereign mode must not fall back to
+		// the container's binutils). Linking still uses lld via -fuse-ld=lld.
+		parts = append(parts, `"+gnu.org/glibc"`, `"+kernel.org/linux-headers"`, `"+gnu.org/binutils"`)
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -95,9 +115,18 @@ func tmpdirLine(host target.Target) string {
 	return `export TMPDIR="$HOME/tmp"; mkdir -p "$TMPDIR"`
 }
 
+// glibcLoader is the arch-specific ELF interpreter (PT_INTERP) filename glibc
+// ships. It lives in the bottle's lib/glibc-<ver>/ dir.
+func glibcLoader(arch string) string {
+	if arch == "aarch64" || arch == "arm64" {
+		return "ld-linux-aarch64.so.1"
+	}
+	return "ld-linux-x86-64.so.2"
+}
+
 // wrapFlags returns the target-keyed compiler/linker FLAGS exports. A windows
 // target gets none (PEs have no rpath and mingw rejects -pie).
-func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils bool) []string {
+func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []string {
 	var out []string
 	var ld []string
 	switch tgt.Platform {
@@ -120,6 +149,35 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils bool) []string {
 		// need; PIE-ness of the final executable is the toolchain default.
 		ld = append(ld, "-Wl,-rpath,"+pkgxDir)
 	}
+
+	// pkgx-libc mode (linux): resolve the gnu.org/glibc bottle in the eval'd
+	// $PKGX_DIR at build time (its version isn't known here, so glob + version-
+	// sort in the shell), then point the compiler driver at its headers, crt
+	// objects, libc and dynamic linker. --rtlib=compiler-rt keeps the runtime on
+	// llvm's builtins (the pkgx llvm.org bottle ships compiler-rt but no libgcc);
+	// --unwindlib=none avoids the libgcc_s unwinder the C toolchain would
+	// otherwise pull (fine for exception-free C — the mode's scope). The result
+	// links its interpreter + libc from the bottle, not the debian container.
+	var glibcCC, glibcLD string
+	if libcPkgx && tgt.Platform == "linux" {
+		// Resolve the newest installed version dir of each bottle. Two hazards:
+		// pkgx creates a symlink literally NAMED "v*" (alongside v2, v2.44,
+		// v2.44.0) which a "v*/" glob would match and — worse — sort -V ranks
+		// LAST, so the chosen value would still contain a wildcard that re-globs
+		// into every version dir when the unquoted CFLAGS reach the linker. The
+		// "v[0-9]*/" pattern skips that symlink and lands on a concrete version
+		// dir (no metacharacters, glob-safe downstream). The `set +f` re-enables
+		// globbing in each subshell in case pkgx's env eval left the shell noglob.
+		out = append(out,
+			`export BK_GLIBC_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/gnu.org/glibc/v[0-9]*/ | sort -V | tail -n1)"`,
+			`export BK_GLIBC_LIB="$(set +f; printf '%s\n' "${BK_GLIBC_PREFIX}"lib/glibc-[0-9]*/ | sort -V | tail -n1)"`,
+			`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]*/ | sort -V | tail -n1)"`,
+		)
+		glibcCC = `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt --unwindlib=none -fuse-ld=lld`
+		glibcLD = `-Wl,--dynamic-linker="${BK_GLIBC_LIB}` + glibcLoader(tgt.Arch) + `" -Wl,-rpath,"$BK_GLIBC_LIB" -Wl,--disable-new-dtags`
+		ld = append(ld, glibcLD)
+	}
+
 	if len(ld) > 0 {
 		out = append(out, `export LDFLAGS="`+strings.Join(ld, " ")+` $LDFLAGS"`)
 	}
@@ -131,9 +189,18 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils bool) []string {
 		// warnings for the mass rebuild, so the toolchain default doesn't gate an
 		// otherwise-buildable recipe. C-only — CXXFLAGS keeps just the PIC flag.
 		cflags := "-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion"
+		if glibcCC != "" {
+			cflags = glibcCC + " " + cflags
+		}
 		if tgt.Arch == "x86-64" {
 			cflags = "-fPIC " + cflags
-			out = append(out, `export CXXFLAGS="-fPIC $CXXFLAGS"`)
+			cxxflags := "-fPIC"
+			if glibcCC != "" {
+				cxxflags = glibcCC + " " + cxxflags
+			}
+			out = append(out, `export CXXFLAGS="`+cxxflags+` $CXXFLAGS"`)
+		} else if glibcCC != "" {
+			out = append(out, `export CXXFLAGS="`+glibcCC+` $CXXFLAGS"`)
 		}
 		out = append(out, `export CFLAGS="`+cflags+` $CFLAGS"`)
 	}

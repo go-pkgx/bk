@@ -41,6 +41,10 @@ type Runner struct {
 	// recipes can reference those files as `props/foo` or via the {{props}}
 	// moustache (pkgx's convention). Empty disables the behaviour.
 	RecipeDir string
+	// LibcMode selects the C library the build links against. "pkgx" targets the
+	// gnu.org/glibc bottle (sovereign FROM-scratch, linux only, C recipes);
+	// anything else (default "") keeps the build container's system glibc.
+	LibcMode string
 }
 
 // Result reports what a build produced.
@@ -160,6 +164,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		UserScript: user, Deps: deps, Target: tgt, Host: host,
 		Home: paths.Home, SrcRoot: paths.Build, PkgxDir: config.PkgxDir(),
 		PkgxBin: r.PkgxBin, BashPath: r.BashPath, BrewkitPath: libexecDir,
+		LibcPkgx: r.LibcMode == "pkgx",
 	})
 	res.ScriptPath = paths.Build + ".sh"
 	if err := osWriteFile(res.ScriptPath, []byte(script), 0o755); err != nil {
