@@ -683,9 +683,9 @@ func TestGhListReleasesSeam(t *testing.T) {
 
 	// success WITH a token: the Authorization + Accept headers are set and the
 	// JSON array of {name,tag_name} is parsed.
-	var gotAuth, gotAccept string
+	var gotAuth, gotAccept, gotUA string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth, gotAccept = r.Header.Get("Authorization"), r.Header.Get("Accept")
+		gotAuth, gotAccept, gotUA = r.Header.Get("Authorization"), r.Header.Get("Accept"), r.Header.Get("User-Agent")
 		_, _ = io.WriteString(w, `[{"name":"8.21.0","tag_name":"curl-8_21_0"},{"name":"","tag_name":"v8.20.0"}]`)
 	}))
 	defer srv.Close()
@@ -704,6 +704,10 @@ func TestGhListReleasesSeam(t *testing.T) {
 	}
 	if gotAccept != "application/vnd.github+json" {
 		t.Errorf("Accept = %q", gotAccept)
+	}
+	// GitHub's REST API requires a User-Agent (403s requests without one).
+	if gotUA != userAgent {
+		t.Errorf("User-Agent = %q; want %q", gotUA, userAgent)
 	}
 
 	// success WITHOUT a token: no Authorization header is sent.
@@ -754,5 +758,33 @@ func TestGhListReleasesSeam(t *testing.T) {
 	defer junk.Close()
 	if _, err := ghListReleases(junk.URL); err == nil {
 		t.Error("bad JSON: want parse error")
+	}
+}
+
+// TestHTTPGetRawSeam covers the default httpGetRaw body: it must send bk's
+// User-Agent (Go's default "Go-http-client/2.0" is 403'd by some url-listing
+// hosts such as sourceforge) and surface a NewRequest error on a bad URL.
+func TestHTTPGetRawSeam(t *testing.T) {
+	saveSeams(t)
+
+	var gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		_, _ = io.WriteString(w, "listing")
+	}))
+	defer srv.Close()
+
+	resp, err := httpGetRaw(srv.URL)
+	if err != nil {
+		t.Fatalf("httpGetRaw: %v", err)
+	}
+	resp.Body.Close()
+	if gotUA != userAgent {
+		t.Errorf("User-Agent = %q; want %q", gotUA, userAgent)
+	}
+
+	// NewRequest error: an unparseable URL.
+	if _, err := httpGetRaw("://bad"); err == nil {
+		t.Error("bad URL: want NewRequest error")
 	}
 }
