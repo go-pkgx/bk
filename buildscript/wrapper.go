@@ -104,14 +104,20 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils bool) []string {
 	case "darwin":
 		ld = append(ld, "-Wl,-rpath,"+pkgxDir)
 	case "linux":
-		// x86-64 needs -pie explicitly (aarch64 links PIE by default). Both arches
-		// get an absolute -Wl,-rpath,$PKGX_DIR so the linker emits a DT_RUNPATH
-		// *slot* the fixup pass can later rewrite $ORIGIN-relative. A literal
-		// "$ORIGIN" here would be mangled by shell/make re-expansion, so we pass
-		// the absolute PKGX_DIR and let fixup/rpath.go relocate it.
-		if tgt.Arch == "x86-64" {
-			ld = append(ld, "-pie")
-		}
+		// Both arches get an absolute -Wl,-rpath,$PKGX_DIR so the linker emits a
+		// DT_RUNPATH *slot* fixup/rpath.go later rewrites $ORIGIN-relative. A
+		// literal "$ORIGIN" here would be mangled by shell/make re-expansion, so
+		// we pass the absolute PKGX_DIR and relocate it at fixup time.
+		//
+		// We deliberately do NOT add -pie. gcc already defaults to PIE for
+		// executables (measured: debian gcc 14.2 `gcc main.c` → a PIE executable),
+		// so an explicit -pie buys nothing there — but it ALSO lands on -shared
+		// library links, where it conflicts with -shared and makes ld try to build
+		// an executable → "undefined reference to `main`" (this broke every
+		// shared-lib recipe on x86-64, e.g. openssl's libcrypto.so.4, so those
+		// bottles never published for linux/x86-64). -fPIC in CFLAGS still gives
+		// the position-independent objects both PIE executables and shared libs
+		// need; PIE-ness of the final executable is the toolchain default.
 		ld = append(ld, "-Wl,-rpath,"+pkgxDir)
 	}
 	if len(ld) > 0 {
