@@ -94,6 +94,7 @@ var (
 		if err != nil {
 			return nil, fmt.Errorf("versions: releases %s: %w", apiURL, err)
 		}
+		req.Header.Set("User-Agent", userAgent)
 		req.Header.Set("Accept", "application/vnd.github+json")
 		if tok := osGetenv("GITHUB_TOKEN"); tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
@@ -117,12 +118,28 @@ var (
 		return rels, nil
 	}
 
-	// Low-level stdlib references (no body of their own to cover here).
-	httpGetRaw = http.Get
-	ioReadAll  = io.ReadAll
-	httpDo     = http.DefaultClient.Do
-	osGetenv   = os.Getenv
+	// httpGetRaw performs the low-level GET behind httpGet's url-listing path,
+	// sending bk's own User-Agent: Go's default "Go-http-client/2.0" is rejected
+	// by some listing hosts (sourceforge 403s it), so http.Get cannot be used
+	// verbatim. Routed through httpDo so tests exercise it without a network.
+	httpGetRaw = func(url string) (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", userAgent)
+		return httpDo(req)
+	}
+	ioReadAll = io.ReadAll
+	httpDo    = http.DefaultClient.Do
+	osGetenv  = os.Getenv
 )
+
+// userAgent identifies bk on every version-listing HTTP request (url listings
+// and the GitHub Releases API). Go's default "Go-http-client/2.0" is 403'd by
+// some hosts (sourceforge) and the GitHub REST API requires a User-Agent
+// outright, so bk always sends its own.
+const userAgent = "bk (+https://github.com/go-pkgx/bk)"
 
 // ghRelease is the slice of a GitHub Releases API entry bk needs: the human
 // display `name` and the underlying git `tag_name` it points at.
