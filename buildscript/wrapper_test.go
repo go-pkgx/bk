@@ -30,7 +30,7 @@ func TestWrapLinux(t *testing.T) {
 		`export SRCROOT="/bk/build"`,
 		`export TMPDIR="$HOME/tmp"; mkdir -p "$TMPDIR"`,
 		"export FORCE_UNSAFE_CONFIGURE=1",
-		`export LDFLAGS="-pie -Wl,-rpath,/opt/pkgx $LDFLAGS"`,
+		`export LDFLAGS="-Wl,-rpath,/opt/pkgx $LDFLAGS"`,
 		`export CFLAGS="-fPIC -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion $CFLAGS"`,
 		`export CXXFLAGS="-fPIC $CXXFLAGS"`,
 		"env -u GH_TOKEN -u GITHUB_TOKEN",
