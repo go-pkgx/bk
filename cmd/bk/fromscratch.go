@@ -353,7 +353,7 @@ func (b *fsBuilder) build(req fsRequest) int {
 	rootVer := versions[req.rootProj]
 
 	// 3. Lay out every declared bottle under <work>/root/pkgx/<proj>/v<ver>.
-	work, err := os.MkdirTemp("", "fromscratch-")
+	work, err := fsMkdirTemp("", "fromscratch-")
 	if err != nil {
 		fmt.Fprintln(b.stderr, "error:", err)
 		return 1
@@ -388,11 +388,7 @@ func (b *fsBuilder) build(req fsRequest) int {
 	}
 
 	// 5. Loader symlink → standard PT_INTERP path.
-	loaderImg, err := findLoaderImage(root, b.arch.Loader)
-	if err != nil {
-		fmt.Fprintln(b.stderr, "error:", err)
-		return 1
-	}
+	loaderImg := findLoaderImage(root, b.arch.Loader)
 	if loaderImg == "" {
 		fmt.Fprintf(b.stderr, "error: glibc loader %s not found in the glibc bottle\n", b.arch.Loader)
 		return 1
@@ -498,7 +494,7 @@ func (b *fsBuilder) completeElfClosure(root, pkgx string) error {
 			changed = true
 		}
 		if !changed {
-			return nil
+			break
 		}
 	}
 	return nil
@@ -545,8 +541,9 @@ func scanNeeded(root string) (needed, present map[string]bool, err error) {
 }
 
 // discoverLibDirs returns every image-absolute directory under root holding a
-// shared object, sorted and de-duplicated — the LD_LIBRARY_PATH.
-func discoverLibDirs(root string) ([]string, error) {
+// shared object, sorted and de-duplicated — the LD_LIBRARY_PATH. It is a
+// function var so build's error/empty branches are testable via a fake.
+var discoverLibDirs = func(root string) ([]string, error) {
 	set := map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, e error) error {
 		if e != nil {
@@ -577,11 +574,13 @@ func discoverLibDirs(root string) ([]string, error) {
 }
 
 // findLoaderImage returns the image-absolute path of the glibc loader file
-// (named loader) inside the laid-out glibc bottle under root, or "".
-func findLoaderImage(root, loader string) (string, error) {
+// (named loader) inside the laid-out glibc bottle under root, or "". The walk
+// callback swallows errors (a missing glibc dir just yields ""), so this never
+// itself errors — hence the string-only signature.
+func findLoaderImage(root, loader string) string {
 	var found string
 	base := filepath.Join(root, "pkgx", "gnu.org", "glibc")
-	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, e error) error {
+	_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return nil // glibc dir absent → caller reports ""
 		}
@@ -593,15 +592,13 @@ func findLoaderImage(root, loader string) (string, error) {
 		}
 		return nil
 	})
-	if err != nil {
-		return "", err
-	}
-	return found, nil
+	return found
 }
 
 // symlinkLoader creates the standard PT_INTERP symlink (interp) inside root
-// pointing at the image-absolute glibc loader path.
-func symlinkLoader(root, interp, loaderImg string) error {
+// pointing at the image-absolute glibc loader path. A function var so build's
+// error branch is testable via a fake.
+var symlinkLoader = func(root, interp, loaderImg string) error {
 	dst := filepath.Join(root, interp)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -612,26 +609,45 @@ func symlinkLoader(root, interp, loaderImg string) error {
 
 // --- image ------------------------------------------------------------------
 
-// writeDockerfile writes a `FROM scratch` Dockerfile into workdir.
-func writeDockerfile(workdir, ldPath, entrypoint string) error {
+// writeDockerfile writes a `FROM scratch` Dockerfile into workdir. A function
+// var so build's error branch is testable via a fake.
+var writeDockerfile = func(workdir, ldPath, entrypoint string) error {
 	content := fmt.Sprintf("FROM scratch\nCOPY root/ /\nENV LD_LIBRARY_PATH=%s\nENTRYPOINT [%q]\n",
 		ldPath, entrypoint)
 	return os.WriteFile(filepath.Join(workdir, "Dockerfile"), []byte(content), 0o644)
 }
 
-// dockerBuild runs `docker build --platform linux/<oarch>` on workdir.
-var dockerBuild = func(workdir, oarch, tag string, stdout, stderr io.Writer) error {
-	cmd := exec.Command("docker", "build", "--platform", "linux/"+oarch, "-t", tag, workdir)
+// Injectable seams over os/io operations whose error branches are otherwise
+// unreachable in a test (a successful syscall that then fails is not
+// reproducible with real files). Tests override these; production uses the
+// stdlib verbatim.
+var (
+	fsMkdirTemp = os.MkdirTemp
+	ioCopy      = io.Copy
+	// openFileWrite returns an io.WriteCloser (not *os.File) so a test can inject
+	// a writer whose Close fails.
+	openFileWrite = func(name string, perm os.FileMode) (io.WriteCloser, error) {
+		return os.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+	}
+	// execCommand is the process seam (tests point it at a helper process).
+	execCommand = exec.Command
+)
+
+// runDocker execs docker with argv, wiring stdout/stderr.
+func runDocker(argv []string, stdout, stderr io.Writer) error {
+	cmd := execCommand("docker", argv...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	return cmd.Run()
 }
 
+// dockerBuild runs `docker build --platform linux/<oarch>` on workdir.
+var dockerBuild = func(workdir, oarch, tag string, stdout, stderr io.Writer) error {
+	return runDocker([]string{"build", "--platform", "linux/" + oarch, "-t", tag, workdir}, stdout, stderr)
+}
+
 // dockerRun runs `docker run --rm --platform linux/<oarch> <tag> <args…>`.
 var dockerRun = func(oarch, tag string, args []string, stdout, stderr io.Writer) error {
-	argv := append([]string{"run", "--rm", "--platform", "linux/" + oarch, tag}, args...)
-	cmd := exec.Command("docker", argv...)
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	return cmd.Run()
+	return runDocker(append([]string{"run", "--rm", "--platform", "linux/" + oarch, tag}, args...), stdout, stderr)
 }
 
 // --- bottle extraction ------------------------------------------------------
@@ -688,11 +704,11 @@ func extractTar(tr *tar.Reader, dest string) error {
 			// symlink already at this path (terminfo ships symlink aliases that,
 			// on a case-insensitive host FS, collide and loop → ELOOP).
 			_ = os.Remove(target)
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o777)
+			f, err := openFileWrite(target, os.FileMode(hdr.Mode)&0o777)
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(f, tr); err != nil {
+			if _, err := ioCopy(f, tr); err != nil {
 				f.Close()
 				return err
 			}
