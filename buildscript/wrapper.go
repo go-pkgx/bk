@@ -102,7 +102,10 @@ func (o WrapOptions) depPlus() string {
 		// gnu.org/binutils supplies ar/ranlib (the pkgx llvm.org bottle ships
 		// llvm-ar, not a plain `ar`, and the sovereign mode must not fall back to
 		// the container's binutils). Linking still uses lld via -fuse-ld=lld.
-		parts = append(parts, `"+gnu.org/glibc"`, `"+kernel.org/linux-headers"`, `"+gnu.org/binutils"`)
+		// libcxx.llvm.org supplies the C++ runtime the bare llvm.org bottle omits:
+		// its recipe builds libc++ + libc++abi + libunwind, so C++ recipes link
+		// -stdlib=libc++ instead of the container's GNU libstdc++.
+		parts = append(parts, `"+gnu.org/glibc"`, `"+kernel.org/linux-headers"`, `"+gnu.org/binutils"`, `"+libcxx.llvm.org"`)
 	}
 	return strings.Join(parts, " ")
 }
@@ -158,7 +161,7 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 	// --unwindlib=none avoids the libgcc_s unwinder the C toolchain would
 	// otherwise pull (fine for exception-free C — the mode's scope). The result
 	// links its interpreter + libc from the bottle, not the debian container.
-	var glibcCC, glibcLD string
+	var glibcCC, glibcCXX, glibcLD string
 	if libcPkgx && tgt.Platform == "linux" {
 		// Resolve the newest installed version dir of each bottle. Two hazards:
 		// pkgx creates a symlink literally NAMED "v*" (alongside v2, v2.44,
@@ -172,9 +175,26 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 			`export BK_GLIBC_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/gnu.org/glibc/v[0-9]*/ | sort -V | tail -n1)"`,
 			`export BK_GLIBC_LIB="$(set +f; printf '%s\n' "${BK_GLIBC_PREFIX}"lib/glibc-[0-9]*/ | sort -V | tail -n1)"`,
 			`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]*/ | sort -V | tail -n1)"`,
+			`export BK_LIBCXX_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/libcxx.llvm.org/v[0-9]*/ | sort -V | tail -n1)"`,
 		)
-		glibcCC = `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt --unwindlib=none -fuse-ld=lld`
-		glibcLD = `-Wl,--dynamic-linker="${BK_GLIBC_LIB}` + glibcLoader(tgt.Arch) + `" -Wl,-rpath,"$BK_GLIBC_LIB" -Wl,--disable-new-dtags`
+		// Shared driver flags: glibc sysroot (its headers + the kernel headers it
+		// includes), glibc crt/libc, and llvm's compiler-rt builtins (no libgcc).
+		base := `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld`
+		// C: no unwinder (exception-free C). C++: libc++ headers + its libunwind,
+		// from the libcxx.llvm.org bottle (-stdlib=libc++ makes the driver link
+		// -lc++ itself when it links a C++ target).
+		glibcCC = base + ` --unwindlib=none`
+		// libc++'s headers MUST precede glibc's on the search path — its <cstdio>
+		// pulls libc++'s own <stdio.h> wrapper and #errors if a C <stdio.h> is
+		// found first — so the libc++ -isystem goes BEFORE base's glibc/kernel ones.
+		glibcCXX = `-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1" ` + base + ` --unwindlib=libunwind`
+		// PT_INTERP = the bottle's loader; search paths for glibc + libc++/libunwind
+		// libs (the $ORIGIN rewrite by fixup drops these, so at deploy libc.so.6 /
+		// libc++.so.1 come from their bottles via LD_LIBRARY_PATH — the mkscratch
+		// closure model). --disable-new-dtags emits DT_RPATH (searched for the
+		// loader's own NEEDED libs).
+		glibcLD = `-Wl,--dynamic-linker="${BK_GLIBC_LIB}` + glibcLoader(tgt.Arch) +
+			`" -Wl,-rpath,"$BK_GLIBC_LIB" -L "${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib" -Wl,--disable-new-dtags`
 		ld = append(ld, glibcLD)
 	}
 
@@ -195,12 +215,12 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		if tgt.Arch == "x86-64" {
 			cflags = "-fPIC " + cflags
 			cxxflags := "-fPIC"
-			if glibcCC != "" {
-				cxxflags = glibcCC + " " + cxxflags
+			if glibcCXX != "" {
+				cxxflags = glibcCXX + " " + cxxflags
 			}
 			out = append(out, `export CXXFLAGS="`+cxxflags+` $CXXFLAGS"`)
-		} else if glibcCC != "" {
-			out = append(out, `export CXXFLAGS="`+glibcCC+` $CXXFLAGS"`)
+		} else if glibcCXX != "" {
+			out = append(out, `export CXXFLAGS="`+glibcCXX+` $CXXFLAGS"`)
 		}
 		out = append(out, `export CFLAGS="`+cflags+` $CFLAGS"`)
 	}

@@ -152,16 +152,19 @@ func TestWrapLibcPkgxLinuxX86(t *testing.T) {
 		PkgxBin: "/opt/pkgx/bin/pkgx", LibcPkgx: true,
 	})
 	wants := []string{
-		// glibc + kernel-headers + binutils bottles join the eval (headers/crt/libc + ar/ranlib).
-		`"+zlib.net" "+llvm.org" "+gnu.org/glibc" "+kernel.org/linux-headers" "+gnu.org/binutils"`,
+		// glibc + kernel-headers + binutils + libcxx bottles join the eval.
+		`"+zlib.net" "+llvm.org" "+gnu.org/glibc" "+kernel.org/linux-headers" "+gnu.org/binutils" "+libcxx.llvm.org"`,
 		// build-time resolution of each bottle prefix (noglob-safe subshell glob).
 		`export BK_GLIBC_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/gnu.org/glibc/v[0-9]*/ | sort -V | tail -n1)"`,
 		`export BK_GLIBC_LIB="$(set +f; printf '%s\n' "${BK_GLIBC_PREFIX}"lib/glibc-[0-9]*/ | sort -V | tail -n1)"`,
 		`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]*/ | sort -V | tail -n1)"`,
-		// compiler driver points at the bottle headers (glibc + kernel) / crt / libc + llvm runtime.
-		`--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt --unwindlib=none -fuse-ld=lld`,
-		// PT_INTERP = the bottle's x86-64 loader; DT_RPATH (disable-new-dtags) to it.
-		`-Wl,--dynamic-linker="${BK_GLIBC_LIB}ld-linux-x86-64.so.2" -Wl,-rpath,"$BK_GLIBC_LIB" -Wl,--disable-new-dtags`,
+		`export BK_LIBCXX_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/libcxx.llvm.org/v[0-9]*/ | sort -V | tail -n1)"`,
+		// C: glibc sysroot + compiler-rt, no unwinder (exception-free C).
+		`export CFLAGS="-fPIC --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld --unwindlib=none -Wno-implicit-function-declaration`,
+		// C++: libc++ headers FIRST (before glibc's), then sysroot + libunwind.
+		`export CXXFLAGS="-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1" --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld --unwindlib=libunwind -fPIC`,
+		// PT_INTERP = the bottle's x86-64 loader; libc + libc++/libunwind lib search paths; DT_RPATH.
+		`-Wl,--dynamic-linker="${BK_GLIBC_LIB}ld-linux-x86-64.so.2" -Wl,-rpath,"$BK_GLIBC_LIB" -L "${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib" -Wl,--disable-new-dtags`,
 	}
 	for _, w := range wants {
 		if !strings.Contains(s, w) {
@@ -171,10 +174,6 @@ func TestWrapLibcPkgxLinuxX86(t *testing.T) {
 	// The C23 relax + own-lib rpath still apply alongside the glibc targeting.
 	if !strings.Contains(s, "-Wno-implicit-function-declaration") || !strings.Contains(s, "-Wl,-rpath,/opt/pkgx") {
 		t.Errorf("base linux flags dropped in pkgx-libc mode:\n%s", s)
-	}
-	// CXXFLAGS also carries the sysroot (C++ headers), keeping -fPIC on x86-64.
-	if !strings.Contains(s, `export CXXFLAGS="--sysroot="$BK_GLIBC_PREFIX"`) {
-		t.Errorf("CXXFLAGS missing glibc sysroot:\n%s", s)
 	}
 }
 
@@ -189,9 +188,9 @@ func TestWrapLibcPkgxArm64Loader(t *testing.T) {
 	if strings.Contains(s, "ld-linux-x86-64") || strings.Contains(s, "-fPIC") {
 		t.Errorf("arm64 script leaked x86-64 flags:\n%s", s)
 	}
-	// arm64 CXXFLAGS carries the sysroot via the non-fPIC branch.
-	if !strings.Contains(s, `export CXXFLAGS="--sysroot="$BK_GLIBC_PREFIX"`) {
-		t.Errorf("arm64 CXXFLAGS missing sysroot:\n%s", s)
+	// arm64 CXXFLAGS leads with libc++ then the glibc sysroot (non-fPIC branch).
+	if !strings.Contains(s, `export CXXFLAGS="-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1" --sysroot="$BK_GLIBC_PREFIX"`) {
+		t.Errorf("arm64 CXXFLAGS missing libc++/sysroot:\n%s", s)
 	}
 }
 
