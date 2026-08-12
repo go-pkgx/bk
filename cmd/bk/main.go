@@ -6,6 +6,10 @@
 //
 //	bk target            print the resolved build target (honours BREWKIT_TARGET / --platform)
 //	bk fixup <prefix>    run the post-build relocatability fix-ups on an install prefix
+//	bk versions          list a recipe's candidate versions
+//	bk build             build a recipe into a bottle
+//	bk publish           push a built bottle to an OCI registry
+//	bk fromscratch       build a `docker FROM scratch` image of a project's full runtime closure
 package main
 
 import (
@@ -58,7 +62,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|fromscratch> [args]")
 		return 2
 	}
 
@@ -93,6 +97,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runBuild(rest[1:], stdout, stderr)
 	case "publish":
 		return runPublish(rest[1:], stdout, stderr)
+	case "fromscratch":
+		return runFromscratch(rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "unknown command:", rest[0])
 		return 2
