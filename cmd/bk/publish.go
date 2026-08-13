@@ -119,58 +119,19 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "publish: bad --platform %q (want os/arch)\n", *platform)
 		return 2
 	}
-	path := f.Arg(0)
-	tarball, err := osReadFile(path)
-	if err != nil {
-		fmt.Fprintln(stderr, "publish:", err)
-		return 1
-	}
-	ext := bottle.ExtTarGz
-	if strings.HasSuffix(path, bottle.ExtTarXz) {
-		ext = bottle.ExtTarXz
-	}
 	var kp *sign.Keypair
 	if *signKey != "" {
-		kb, err := osReadFile(*signKey)
+		k, err := loadSigningKey(*signKey)
 		if err != nil {
 			fmt.Fprintln(stderr, "publish:", err)
 			return 1
 		}
-		if kp, err = sign.LoadSecretKey(string(kb)); err != nil {
-			fmt.Fprintln(stderr, "publish:", err)
-			return 1
-		}
+		kp = k
 	}
-	// The SBOM/provenance keep the TRUE software version; only the registry TAG
-	// gets the glibc flavor, so builds of the same version against different
-	// glibc coexist as distinct artifacts (e.g. curl.se:8.20-glibc2.27.0 vs
-	// :8.20-glibc2.44.0) instead of colliding on one tag.
-	refs, err := buildReferrers(*project, *version, osn, arch, tarball, buildTime(), kp)
-	if err != nil {
-		fmt.Fprintln(stderr, "publish:", err)
-		return 1
-	}
-	tag := *version
-	var annotations map[string]string
-	switch {
-	case *project == bottle.GlibcProject:
-		// The glibc bottle IS the glibc — no flavored tag; instead self-describe
-		// its min supported kernel (from libc.so.6's .note.ABI-tag) so a
-		// glibc-by-kernel selector can pick it.
-		mk, err := glibcMinKernelFromTarball(tarball, ext)
-		if err != nil {
-			fmt.Fprintln(stderr, "publish:", err)
-			return 1
-		}
-		annotations = map[string]string{bottle.GlibcMinKernelAnnotation: mk}
-	case *glibc != "":
-		// A tool built against a specific glibc: flavor the tag + self-describe
-		// which glibc, so a glibc-aware resolver matches it without parsing tags.
-		gv := strings.TrimPrefix(*glibc, "=")
-		tag = *version + "-glibc" + gv
-		annotations = map[string]string{bottle.GlibcVersionAnnotation: gv}
-	}
-	if err := ociPush(*to, *project, tag, osn, arch, tarball, ext, refs, annotations); err != nil {
+	if _, err := publishBottle(publishOptions{
+		Dist: *to, Project: *project, Version: *version,
+		OS: osn, Arch: arch, Path: f.Arg(0), Glibc: *glibc, Key: kp,
+	}); err != nil {
 		fmt.Fprintln(stderr, "publish:", err)
 		return 1
 	}
@@ -180,6 +141,86 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "published %s %s %s/%s to %s (+SBOM +provenance%s)\n", *project, *version, osn, arch, *to, extra)
 	return 0
+}
+
+// loadSigningKey reads a go-attest/sign secret key file.
+func loadSigningKey(path string) (*sign.Keypair, error) {
+	kb, err := osReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return sign.LoadSecretKey(string(kb))
+}
+
+// publishOptions describes one bottle push.
+type publishOptions struct {
+	Dist     string // oci:// destination base
+	Project  string // pkgx project slug
+	Version  string // TRUE software version (what the SBOM/provenance record)
+	OS, Arch string // pkgx-form platform, e.g. linux + x86-64
+	Path     string // the built bottle tarball on disk
+	Glibc    string // glibc this bottle was built against ("" = system glibc)
+	Key      *sign.Keypair
+	Time     time.Time // attestation timestamp; zero = buildTime()
+}
+
+// publishBottle pushes a built bottle with its SBOM, SLSA provenance and (given
+// a key) signature attached as referrers, and reports the registry tag it landed
+// under. Shared by `bk publish` and `bk factory`, so a factory-published bottle
+// carries byte-identical attestations, tags and glibc annotations.
+func publishBottle(o publishOptions) (string, error) {
+	tarball, err := osReadFile(o.Path)
+	if err != nil {
+		return "", err
+	}
+	ext := bottle.ExtTarGz
+	if strings.HasSuffix(o.Path, bottle.ExtTarXz) {
+		ext = bottle.ExtTarXz
+	}
+	// The SBOM/provenance keep the TRUE software version; only the registry TAG
+	// gets the glibc flavor, so builds of the same version against different
+	// glibc coexist as distinct artifacts (e.g. curl.se:8.20-glibc2.27.0 vs
+	// :8.20-glibc2.44.0) instead of colliding on one tag.
+	when := o.Time
+	if when.IsZero() {
+		when = buildTime()
+	}
+	refs, err := buildReferrers(o.Project, o.Version, o.OS, o.Arch, tarball, when, o.Key)
+	if err != nil {
+		return "", err
+	}
+	tag := flavoredTag(o.Project, o.Version, o.Glibc)
+	var annotations map[string]string
+	switch {
+	case o.Project == bottle.GlibcProject:
+		// The glibc bottle IS the glibc — no flavored tag; instead self-describe
+		// its min supported kernel (from libc.so.6's .note.ABI-tag) so a
+		// glibc-by-kernel selector can pick it.
+		mk, err := glibcMinKernelFromTarball(tarball, ext)
+		if err != nil {
+			return "", err
+		}
+		annotations = map[string]string{bottle.GlibcMinKernelAnnotation: mk}
+	case o.Glibc != "":
+		// A tool built against a specific glibc: flavor the tag + self-describe
+		// which glibc, so a glibc-aware resolver matches it without parsing tags.
+		annotations = map[string]string{bottle.GlibcVersionAnnotation: strings.TrimPrefix(o.Glibc, "=")}
+	}
+	if err := ociPush(o.Dist, o.Project, tag, o.OS, o.Arch, tarball, ext, refs, annotations); err != nil {
+		return "", err
+	}
+	return tag, nil
+}
+
+// flavoredTag is the registry tag a (project, version) lands under: the plain
+// version, or <version>-glibc<ver> for a tool built against a pinned glibc. The
+// glibc package itself is never flavored (it IS the glibc). The factory computes
+// the same tag to test whether a bottle is already published.
+func flavoredTag(project, version, glibc string) string {
+	if glibc == "" || project == bottle.GlibcProject {
+		return version
+	}
+	return version + "-glibc" + strings.TrimPrefix(glibc, "=")
 }
 
 // buildReferrers builds the CycloneDX SBOM and in-toto SLSA provenance

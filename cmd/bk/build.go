@@ -44,23 +44,32 @@ func pickVersion(project, constraint string) (string, error) {
 // tools (gcc/make/cmake/pkgx) are still exec'd (that is the pkgx toolchain, not
 // a shell dependency); only the shell language itself runs in-process.
 func runBash(scriptPath string, env []string) error {
-	f, err := os.Open(scriptPath)
-	if err != nil {
-		return err
+	return runBashTo(os.Stdout, os.Stderr)(scriptPath, env)
+}
+
+// runBashTo is runBash with the script's streams redirected. The factory points
+// both at one writer (as factory.sh's `2>&1` did) so a failed build's error tail
+// can be captured verbatim into failures-detail.txt.
+func runBashTo(out, errOut io.Writer) func(string, []string) error {
+	return func(scriptPath string, env []string) error {
+		f, err := os.Open(scriptPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		prog, err := syntax.NewParser().Parse(f, scriptPath)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", scriptPath, err)
+		}
+		r, err := newInterp(
+			interp.Env(expand.ListEnviron(env...)),
+			interp.StdIO(os.Stdin, out, errOut),
+		)
+		if err != nil {
+			return err
+		}
+		return r.Run(context.Background(), prog)
 	}
-	defer f.Close()
-	prog, err := syntax.NewParser().Parse(f, scriptPath)
-	if err != nil {
-		return fmt.Errorf("parse %s: %w", scriptPath, err)
-	}
-	r, err := newInterp(
-		interp.Env(expand.ListEnviron(env...)),
-		interp.StdIO(os.Stdin, os.Stdout, os.Stderr),
-	)
-	if err != nil {
-		return err
-	}
-	return r.Run(context.Background(), prog)
 }
 
 // realBuildRunner wires the real bk/bottle implementations into a Runner. Every

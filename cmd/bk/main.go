@@ -10,6 +10,7 @@
 //	bk build             build a recipe into a bottle
 //	bk publish           push a built bottle to an OCI registry
 //	bk closure           print a project set's transitive runtime closure (topological)
+//	bk factory           build a recipe set's whole closure and publish every bottle
 package main
 
 import (
@@ -62,7 +63,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|closure> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|closure|factory> [args]")
 		return 2
 	}
 
@@ -99,6 +100,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPublish(rest[1:], stdout, stderr)
 	case "closure":
 		return runClosure(rest[1:], stdout, stderr)
+	case "factory":
+		return runFactory(rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "unknown command:", rest[0])
 		return 2
