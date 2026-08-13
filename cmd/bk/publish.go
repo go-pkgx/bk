@@ -53,6 +53,7 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 	version := f.String("version", "", "version, e.g. 3.46.0")
 	platform := f.String("platform", "", "bottle os/arch, e.g. darwin/x86-64")
 	signKey := f.String("sign", "", "sign the bottle with this go-attest/sign secret key file")
+	glibc := f.String("glibc", "", "glibc version this bottle was built against; publishes under the flavored tag <version>-glibc<ver> so builds against different glibc coexist (linux only)")
 	if err := f.Parse(args); err != nil {
 		return 2
 	}
@@ -87,12 +88,20 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+	// The SBOM/provenance keep the TRUE software version; only the registry TAG
+	// gets the glibc flavor, so builds of the same version against different
+	// glibc coexist as distinct artifacts (e.g. curl.se:8.20-glibc2.27.0 vs
+	// :8.20-glibc2.44.0) instead of colliding on one tag.
 	refs, err := buildReferrers(*project, *version, osn, arch, tarball, buildTime(), kp)
 	if err != nil {
 		fmt.Fprintln(stderr, "publish:", err)
 		return 1
 	}
-	if err := ociPush(*to, *project, *version, osn, arch, tarball, ext, refs); err != nil {
+	tag := *version
+	if *glibc != "" {
+		tag = *version + "-glibc" + strings.TrimPrefix(*glibc, "=")
+	}
+	if err := ociPush(*to, *project, tag, osn, arch, tarball, ext, refs); err != nil {
 		fmt.Fprintln(stderr, "publish:", err)
 		return 1
 	}
