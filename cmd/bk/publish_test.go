@@ -316,3 +316,34 @@ func TestSplitPlatform(t *testing.T) {
 		}
 	}
 }
+
+// TestPublishGlibcTag: --glibc flavors ONLY the registry tag (not the SBOM
+// version), so builds of one version against different glibc coexist.
+func TestPublishGlibcTag(t *testing.T) {
+	b := writeBottle(t, "g.tar.gz")
+	op := ociPush
+	defer func() { ociPush = op }()
+	for _, tc := range []struct{ flag, wantTag string }{
+		{"2.27.0", "3.46.0-glibc2.27.0"},
+		{"=2.27.0", "3.46.0-glibc2.27.0"}, // a leading "=" is not doubled
+		{"", "3.46.0"},                    // unset → plain version tag
+	} {
+		var gotTag string
+		ociPush = func(_, _, ver, _, _ string, _ []byte, _ string, _ []bottle.Referrer) error {
+			gotTag = ver
+			return nil
+		}
+		args := []string{"publish", "--to", "oci://r.example/x", "--project", "curl.se",
+			"--version", "3.46.0", "--platform", "linux/x86-64"}
+		if tc.flag != "" {
+			args = append(args, "--glibc", tc.flag)
+		}
+		args = append(args, b)
+		if code, _, errs := run2(t, args...); code != 0 {
+			t.Fatalf("glibc=%q publish code=%d err=%q", tc.flag, code, errs)
+		}
+		if gotTag != tc.wantTag {
+			t.Errorf("glibc=%q: pushed tag = %q, want %q", tc.flag, gotTag, tc.wantTag)
+		}
+	}
+}
