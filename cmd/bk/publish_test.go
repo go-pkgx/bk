@@ -452,42 +452,42 @@ func TestGlibcMinKernelFromTarball(t *testing.T) {
 	if mk, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{
 		"gnu.org/glibc/v2.27.0/lib/glibc-2.27/libc.so.6": libc,
 		"gnu.org/glibc/v2.27.0/lib/other.so":             []byte("x"),
-	})), extTarGz); err != nil || mk != "3.2.0" {
+	})), bottle.ExtTarGz); err != nil || mk != "3.2.0" {
 		t.Fatalf("gz = %q, %v (want 3.2.0)", mk, err)
 	}
 	// xz path
-	if mk, err := glibcMinKernelFromTarball(xzBytes(t, tarBytes(map[string][]byte{"a/libc.so.6": libc})), extTarXz); err != nil || mk != "3.2.0" {
+	if mk, err := glibcMinKernelFromTarball(xzBytes(t, tarBytes(map[string][]byte{"a/libc.so.6": libc})), bottle.ExtTarXz); err != nil || mk != "3.2.0" {
 		t.Fatalf("xz = %q, %v", mk, err)
 	}
 	// no libc.so.6
-	if _, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{"a/other": libc})), extTarGz); err == nil {
+	if _, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{"a/other": libc})), bottle.ExtTarGz); err == nil {
 		t.Error("missing libc.so.6 should error")
 	}
 	// libc.so.6 that is not an ELF
-	if _, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{"a/libc.so.6": []byte("garbage")})), extTarGz); err == nil {
+	if _, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{"a/libc.so.6": []byte("garbage")})), bottle.ExtTarGz); err == nil {
 		t.Error("non-ELF libc.so.6 should error")
 	}
 	// bad gzip / bad xz
-	if _, err := glibcMinKernelFromTarball([]byte("not gzip"), extTarGz); err == nil {
+	if _, err := glibcMinKernelFromTarball([]byte("not gzip"), bottle.ExtTarGz); err == nil {
 		t.Error("bad gzip should error")
 	}
-	if _, err := glibcMinKernelFromTarball([]byte("not xz"), extTarXz); err == nil {
+	if _, err := glibcMinKernelFromTarball([]byte("not xz"), bottle.ExtTarXz); err == nil {
 		t.Error("bad xz should error")
 	}
 	// corrupt tar header -> tr.Next error (a full 512-byte block of garbage)
-	if _, err := glibcMinKernelFromTarball(gzBytes(bytes.Repeat([]byte{0xff}, 512)), extTarGz); err == nil {
+	if _, err := glibcMinKernelFromTarball(gzBytes(bytes.Repeat([]byte{0xff}, 512)), bottle.ExtTarGz); err == nil {
 		t.Error("corrupt tar header should error")
 	}
 	// truncated entry -> io.Copy error: full header (size 2000) but the stream is
 	// cut mid-data, so copying the libc.so.6 body hits an unexpected EOF.
 	full := tarBytes(map[string][]byte{"a/libc.so.6": make([]byte, 2000)})
-	if _, err := glibcMinKernelFromTarball(gzBytes(full[:612]), extTarGz); err == nil {
+	if _, err := glibcMinKernelFromTarball(gzBytes(full[:612]), bottle.ExtTarGz); err == nil {
 		t.Error("truncated entry should error on io.Copy")
 	}
 	// osCreateTemp failure via the seam
 	oc := osCreateTemp
 	osCreateTemp = func(string, string) (*os.File, error) { return nil, errBoom }
-	if _, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{"a/libc.so.6": libc})), extTarGz); err == nil {
+	if _, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{"a/libc.so.6": libc})), bottle.ExtTarGz); err == nil {
 		t.Error("osCreateTemp failure should propagate")
 	}
 	osCreateTemp = oc
@@ -511,7 +511,7 @@ func TestPublishGlibcBottleMinKernel(t *testing.T) {
 		gotTag, gotAnn = ver, ann
 		return nil
 	}
-	if code, _, errs := run2(t, "publish", "--to", "oci://r.example/x", "--project", glibcProject,
+	if code, _, errs := run2(t, "publish", "--to", "oci://r.example/x", "--project", bottle.GlibcProject,
 		"--version", "2.27.0", "--platform", "linux/x86-64", bp); code != 0 {
 		t.Fatalf("glibc publish code=%d err=%q", code, errs)
 	}
@@ -524,7 +524,7 @@ func TestPublishGlibcBottleMinKernel(t *testing.T) {
 	// a glibc tarball WITHOUT libc.so.6 fails the publish
 	bad := filepath.Join(dir, "v9.tar.gz")
 	os.WriteFile(bad, gzBytes(tarBytes(map[string][]byte{"x/y": []byte("z")})), 0o644)
-	if code, _, _ := run2(t, "publish", "--to", "oci://r.example/x", "--project", glibcProject,
+	if code, _, _ := run2(t, "publish", "--to", "oci://r.example/x", "--project", bottle.GlibcProject,
 		"--version", "9", "--platform", "linux/x86-64", bad); code != 1 {
 		t.Error("glibc bottle without libc.so.6 should fail")
 	}

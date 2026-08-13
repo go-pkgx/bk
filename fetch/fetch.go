@@ -24,6 +24,7 @@ import (
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-pkgx/bottle"
 	"github.com/ulikunitz/xz"
 )
 
@@ -139,9 +140,9 @@ func detect(url string) string {
 		name = name[:i]
 	}
 	switch {
-	case strings.HasSuffix(name, ".tar.gz"), strings.HasSuffix(name, ".tgz"):
+	case strings.HasSuffix(name, bottle.ExtTarGz), strings.HasSuffix(name, ".tgz"):
 		return kindTarGz
-	case strings.HasSuffix(name, ".tar.xz"):
+	case strings.HasSuffix(name, bottle.ExtTarXz):
 		return kindTarXz
 	case strings.HasSuffix(name, ".tar.bz2"), strings.HasSuffix(name, ".tbz2"):
 		return kindTarBz2

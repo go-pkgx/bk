@@ -13,6 +13,8 @@ import (
 	"io/fs"
 	"path/filepath"
 	"sort"
+
+	"github.com/go-pkgx/bottle"
 )
 
 // Bottle walks installDir and writes a gzip'd tar to w in which every entry
@@ -100,7 +102,7 @@ func WriteBottle(installDir, project, version, os, arch, outDir string) (string,
 	if err := osMkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	tarballPath := filepath.Join(dir, "v"+version+".tar.gz")
+	tarballPath := filepath.Join(dir, "v"+version+bottle.ExtTarGz)
 	f, err := osCreate(tarballPath)
 	if err != nil {
 		return "", err
