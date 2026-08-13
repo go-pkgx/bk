@@ -32,12 +32,12 @@ var (
 	sbomJSON      = func(d sbom.Document) ([]byte, error) { return d.CycloneDX() }
 	provJSON      = func(s provenance.Statement) ([]byte, error) { return s.JSON() }
 	simpleSigning = sign.SimpleSigningPayload
-	ociPush       = func(distBase, project, ver, osn, arch string, tarball []byte, ext string, refs []bottle.Referrer) error {
+	ociPush       = func(distBase, project, ver, osn, arch string, tarball []byte, ext string, refs []bottle.Referrer, annotations map[string]string) error {
 		c, err := bottle.NewOCIClient(distBase)
 		if err != nil {
 			return err
 		}
-		_, err = c.PushWithReferrers(project, ver, osn, arch, tarball, ext, refs)
+		_, err = c.PushWithReferrersAnnotated(project, ver, osn, arch, tarball, ext, refs, annotations)
 		return err
 	}
 )
@@ -98,10 +98,15 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	tag := *version
+	var annotations map[string]string
 	if *glibc != "" {
-		tag = *version + "-glibc" + strings.TrimPrefix(*glibc, "=")
+		gv := strings.TrimPrefix(*glibc, "=")
+		tag = *version + "-glibc" + gv
+		// Self-describe the bottle: which glibc it was built against, so a
+		// glibc-aware resolver matches it without parsing the tag.
+		annotations = map[string]string{bottle.GlibcVersionAnnotation: gv}
 	}
-	if err := ociPush(*to, *project, tag, osn, arch, tarball, ext, refs); err != nil {
+	if err := ociPush(*to, *project, tag, osn, arch, tarball, ext, refs, annotations); err != nil {
 		fmt.Fprintln(stderr, "publish:", err)
 		return 1
 	}
