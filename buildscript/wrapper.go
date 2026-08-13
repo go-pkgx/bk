@@ -31,6 +31,12 @@ type WrapOptions struct {
 	// present in the eval. C-only for now: the pkgx llvm.org bottle ships no
 	// libc++/libunwind, so C++ recipes still need the system libstdc++.
 	LibcPkgx bool
+	// Glibc, when set (with LibcPkgx), pins the exact pkgx gnu.org/glibc version
+	// used as the sysroot — so the output links THAT glibc's symbols and runs on
+	// any host whose kernel satisfies it (a chosen HPC floor, e.g. "2.27.0").
+	// Empty = newest available. wrapFlags then resolves that sole installed
+	// version dir, so no change is needed there.
+	Glibc string
 }
 
 // Wrap assembles the complete, runnable build script: a sanitized env, the
@@ -105,7 +111,13 @@ func (o WrapOptions) depPlus() string {
 		// libcxx.llvm.org supplies the C++ runtime the bare llvm.org bottle omits:
 		// its recipe builds libc++ + libc++abi + libunwind, so C++ recipes link
 		// -stdlib=libc++ instead of the container's GNU libstdc++.
-		parts = append(parts, `"+gnu.org/glibc"`, `"+kernel.org/linux-headers"`, `"+gnu.org/binutils"`, `"+libcxx.llvm.org"`)
+		glibcSpec := `"+gnu.org/glibc"`
+		if o.Glibc != "" {
+			// Pin the exact glibc version as the sysroot floor. Only this version
+			// is then installed under $PKGX_DIR, so wrapFlags' version-sort picks it.
+			glibcSpec = `"+gnu.org/glibc@=` + strings.TrimPrefix(o.Glibc, "=") + `"`
+		}
+		parts = append(parts, glibcSpec, `"+kernel.org/linux-headers"`, `"+gnu.org/binutils"`, `"+libcxx.llvm.org"`)
 	}
 	return strings.Join(parts, " ")
 }
