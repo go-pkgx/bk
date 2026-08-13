@@ -48,10 +48,20 @@ var (
 	}
 )
 
-// glibcMinKernelFromTarball finds libc.so.6 inside a bottle tarball and returns
-// glibc's minimum supported kernel (from its .note.ABI-tag) — the value stamped
-// as the org.go-pkgx.glibc.min-kernel annotation on a glibc bottle so a
+// libcSoname is the C library's soname — the ELF whose .note.ABI-tag records
+// glibc's minimum supported kernel.
+const libcSoname = "libc.so.6"
+
+// glibcMinKernelFromTarball finds the C library inside a bottle tarball and
+// returns glibc's minimum supported kernel (from its .note.ABI-tag) — the value
+// stamped as the org.go-pkgx.glibc.min-kernel annotation on a glibc bottle so a
 // glibc-by-kernel selector can pick it. ext is ".tar.gz" or ".tar.xz".
+//
+// Where the ELF lives depends on the glibc vintage: a modern bottle ships
+// lib/glibc-X.Y/libc.so.6 as a regular file, while glibc before 2.34 ships the
+// image as libc-X.Y.so with libc.so.6 a SYMLINK to it (tar carries no content
+// for a symlink). Both are handled — and `libc.so` is deliberately not, since
+// that one is a linker script, not an ELF.
 func glibcMinKernelFromTarball(tarball []byte, ext string) (string, error) {
 	var r io.Reader = bytes.NewReader(tarball)
 	if ext == bottle.ExtTarXz {
@@ -69,30 +79,53 @@ func glibcMinKernelFromTarball(tarball []byte, ext string) (string, error) {
 		r = gz
 	}
 	tr := tar.NewReader(r)
+	var linkTarget string         // what libc.so.6 points at, when it is a symlink
+	images := map[string][]byte{} // candidate ELFs, by base name
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
-			return "", fmt.Errorf("libc.so.6 not found in tarball")
+			break
 		}
 		if err != nil {
 			return "", err
 		}
-		if h.Typeflag != tar.TypeReg || filepath.Base(h.Name) != "libc.so.6" {
-			continue
+		base := filepath.Base(h.Name)
+		switch {
+		case h.Typeflag == tar.TypeSymlink && base == libcSoname:
+			linkTarget = filepath.Base(h.Linkname)
+		case h.Typeflag == tar.TypeReg && (base == libcSoname || isLibcImage(base)):
+			b, err := io.ReadAll(tr)
+			if err != nil {
+				return "", err
+			}
+			images[base] = b
 		}
-		// GlibcMinKernel wants a path; stage the entry to a temp file.
-		f, err := osCreateTemp("", "libc-*.so.6")
-		if err != nil {
-			return "", err
-		}
-		defer os.Remove(f.Name())
-		if _, err := io.Copy(f, tr); err != nil {
-			f.Close()
-			return "", err
-		}
-		f.Close()
-		return bottle.GlibcMinKernel(f.Name())
 	}
+	image, ok := images[libcSoname]
+	if !ok {
+		image, ok = images[linkTarget]
+	}
+	if !ok {
+		return "", fmt.Errorf("%s not found in tarball", libcSoname)
+	}
+	// GlibcMinKernel wants a path; stage the ELF to a temp file.
+	f, err := osCreateTemp("", "libc-*.so.6")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(image); err != nil {
+		f.Close()
+		return "", err
+	}
+	f.Close()
+	return bottle.GlibcMinKernel(f.Name())
+}
+
+// isLibcImage reports whether a file name is glibc's versioned C library image
+// (libc-2.17.so), the real ELF that a pre-2.34 bottle's libc.so.6 links to.
+func isLibcImage(base string) bool {
+	return strings.HasPrefix(base, "libc-") && strings.HasSuffix(base, ".so")
 }
 
 // runPublish implements `bk publish`: push a built bottle to an OCI registry
