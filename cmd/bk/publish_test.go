@@ -493,6 +493,70 @@ func TestGlibcMinKernelFromTarball(t *testing.T) {
 	osCreateTemp = oc
 }
 
+// TestGlibcMinKernelPre234Layout: before glibc 2.34 a bottle ships the ELF as
+// libc-X.Y.so and makes libc.so.6 a SYMLINK to it — tar carries no content for
+// a symlink, so the floor has to come from the link's target. Real case: the
+// upstream glibc 2.17/2.24/2.27 bottles are published exactly like this.
+func TestGlibcMinKernelPre234Layout(t *testing.T) {
+	libc := abiNoteELF(2, 6, 32)
+	dir := "gnu.org/glibc/v2.17.0/lib/glibc-2.17/"
+	tb := tarWith(
+		reg(dir+"libc-2.17.so", libc),
+		reg(dir+"libc.so", []byte("/* GNU ld script */")), // a linker script, NOT an ELF
+		symlinkEntry(dir+"libc.so.6", "libc-2.17.so"),
+	)
+	if mk, err := glibcMinKernelFromTarball(gzBytes(tb), bottle.ExtTarGz); err != nil || mk != "2.6.32" {
+		t.Fatalf("symlinked libc = %q, %v (want 2.6.32)", mk, err)
+	}
+	// a dangling libc.so.6 symlink is still a clean "not found"
+	if _, err := glibcMinKernelFromTarball(gzBytes(tarWith(symlinkEntry(dir+"libc.so.6", "nowhere.so"))), bottle.ExtTarGz); err == nil {
+		t.Error("a dangling libc.so.6 symlink should error")
+	}
+	// a regular libc.so.6 still wins over any versioned image present
+	both := tarWith(reg(dir+"libc-2.17.so", abiNoteELF(9, 9, 9)), reg(dir+"libc.so.6", libc))
+	if mk, err := glibcMinKernelFromTarball(gzBytes(both), bottle.ExtTarGz); err != nil || mk != "2.6.32" {
+		t.Fatalf("regular libc.so.6 = %q, %v", mk, err)
+	}
+	// staging the ELF can fail on write (here: an already-closed temp file)
+	oc := osCreateTemp
+	osCreateTemp = func(dir, pattern string) (*os.File, error) {
+		f, err := oc(dir, pattern)
+		if err == nil {
+			f.Close()
+		}
+		return f, err
+	}
+	defer func() { osCreateTemp = oc }()
+	if _, err := glibcMinKernelFromTarball(gzBytes(both), bottle.ExtTarGz); err == nil {
+		t.Error("a failing write to the staged ELF should propagate")
+	}
+}
+
+// tarEntry is one member of a test tarball (ordered, unlike tarBytes' map).
+type tarEntry struct {
+	hdr  tar.Header
+	data []byte
+}
+
+func reg(name string, data []byte) tarEntry {
+	return tarEntry{tar.Header{Name: name, Typeflag: tar.TypeReg, Size: int64(len(data)), Mode: 0o644}, data}
+}
+
+func symlinkEntry(name, target string) tarEntry {
+	return tarEntry{tar.Header{Name: name, Typeflag: tar.TypeSymlink, Linkname: target, Mode: 0o777}, nil}
+}
+
+func tarWith(entries ...tarEntry) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, e := range entries {
+		_ = tw.WriteHeader(&e.hdr)
+		_, _ = tw.Write(e.data)
+	}
+	_ = tw.Close()
+	return buf.Bytes()
+}
+
 // TestPublishGlibcBottleMinKernel: publishing gnu.org/glibc stamps min-kernel
 // and does NOT flavor the tag.
 func TestPublishGlibcBottleMinKernel(t *testing.T) {
