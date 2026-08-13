@@ -212,7 +212,9 @@ func TestPublishRuntimeErrors(t *testing.T) {
 	sbomJSON = os1
 	// ociPush failure via the seam
 	op := ociPush
-	ociPush = func(string, string, string, string, string, []byte, string, []bottle.Referrer) error { return errBoom }
+	ociPush = func(string, string, string, string, string, []byte, string, []bottle.Referrer, map[string]string) error {
+		return errBoom
+	}
 	if c, _, _ := run2(t, "publish", "--to", "oci://x/y", "--project", "p", "--version", "1",
 		"--platform", "linux/x86-64", b); c != 1 {
 		t.Error("push error")
@@ -294,7 +296,7 @@ func TestBuildTime(t *testing.T) {
 
 func TestOCIPushBadBase(t *testing.T) {
 	// the default ociPush must surface NewOCIClient's error for a non-oci base
-	if err := ociPush("https://not-oci", "p", "1", "linux", "x86-64", []byte("x"), ".tar.gz", nil); err == nil {
+	if err := ociPush("https://not-oci", "p", "1", "linux", "x86-64", []byte("x"), ".tar.gz", nil, nil); err == nil {
 		t.Error("expected NewOCIClient error")
 	}
 }
@@ -323,14 +325,16 @@ func TestPublishGlibcTag(t *testing.T) {
 	b := writeBottle(t, "g.tar.gz")
 	op := ociPush
 	defer func() { ociPush = op }()
-	for _, tc := range []struct{ flag, wantTag string }{
-		{"2.27.0", "3.46.0-glibc2.27.0"},
-		{"=2.27.0", "3.46.0-glibc2.27.0"}, // a leading "=" is not doubled
-		{"", "3.46.0"},                    // unset → plain version tag
+	for _, tc := range []struct{ flag, wantTag, wantGlibcAnn string }{
+		{"2.27.0", "3.46.0-glibc2.27.0", "2.27.0"},
+		{"=2.27.0", "3.46.0-glibc2.27.0", "2.27.0"}, // a leading "=" is not doubled
+		{"", "3.46.0", ""},                          // unset → plain tag, no annotation
 	} {
 		var gotTag string
-		ociPush = func(_, _, ver, _, _ string, _ []byte, _ string, _ []bottle.Referrer) error {
+		var gotAnn map[string]string
+		ociPush = func(_, _, ver, _, _ string, _ []byte, _ string, _ []bottle.Referrer, ann map[string]string) error {
 			gotTag = ver
+			gotAnn = ann
 			return nil
 		}
 		args := []string{"publish", "--to", "oci://r.example/x", "--project", "curl.se",
@@ -344,6 +348,9 @@ func TestPublishGlibcTag(t *testing.T) {
 		}
 		if gotTag != tc.wantTag {
 			t.Errorf("glibc=%q: pushed tag = %q, want %q", tc.flag, gotTag, tc.wantTag)
+		}
+		if gotAnn[bottle.GlibcVersionAnnotation] != tc.wantGlibcAnn {
+			t.Errorf("glibc=%q: glibc.version annotation = %q, want %q", tc.flag, gotAnn[bottle.GlibcVersionAnnotation], tc.wantGlibcAnn)
 		}
 	}
 }
