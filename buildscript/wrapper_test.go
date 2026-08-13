@@ -215,3 +215,29 @@ func TestGlibcLoader(t *testing.T) {
 		}
 	}
 }
+
+// TestWrapLibcPkgxGlibcPin: -glibc pins the exact glibc version in the eval.
+func TestWrapLibcPkgxGlibcPin(t *testing.T) {
+	for _, in := range []string{"2.27.0", "=2.27.0"} {
+		s := Wrap(WrapOptions{
+			UserScript: "make install\n",
+			Target:     linuxTgt(), Host: linuxTgt(),
+			Home: "/bk/home", SrcRoot: "/bk/build", PkgxDir: "/opt/pkgx",
+			PkgxBin: "/opt/pkgx/bin/pkgx", LibcPkgx: true, Glibc: in,
+		})
+		if !strings.Contains(s, `"+gnu.org/glibc@=2.27.0"`) {
+			t.Errorf("glibc=%q: missing pinned +gnu.org/glibc@=2.27.0 in:\n%s", in, s)
+		}
+		if strings.Contains(s, `"+gnu.org/glibc" `) {
+			t.Errorf("glibc=%q: unpinned glibc spec present", in)
+		}
+	}
+	// no pin -> unversioned (newest)
+	s := Wrap(WrapOptions{
+		Target: linuxTgt(), Host: linuxTgt(), Home: "/h", SrcRoot: "/b",
+		PkgxDir: "/opt/pkgx", PkgxBin: "/opt/pkgx/bin/pkgx", LibcPkgx: true,
+	})
+	if !strings.Contains(s, `"+gnu.org/glibc"`) || strings.Contains(s, "glibc@=") {
+		t.Errorf("no-pin should use unversioned glibc:\n%s", s)
+	}
+}

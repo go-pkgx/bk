@@ -45,6 +45,9 @@ type Runner struct {
 	// gnu.org/glibc bottle (sovereign FROM-scratch, linux only, C recipes);
 	// anything else (default "") keeps the build container's system glibc.
 	LibcMode string
+	// Glibc pins the exact pkgx glibc version to link against in LibcMode "pkgx"
+	// (a chosen HPC floor, e.g. "2.27.0"); empty = newest.
+	Glibc string
 }
 
 // Result reports what a build produced.
@@ -165,6 +168,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		Home: paths.Home, SrcRoot: paths.Build, PkgxDir: config.PkgxDir(),
 		PkgxBin: r.PkgxBin, BashPath: r.BashPath, BrewkitPath: libexecDir,
 		LibcPkgx: r.LibcMode == "pkgx",
+		Glibc:    r.Glibc,
 	})
 	res.ScriptPath = paths.Build + ".sh"
 	if err := osWriteFile(res.ScriptPath, []byte(script), 0o755); err != nil {

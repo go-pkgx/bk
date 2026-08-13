@@ -91,6 +91,7 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	version := fs.String("version", "", "exact version to build (default: latest resolvable)")
 	pkgx := fs.String("pkgx", "pkgx", "path to the pkgx binary used for the deps env")
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle (sovereign FROM-scratch, linux, C recipes); default keeps the build container's system glibc`)
+	glibc := fs.String("glibc", "", `with --libc=pkgx, pin the exact glibc version to link against, e.g. -glibc 2.27.0 (a chosen HPC floor); default newest`)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -114,6 +115,7 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	runner := buildFactory(pkgxBin)
 	runner.RecipeDir = filepath.Dir(*recipe)
 	runner.LibcMode = *libc
+	runner.Glibc = *glibc
 
 	data, err := os.ReadFile(*recipe)
 	if err != nil {
