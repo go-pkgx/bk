@@ -1,12 +1,16 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +19,7 @@ import (
 	"github.com/go-attest/sbom/provenance"
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bottle"
+	"github.com/ulikunitz/xz"
 )
 
 // OCI artifactType / mediaType of each attestation attached as a referrer.
@@ -23,11 +28,20 @@ const (
 	artifactInToto    = "application/vnd.in-toto+json"
 	buildType         = "https://github.com/go-pkgx/bk/buildtype@v1"
 	builderID         = "https://github.com/go-pkgx/bk"
+
+	// bottle tarball extensions (also the OCI layer-media selector).
+	extTarGz = ".tar.gz"
+	extTarXz = ".tar.xz"
+
+	// glibcProject is the pkgx project whose bottles carry a glibc; its bottles
+	// get the min-kernel annotation instead of a glibc-flavored tag.
+	glibcProject = "gnu.org/glibc"
 )
 
 // seams (swapped in tests).
 var (
 	osReadFile    = os.ReadFile
+	osCreateTemp  = os.CreateTemp
 	nowFn         = time.Now
 	sbomJSON      = func(d sbom.Document) ([]byte, error) { return d.CycloneDX() }
 	provJSON      = func(s provenance.Statement) ([]byte, error) { return s.JSON() }
@@ -41,6 +55,53 @@ var (
 		return err
 	}
 )
+
+// glibcMinKernelFromTarball finds libc.so.6 inside a bottle tarball and returns
+// glibc's minimum supported kernel (from its .note.ABI-tag) — the value stamped
+// as the org.go-pkgx.glibc.min-kernel annotation on a glibc bottle so a
+// glibc-by-kernel selector can pick it. ext is ".tar.gz" or ".tar.xz".
+func glibcMinKernelFromTarball(tarball []byte, ext string) (string, error) {
+	var r io.Reader = bytes.NewReader(tarball)
+	if ext == extTarXz {
+		xr, err := xz.NewReader(r)
+		if err != nil {
+			return "", err
+		}
+		r = xr
+	} else {
+		gz, err := gzip.NewReader(r)
+		if err != nil {
+			return "", err
+		}
+		defer gz.Close()
+		r = gz
+	}
+	tr := tar.NewReader(r)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return "", fmt.Errorf("libc.so.6 not found in tarball")
+		}
+		if err != nil {
+			return "", err
+		}
+		if h.Typeflag != tar.TypeReg || filepath.Base(h.Name) != "libc.so.6" {
+			continue
+		}
+		// GlibcMinKernel wants a path; stage the entry to a temp file.
+		f, err := osCreateTemp("", "libc-*.so.6")
+		if err != nil {
+			return "", err
+		}
+		defer os.Remove(f.Name())
+		if _, err := io.Copy(f, tr); err != nil {
+			f.Close()
+			return "", err
+		}
+		f.Close()
+		return bottle.GlibcMinKernel(f.Name())
+	}
+}
 
 // runPublish implements `bk publish`: push a built bottle to an OCI registry
 // with a CycloneDX SBOM and an in-toto SLSA provenance statement attached as
@@ -72,9 +133,9 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "publish:", err)
 		return 1
 	}
-	ext := ".tar.gz"
-	if strings.HasSuffix(path, ".tar.xz") {
-		ext = ".tar.xz"
+	ext := extTarGz
+	if strings.HasSuffix(path, extTarXz) {
+		ext = extTarXz
 	}
 	var kp *sign.Keypair
 	if *signKey != "" {
@@ -99,11 +160,22 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 	}
 	tag := *version
 	var annotations map[string]string
-	if *glibc != "" {
+	switch {
+	case *project == glibcProject:
+		// The glibc bottle IS the glibc — no flavored tag; instead self-describe
+		// its min supported kernel (from libc.so.6's .note.ABI-tag) so a
+		// glibc-by-kernel selector can pick it.
+		mk, err := glibcMinKernelFromTarball(tarball, ext)
+		if err != nil {
+			fmt.Fprintln(stderr, "publish:", err)
+			return 1
+		}
+		annotations = map[string]string{bottle.GlibcMinKernelAnnotation: mk}
+	case *glibc != "":
+		// A tool built against a specific glibc: flavor the tag + self-describe
+		// which glibc, so a glibc-aware resolver matches it without parsing tags.
 		gv := strings.TrimPrefix(*glibc, "=")
 		tag = *version + "-glibc" + gv
-		// Self-describe the bottle: which glibc it was built against, so a
-		// glibc-aware resolver matches it without parsing the tag.
 		annotations = map[string]string{bottle.GlibcVersionAnnotation: gv}
 	}
 	if err := ociPush(*to, *project, tag, osn, arch, tarball, ext, refs, annotations); err != nil {
