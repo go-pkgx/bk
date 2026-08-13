@@ -29,6 +29,17 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	osn, arch, _ := strings.Cut(*platform, "/")
 	tgt := target.Target{Platform: osn, Arch: arch}
 
+	for _, p := range closureOf(*pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) }) {
+		fmt.Fprintln(stdout, p)
+	}
+	return 0
+}
+
+// closureOf expands want to its transitive runtime-dependency closure for tgt,
+// in topological order (deps before dependents). Shared by `bk closure` and
+// `bk factory`, which builds a closure deps-first so that a consumer of any
+// package finds every one of its dependencies in the registry too.
+var closureOf = func(pantryDir string, tgt target.Target, want []string, warn func(string)) []string {
 	seen := map[string]bool{}
 	var order []string
 	var visit func(proj string)
@@ -37,11 +48,11 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 			return
 		}
 		seen[proj] = true // mark first: breaks dependency cycles
-		rec, err := loadClosureRecipe(*pantryDir, proj)
+		rec, err := loadClosureRecipe(pantryDir, proj)
 		if err != nil {
 			// A dependency we have no recipe for can't be built by us — skip it
 			// (it resolves from upstream dist at build time), but note it.
-			fmt.Fprintf(stderr, "closure: skip %s: %v\n", proj, err)
+			warn(fmt.Sprintf("closure: skip %s: %v", proj, err))
 			return
 		}
 		for _, spec := range build.DepSpecs(rec.Dependencies, tgt) {
@@ -49,13 +60,10 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 		}
 		order = append(order, proj) // post-order → deps precede dependents
 	}
-	for _, p := range fs.Args() {
+	for _, p := range want {
 		visit(p)
 	}
-	for _, p := range order {
-		fmt.Fprintln(stdout, p)
-	}
-	return 0
+	return order
 }
 
 // depName strips the version constraint from a "project@constraint" dep spec.

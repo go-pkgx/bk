@@ -1,0 +1,680 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/go-attest/sign"
+	"github.com/go-pkgx/bk/build"
+	"github.com/go-pkgx/bk/overrides"
+	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-pkgx/bk/target"
+	"github.com/go-pkgx/bk/versions"
+)
+
+// published records what the stubbed publish seam was asked to push.
+type publishedBottle struct {
+	project, version, tag, osn, arch, dist, path, glibc string
+	signed                                              bool
+	when                                                time.Time
+}
+
+// factoryHarness stubs every factory seam (network, pantry, compiler) and
+// collects what the run did.
+type factoryHarness struct {
+	pantry    string
+	failures  string
+	detail    string
+	published []publishedBottle
+	checked   []string // "project@tag" the publish-check was asked about
+	built     []string // "project@constraint"
+	out, errb bytes.Buffer
+}
+
+// newFactoryHarness wires safe defaults: nothing is published yet, every build
+// and publish succeeds, requested projects have two versions, deps resolve to
+// 9.9.
+func newFactoryHarness(t *testing.T) *factoryHarness {
+	t.Helper()
+	h := &factoryHarness{
+		pantry:   t.TempDir(),
+		failures: filepath.Join(t.TempDir(), "failures.txt"),
+		detail:   filepath.Join(t.TempDir(), "failures-detail.txt"),
+	}
+	ov, li, re, pu, bu, hp, bf, lp := factoryOverrides, factoryList, factoryResolve, factoryPublish, factoryBuild, factoryHasPlatform, buildFactory, lookPath
+	t.Cleanup(func() {
+		factoryOverrides, factoryList, factoryResolve, factoryPublish = ov, li, re, pu
+		factoryBuild, factoryHasPlatform, buildFactory, lookPath = bu, hp, bf, lp
+	})
+	for _, k := range []string{"BREWKIT_TARGET", "PLATFORM", "PANTRY", "RECIPES", "DIST", "MAX_VERSIONS", "FORCE", "SIGNING_KEY", "SOURCE_DATE_EPOCH"} {
+		t.Setenv(k, "")
+	}
+
+	factoryHasPlatform = func(_, project, tag, _, _ string) (bool, error) {
+		h.checked = append(h.checked, project+"@"+tag)
+		return false, nil
+	}
+	factoryList = func(any) ([]versions.VersionTag, error) {
+		return []versions.VersionTag{{Version: "2.0", Tag: "v2.0"}, {Version: "1.0", Tag: "v1.0"}}, nil
+	}
+	factoryResolve = func(any, string) (string, string, error) { return "9.9", "v9.9", nil }
+	factoryBuild = func(_ *build.Runner, _ *pantry.Recipe, project, constraint string, _, _ target.Target, out string) (build.Result, error) {
+		h.built = append(h.built, project+"@"+constraint)
+		v := strings.TrimPrefix(constraint, "=")
+		return build.Result{Version: v, BottlePath: filepath.Join(out, project, "v"+v+".tar.gz")}, nil
+	}
+	factoryPublish = func(o publishOptions) (string, error) {
+		tag := flavoredTag(o.Project, o.Version, o.Glibc)
+		h.published = append(h.published, publishedBottle{
+			project: o.Project, version: o.Version, tag: tag, osn: o.OS, arch: o.Arch,
+			dist: o.Dist, path: o.Path, glibc: o.Glibc, signed: o.Key != nil, when: o.Time,
+		})
+		return tag, nil
+	}
+	buildFactory = func(string) *build.Runner { return &build.Runner{} }
+	lookPath = func(s string) (string, error) { return "/usr/local/bin/" + s, nil }
+	return h
+}
+
+// args builds a command line with the harness's paths plus extras.
+func (h *factoryHarness) args(extra ...string) []string {
+	return append([]string{
+		"--platform", "linux/x86-64",
+		"--pantry", h.pantry,
+		"--overrides", "",
+		"--failures", h.failures,
+		"--failures-detail", h.detail,
+	}, extra...)
+}
+
+func (h *factoryHarness) run(t *testing.T, extra ...string) int {
+	t.Helper()
+	h.out.Reset()
+	h.errb.Reset()
+	return runFactory(h.args(extra...), &h.out, &h.errb)
+}
+
+func (h *factoryHarness) failuresFile(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(h.failures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func (h *factoryHarness) detailFile(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(h.detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestRunFactoryBuildsClosureDepsFirst is the headline behaviour: the requested
+// project is expanded to its closure, dependencies build FIRST and at a single
+// resolved version, the requested project builds every version, and each bottle
+// is published under the registry the run was pointed at.
+func TestRunFactoryBuildsClosureDepsFirst(t *testing.T) {
+	h := newFactoryHarness(t)
+	// missing.org has no recipe here: it is not ours to build (it resolves from
+	// upstream dist at build time), so the closure notes it and moves on.
+	writeClosureRecipe(t, h.pantry, "app.org", "dependencies:\n  lib.org: '*'\n  missing.org: '*'\nversions:\n  github: a/app/tags\nbuild: make\n")
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+
+	if code := h.run(t, "--recipes", "app.org", "--to", "oci://example.test/pkgs"); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	if got := strings.Join(h.built, " "); got != "lib.org@=9.9 app.org@=2.0 app.org@=1.0" {
+		t.Fatalf("built = %q", got)
+	}
+	if len(h.published) != 3 {
+		t.Fatalf("published = %+v", h.published)
+	}
+	for _, p := range h.published {
+		if p.dist != "oci://example.test/pkgs" || p.osn != "linux" || p.arch != "x86-64" {
+			t.Fatalf("published to the wrong place: %+v", p)
+		}
+		if p.signed {
+			t.Fatalf("unsigned run produced a signed bottle: %+v", p)
+		}
+		if p.when != time.Unix(defaultEpoch, 0).UTC() {
+			t.Fatalf("attestation time = %v, want the pinned epoch", p.when)
+		}
+	}
+	if h.published[0].path != filepath.Join("dist", "lib.org", "v9.9.tar.gz") {
+		t.Fatalf("bottle path = %q", h.published[0].path)
+	}
+	out := h.out.String()
+	for _, want := range []string{
+		"signing: disabled (no key)",
+		"closure: 2 project(s) for linux/x86-64 (from 1 requested)",
+		"versions app.org: 2 to consider (linux/x86-64)",
+		"✅ OK lib.org 9.9 linux/x86-64",
+		"=== summary (linux/x86-64): 3 built, 0 skipped, 0 failed ===",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(h.errb.String(), "closure: skip missing.org") {
+		t.Fatalf("stderr = %s", h.errb.String())
+	}
+	if h.failuresFile(t) != "" || h.detailFile(t) != "" {
+		t.Fatalf("failure files not empty: %q / %q", h.failuresFile(t), h.detailFile(t))
+	}
+}
+
+// TestFactorySeamsAreReal exercises the seams the other tests stub out, so the
+// production wiring itself is covered rather than only its stand-ins.
+func TestFactorySeamsAreReal(t *testing.T) {
+	t.Run("build runs the real Runner.Build", func(t *testing.T) {
+		tempEnv(t)
+		rec, err := pantry.Parse([]byte(miniRecipe))
+		if err != nil {
+			t.Fatal(err)
+		}
+		runner := stubFactory("test.org/x")("pkgx")
+		res, err := factoryBuild(runner, rec, "test.org/x", "*", target.Host(), target.Host(), t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Version != "1.0.0" {
+			t.Fatalf("res = %+v", res)
+		}
+	})
+
+	t.Run("publish-check talks to a registry", func(t *testing.T) {
+		m := newMiniOCI()
+		defer m.close()
+		// nothing has been pushed to this registry: an absent tag is a
+		// not-published signal, not an error.
+		published, err := factoryHasPlatform(m.base(), "lib.org", "1.0", "linux", "x86-64")
+		if err != nil || published {
+			t.Fatalf("published = %v, err = %v", published, err)
+		}
+		if _, err := factoryHasPlatform("://bad", "lib.org", "1.0", "linux", "x86-64"); err == nil {
+			t.Fatal("want an error for an unusable registry base")
+		}
+	})
+}
+
+// TestRunFactorySkipIfPublished: an already-published (project, tag, platform)
+// is skipped — and --force rebuilds it anyway.
+func TestRunFactorySkipIfPublished(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		extra             []string
+		wantBuilt         int
+		wantSkipped       int
+		wantSummaryPhrase string
+	}{
+		{"skip", nil, 0, 1, "0 built, 1 skipped, 0 failed"},
+		{"force", []string{"--force"}, 1, 0, "1 built, 0 skipped, 0 failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFactoryHarness(t)
+			writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+			factoryHasPlatform = func(_, project, tag, _, _ string) (bool, error) {
+				h.checked = append(h.checked, project+"@"+tag)
+				return true, nil
+			}
+			if code := h.run(t, append([]string{"--recipes", "lib.org", "--max-versions", "1"}, tc.extra...)...); code != 0 {
+				t.Fatalf("code = %d", code)
+			}
+			if len(h.built) != tc.wantBuilt {
+				t.Fatalf("built = %v", h.built)
+			}
+			if !strings.Contains(h.out.String(), tc.wantSummaryPhrase) {
+				t.Fatalf("stdout = %s", h.out.String())
+			}
+			if tc.wantSkipped > 0 && !strings.Contains(h.out.String(), "⏭  SKIP lib.org 2.0 (linux/x86-64) — already published") {
+				t.Fatalf("stdout = %s", h.out.String())
+			}
+			if tc.name == "force" && len(h.checked) != 0 {
+				t.Fatalf("--force still queried the registry: %v", h.checked)
+			}
+		})
+	}
+}
+
+// TestRunFactoryPublishCheckErrorBuildsAnyway: an unreachable registry must not
+// silently skip the world — the check failure is reported and the build runs.
+func TestRunFactoryPublishCheckErrorBuildsAnyway(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	factoryHasPlatform = func(string, string, string, string, string) (bool, error) {
+		return false, errors.New("dial tcp: no route to host")
+	}
+	if code := h.run(t, "--recipes", "lib.org", "--max-versions", "1"); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if len(h.built) != 1 {
+		t.Fatalf("built = %v", h.built)
+	}
+	if !strings.Contains(h.errb.String(), "publish-check lib.org 2.0: dial tcp") {
+		t.Fatalf("stderr = %s", h.errb.String())
+	}
+}
+
+// TestRunFactoryMaxVersions caps a requested project to the newest N versions.
+func TestRunFactoryMaxVersions(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	if code := h.run(t, "--recipes", "lib.org", "--max-versions", "1"); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if got := strings.Join(h.built, " "); got != "lib.org@=2.0" {
+		t.Fatalf("built = %q, want only the newest", got)
+	}
+}
+
+// TestRunFactoryGlibcFlavor: --glibc implies the pkgx libc and flavors both the
+// published tag and the already-published check.
+func TestRunFactoryGlibcFlavor(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	writeClosureRecipe(t, h.pantry, "gnu.org/glibc", "versions:\n  github: a/glibc/tags\nbuild: make\n")
+	var runner *build.Runner
+	buildFactory = func(string) *build.Runner { runner = &build.Runner{}; return runner }
+
+	if code := h.run(t, "--recipes", "lib.org gnu.org/glibc", "--glibc", "2.27.0", "--max-versions", "1"); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	if runner.LibcMode != "pkgx" || runner.Glibc != "2.27.0" {
+		t.Fatalf("runner libc = %q glibc = %q", runner.LibcMode, runner.Glibc)
+	}
+	if got := strings.Join(h.checked, " "); got != "lib.org@2.0-glibc2.27.0 gnu.org/glibc@2.0" {
+		t.Fatalf("checked = %q (glibc itself must not be flavored)", got)
+	}
+	if h.published[0].tag != "2.0-glibc2.27.0" || h.published[1].tag != "2.0" {
+		t.Fatalf("tags = %q %q", h.published[0].tag, h.published[1].tag)
+	}
+	if !strings.Contains(h.out.String(), "✅ OK lib.org 2.0-glibc2.27.0 linux/x86-64") {
+		t.Fatalf("stdout = %s", h.out.String())
+	}
+}
+
+// TestRunFactoryFailureStages: every way one recipe can fail is recorded in
+// failures.txt (+ detail) and never fails the run.
+func TestRunFactoryFailureStages(t *testing.T) {
+	t.Run("build, with the error tail captured", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+		script := filepath.Join(t.TempDir(), "build.sh")
+		if err := os.WriteFile(script, []byte("echo compiling lib\necho 'error: boom' >&2\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		factoryBuild = func(r *build.Runner, _ *pantry.Recipe, _, _ string, _, _ target.Target, _ string) (build.Result, error) {
+			if err := r.Run(script, nil); err != nil { // the real script runner, teed into the tail buffer
+				t.Fatal(err)
+			}
+			return build.Result{}, errors.New("stage install: rename: file exists")
+		}
+		if code := h.run(t, "--recipes", "lib.org", "--max-versions", "1"); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if got := h.failuresFile(t); got != "lib.org 2.0 build\n" {
+			t.Fatalf("failures.txt = %q", got)
+		}
+		detail := h.detailFile(t)
+		for _, want := range []string{
+			"########## lib.org 2.0 (linux/x86-64) — build failed: stage install: rename: file exists",
+			"compiling lib", "error: boom",
+		} {
+			if !strings.Contains(detail, want) {
+				t.Fatalf("failures-detail.txt missing %q:\n%s", want, detail)
+			}
+		}
+		// the build's own output still reaches the log, inside a fold
+		if !strings.Contains(h.out.String(), "::group::build lib.org 2.0 (linux/x86-64)\ncompiling lib") {
+			t.Fatalf("stdout = %s", h.out.String())
+		}
+		if !strings.Contains(h.out.String(), "1 failed") {
+			t.Fatalf("stdout = %s", h.out.String())
+		}
+	})
+
+	for _, tc := range []struct {
+		name, want string
+		setup      func(t *testing.T, h *factoryHarness)
+	}{
+		{"package", "lib.org 2.0 package\n", func(t *testing.T, h *factoryHarness) {
+			factoryBuild = func(_ *build.Runner, _ *pantry.Recipe, _, _ string, _, _ target.Target, _ string) (build.Result, error) {
+				return build.Result{Version: "2.0"}, nil // built, but nothing bottled
+			}
+		}},
+		{"publish", "lib.org 2.0 publish\n", func(t *testing.T, h *factoryHarness) {
+			factoryPublish = func(publishOptions) (string, error) { return "", errors.New("403 denied") }
+		}},
+		{"versions listing", "lib.org latest versions\n", func(t *testing.T, h *factoryHarness) {
+			factoryList = func(any) ([]versions.VersionTag, error) { return nil, errors.New("spec has neither github nor url") }
+		}},
+		{"versions empty", "lib.org latest versions\n", func(t *testing.T, h *factoryHarness) {
+			factoryList = func(any) ([]versions.VersionTag, error) { return nil, nil }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFactoryHarness(t)
+			writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+			tc.setup(t, h)
+			if code := h.run(t, "--recipes", "lib.org", "--max-versions", "1"); code != 0 {
+				t.Fatalf("code = %d", code)
+			}
+			if got := h.failuresFile(t); got != tc.want {
+				t.Fatalf("failures.txt = %q, want %q", got, tc.want)
+			}
+			if !strings.Contains(h.out.String(), "0 built, 0 skipped, 1 failed") {
+				t.Fatalf("stdout = %s", h.out.String())
+			}
+			if !strings.Contains(h.out.String(), "failures:\n"+tc.want) {
+				t.Fatalf("summary did not list the failure:\n%s", h.out.String())
+			}
+		})
+	}
+
+	t.Run("dependency version resolution", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		writeClosureRecipe(t, h.pantry, "app.org", "dependencies:\n  lib.org: '*'\nversions:\n  github: a/app/tags\nbuild: make\n")
+		writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+		factoryResolve = func(any, string) (string, string, error) {
+			return "", "", errors.New("no candidate version matched")
+		}
+		if code := h.run(t, "--recipes", "app.org", "--max-versions", "1"); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if got := h.failuresFile(t); got != "lib.org latest versions\n" {
+			t.Fatalf("failures.txt = %q", got)
+		}
+		if got := strings.Join(h.built, " "); got != "app.org@=2.0" {
+			t.Fatalf("a failed dep must not stop the rest: built = %q", got)
+		}
+	})
+
+	t.Run("unparseable recipe", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+		// closureOf parsed the recipe already; corrupt it before the build loop.
+		closure := closureOf
+		t.Cleanup(func() { closureOf = closure })
+		closureOf = func(dir string, tgt target.Target, want []string, warn func(string)) []string {
+			writeClosureRecipe(t, h.pantry, "lib.org", "versions: [\n")
+			return want
+		}
+		if code := h.run(t, "--recipes", "lib.org"); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if got := h.failuresFile(t); got != "lib.org latest recipe\n" {
+			t.Fatalf("failures.txt = %q", got)
+		}
+	})
+}
+
+// TestRunFactorySkipsProjectWithoutRecipe guards the loop against a project the
+// pantry cannot supply (e.g. removed between the closure walk and the build).
+func TestRunFactorySkipsProjectWithoutRecipe(t *testing.T) {
+	h := newFactoryHarness(t)
+	closure := closureOf
+	t.Cleanup(func() { closureOf = closure })
+	closureOf = func(string, target.Target, []string, func(string)) []string { return []string{"ghost.org"} }
+	if code := h.run(t, "--recipes", "ghost.org"); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if !strings.Contains(h.out.String(), "SKIP ghost.org (no recipe)") {
+		t.Fatalf("stdout = %s", h.out.String())
+	}
+	if len(h.built) != 0 {
+		t.Fatalf("built = %v", h.built)
+	}
+}
+
+// TestRunFactoryOverridesApplied: the pantry is patched before the closure is
+// computed, and an override failure is fatal only when the directory itself is
+// unusable.
+func TestRunFactoryOverridesApplied(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	var gotDir, gotRoot string
+	factoryOverrides = func(o overrides.Options) (overrides.Result, error) {
+		gotDir, gotRoot = o.Dir, o.Root
+		o.Log("override applied: x.patch")
+		o.Warn("override SKIP (does not apply): y.patch")
+		return overrides.Result{Applied: []string{"x.patch"}}, nil
+	}
+	if code := h.run(t, "--recipes", "lib.org", "--overrides", "over", "--max-versions", "1"); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if gotDir != "over" || gotRoot != h.pantry {
+		t.Fatalf("overrides applied to %q / %q", gotDir, gotRoot)
+	}
+	if !strings.Contains(h.out.String(), "override applied: x.patch") || !strings.Contains(h.errb.String(), "y.patch") {
+		t.Fatalf("out = %s err = %s", h.out.String(), h.errb.String())
+	}
+
+	factoryOverrides = func(overrides.Options) (overrides.Result, error) {
+		return overrides.Result{}, errors.New("overrides: syntax error in pattern")
+	}
+	if code := h.run(t, "--recipes", "lib.org", "--overrides", "over"); code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+}
+
+// TestRunFactorySigning: a key from a file or straight from $SIGNING_KEY (as CI
+// provides it) reaches the publisher; an unreadable key is fatal.
+func TestRunFactorySigning(t *testing.T) {
+	kp, err := sign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyText := kp.SecretKeyFile("test")
+
+	t.Run("key file", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+		path := filepath.Join(t.TempDir(), "key")
+		if err := os.WriteFile(path, []byte(keyText), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := h.run(t, "--recipes", "lib.org", "--sign", path, "--max-versions", "1"); code != 0 {
+			t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+		}
+		if !h.published[0].signed || !strings.Contains(h.out.String(), "signing: enabled") {
+			t.Fatalf("bottle not signed: %+v / %s", h.published, h.out.String())
+		}
+	})
+
+	t.Run("SIGNING_KEY env", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+		t.Setenv("SIGNING_KEY", keyText)
+		if code := h.run(t, "--recipes", "lib.org", "--max-versions", "1"); code != 0 {
+			t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+		}
+		if !h.published[0].signed {
+			t.Fatalf("bottle not signed: %+v", h.published)
+		}
+	})
+
+	t.Run("unreadable key", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		if code := h.run(t, "--recipes", "lib.org", "--sign", filepath.Join(t.TempDir(), "absent")); code != 1 {
+			t.Fatalf("code = %d, want 1", code)
+		}
+		if !strings.Contains(h.errb.String(), "no such file") {
+			t.Fatalf("stderr = %s", h.errb.String())
+		}
+	})
+}
+
+// TestRunFactoryRecipesSources: the want list comes from --recipes, else from
+// the recipes file (comments and blanks dropped).
+func TestRunFactoryRecipesSources(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	list := filepath.Join(t.TempDir(), "recipes.txt")
+	if err := os.WriteFile(list, []byte("# a comment\n\nlib.org\n  \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.run(t, "--recipes-file", list, "--max-versions", "1"); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	if got := strings.Join(h.built, " "); got != "lib.org@=2.0" {
+		t.Fatalf("built = %q", got)
+	}
+
+	if code := h.run(t, "--recipes-file", filepath.Join(t.TempDir(), "absent.txt")); code != 1 {
+		t.Fatalf("missing recipes file: code = %d, want 1", code)
+	}
+	empty := filepath.Join(t.TempDir(), "empty.txt")
+	if err := os.WriteFile(empty, []byte("# nothing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.run(t, "--recipes-file", empty); code != 1 {
+		t.Fatalf("empty recipes file: code = %d, want 1", code)
+	}
+	if !strings.Contains(h.errb.String(), "nothing to build") {
+		t.Fatalf("stderr = %s", h.errb.String())
+	}
+}
+
+// TestRunFactoryUsageErrors covers the argument/target validation.
+func TestRunFactoryUsageErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"bad flag", []string{"--nope"}, 2},
+		{"no platform", []string{"--recipes", "lib.org"}, 2},
+		{"bad platform", []string{"--platform", "linux", "--recipes", "lib.org"}, 2},
+		{"unsupported arch", []string{"--platform", "linux/frobnicate", "--recipes", "lib.org"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFactoryHarness(t)
+			var out, errb bytes.Buffer
+			if code := runFactory(tc.args, &out, &errb); code != tc.want {
+				t.Fatalf("code = %d, want %d (stderr %s)", code, tc.want, errb.String())
+			}
+			_ = h
+		})
+	}
+}
+
+// TestRunFactoryPkgxLookupFallback: an unresolvable pkgx name is passed through
+// verbatim rather than swallowed.
+func TestRunFactoryPkgxLookupFallback(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	var gotBin string
+	lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	buildFactory = func(bin string) *build.Runner { gotBin = bin; return &build.Runner{} }
+	if code := h.run(t, "--recipes", "lib.org", "--pkgx", "/opt/pkgx", "--max-versions", "1"); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if gotBin != "/opt/pkgx" {
+		t.Fatalf("pkgx bin = %q", gotBin)
+	}
+}
+
+// TestRunFactoryFailureFileWriteErrors: an unwritable report path is reported,
+// not fatal — the bottles are already published.
+func TestRunFactoryFailureFileWriteErrors(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	h.failures = filepath.Join(t.TempDir(), "absent-dir", "failures.txt")
+	h.detail = filepath.Join(t.TempDir(), "absent-dir", "detail.txt")
+	if code := h.run(t, "--recipes", "lib.org", "--max-versions", "1"); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if n := strings.Count(h.errb.String(), "no such file or directory"); n != 2 {
+		t.Fatalf("stderr = %s", h.errb.String())
+	}
+	if !strings.Contains(h.out.String(), "1 built") {
+		t.Fatalf("stdout = %s", h.out.String())
+	}
+}
+
+// TestFactoryDispatch covers the main-loop `case "factory"` route.
+func TestFactoryDispatch(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	code, out, errs := run2(t, "factory", "--platform", "linux/x86-64", "--pantry", h.pantry,
+		"--overrides", "", "--failures", h.failures, "--failures-detail", h.detail,
+		"--recipes", "lib.org", "--max-versions", "1")
+	if code != 0 {
+		t.Fatalf("dispatch factory code=%d err=%q", code, errs)
+	}
+	if !strings.Contains(out, "1 built, 0 skipped, 0 failed") {
+		t.Fatalf("dispatch factory out=%q", out)
+	}
+}
+
+func TestFactoryTime(t *testing.T) {
+	t.Setenv("SOURCE_DATE_EPOCH", "")
+	if got := factoryTime(); got != time.Unix(defaultEpoch, 0).UTC() {
+		t.Fatalf("unset epoch → %v, want the pinned default", got)
+	}
+	t.Setenv("SOURCE_DATE_EPOCH", "1234567890")
+	if got := factoryTime(); got != time.Unix(1234567890, 0).UTC() {
+		t.Fatalf("epoch honoured? got %v", got)
+	}
+}
+
+func TestEnvInt(t *testing.T) {
+	for _, tc := range []struct {
+		val  string
+		want int
+	}{{"", 0}, {"abc", 0}, {"-3", 0}, {"7", 7}} {
+		t.Setenv("BK_TEST_N", tc.val)
+		if got := envInt("BK_TEST_N"); got != tc.want {
+			t.Fatalf("envInt(%q) = %d, want %d", tc.val, got, tc.want)
+		}
+	}
+}
+
+func TestFactoryWantFields(t *testing.T) {
+	got, err := factoryWant("  a.org   b.org ", "/nonexistent")
+	if err != nil || strings.Join(got, ",") != "a.org,b.org" {
+		t.Fatalf("got %v, err %v", got, err)
+	}
+}
+
+// TestTailWriter: output passes through untouched while only the last lines are
+// remembered, including a trailing partial line.
+func TestTailWriter(t *testing.T) {
+	var sink bytes.Buffer
+	tw := &tailWriter{w: &sink, max: 2}
+	for _, s := range []string{"one\ntwo\n", "three\nfour", "teen\n", "five"} {
+		n, err := tw.Write([]byte(s))
+		if err != nil || n != len(s) {
+			t.Fatalf("Write(%q) = %d, %v", s, n, err)
+		}
+	}
+	if sink.String() != "one\ntwo\nthree\nfourteen\nfive" {
+		t.Fatalf("pass-through = %q", sink.String())
+	}
+	if got := tw.tail(); got != "three\nfourteen\nfive" {
+		t.Fatalf("tail = %q", got)
+	}
+}
+
+// TestTailWriterWriteError propagates the underlying writer's error.
+func TestTailWriterWriteError(t *testing.T) {
+	tw := &tailWriter{w: errWriter{}, max: 2}
+	if _, err := tw.Write([]byte("x\n")); err == nil {
+		t.Fatal("want error")
+	}
+	if tw.tail() != "" {
+		t.Fatalf("tail = %q", tw.tail())
+	}
+}
+
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, errors.New("closed") }
