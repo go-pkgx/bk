@@ -28,14 +28,6 @@ const (
 	artifactInToto    = "application/vnd.in-toto+json"
 	buildType         = "https://github.com/go-pkgx/bk/buildtype@v1"
 	builderID         = "https://github.com/go-pkgx/bk"
-
-	// bottle tarball extensions (also the OCI layer-media selector).
-	extTarGz = ".tar.gz"
-	extTarXz = ".tar.xz"
-
-	// glibcProject is the pkgx project whose bottles carry a glibc; its bottles
-	// get the min-kernel annotation instead of a glibc-flavored tag.
-	glibcProject = "gnu.org/glibc"
 )
 
 // seams (swapped in tests).
@@ -62,7 +54,7 @@ var (
 // glibc-by-kernel selector can pick it. ext is ".tar.gz" or ".tar.xz".
 func glibcMinKernelFromTarball(tarball []byte, ext string) (string, error) {
 	var r io.Reader = bytes.NewReader(tarball)
-	if ext == extTarXz {
+	if ext == bottle.ExtTarXz {
 		xr, err := xz.NewReader(r)
 		if err != nil {
 			return "", err
@@ -133,9 +125,9 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "publish:", err)
 		return 1
 	}
-	ext := extTarGz
-	if strings.HasSuffix(path, extTarXz) {
-		ext = extTarXz
+	ext := bottle.ExtTarGz
+	if strings.HasSuffix(path, bottle.ExtTarXz) {
+		ext = bottle.ExtTarXz
 	}
 	var kp *sign.Keypair
 	if *signKey != "" {
@@ -161,7 +153,7 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 	tag := *version
 	var annotations map[string]string
 	switch {
-	case *project == glibcProject:
+	case *project == bottle.GlibcProject:
 		// The glibc bottle IS the glibc — no flavored tag; instead self-describe
 		// its min supported kernel (from libc.so.6's .note.ABI-tag) so a
 		// glibc-by-kernel selector can pick it.
