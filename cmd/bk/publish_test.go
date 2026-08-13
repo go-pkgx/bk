@@ -1,7 +1,11 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,6 +23,7 @@ import (
 	"github.com/go-attest/sbom/provenance"
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bottle"
+	"github.com/ulikunitz/xz"
 )
 
 // miniOCI is a tiny in-memory OCI registry — just enough of the distribution
@@ -352,5 +357,175 @@ func TestPublishGlibcTag(t *testing.T) {
 		if gotAnn[bottle.GlibcVersionAnnotation] != tc.wantGlibcAnn {
 			t.Errorf("glibc=%q: glibc.version annotation = %q, want %q", tc.flag, gotAnn[bottle.GlibcVersionAnnotation], tc.wantGlibcAnn)
 		}
+	}
+}
+
+// --- glibc min-kernel extraction ------------------------------------------
+
+// abiNoteELF crafts a minimal ELF64 with a .note.ABI-tag encoding kernel maj.min.sub.
+func abiNoteELF(maj, min, sub uint32) []byte {
+	le := binary.LittleEndian
+	// note: namesz=4("GNU\0") descsz=16 type=1 | "GNU\0" | [os=0,maj,min,sub]
+	note := make([]byte, 12)
+	le.PutUint32(note[0:], 4)
+	le.PutUint32(note[4:], 16)
+	le.PutUint32(note[8:], 1)
+	note = append(note, 'G', 'N', 'U', 0)
+	d := make([]byte, 16)
+	le.PutUint32(d[4:], maj)
+	le.PutUint32(d[8:], min)
+	le.PutUint32(d[12:], sub)
+	note = append(note, d...)
+
+	var shstr bytes.Buffer
+	shstr.WriteByte(0)
+	nName := func(s string) uint32 { o := uint32(shstr.Len()); shstr.WriteString(s); shstr.WriteByte(0); return o }
+	nNote := nName(".note.ABI-tag")
+	nShstr := nName(".shstrtab")
+	noteOff := uint64(64)
+	shstrOff := noteOff + uint64(len(note))
+	shoff := shstrOff + uint64(shstr.Len())
+
+	b := &bytes.Buffer{}
+	h := make([]byte, 64)
+	copy(h[0:], []byte{0x7f, 'E', 'L', 'F'})
+	h[4], h[5], h[6] = 2, 1, 1
+	le.PutUint16(h[16:], 3)
+	le.PutUint16(h[18:], 62)
+	le.PutUint32(h[20:], 1)
+	le.PutUint64(h[40:], shoff)
+	le.PutUint16(h[52:], 64)
+	le.PutUint16(h[58:], 64)
+	le.PutUint16(h[60:], 3)
+	le.PutUint16(h[62:], 2)
+	b.Write(h)
+	b.Write(note)
+	b.Write(shstr.Bytes())
+	sh := func(name, typ uint32, off, sz, align uint64) {
+		s := make([]byte, 64)
+		le.PutUint32(s[0:], name)
+		le.PutUint32(s[4:], typ)
+		le.PutUint64(s[24:], off)
+		le.PutUint64(s[32:], sz)
+		le.PutUint64(s[48:], align)
+		b.Write(s)
+	}
+	sh(0, 0, 0, 0, 0)
+	sh(nNote, 7, noteOff, uint64(len(note)), 4)
+	sh(nShstr, 3, shstrOff, uint64(shstr.Len()), 1)
+	return b.Bytes()
+}
+
+func tarBytes(files map[string][]byte) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for name, data := range files {
+		_ = tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Size: int64(len(data)), Mode: 0o644})
+		_, _ = tw.Write(data)
+	}
+	_ = tw.Close()
+	return buf.Bytes()
+}
+
+func gzBytes(b []byte) []byte {
+	var out bytes.Buffer
+	gw := gzip.NewWriter(&out)
+	_, _ = gw.Write(b)
+	_ = gw.Close()
+	return out.Bytes()
+}
+
+func xzBytes(t *testing.T, b []byte) []byte {
+	var out bytes.Buffer
+	xw, err := xz.NewWriter(&out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = xw.Write(b)
+	_ = xw.Close()
+	return out.Bytes()
+}
+
+func TestGlibcMinKernelFromTarball(t *testing.T) {
+	libc := abiNoteELF(3, 2, 0)
+	// gzip, real libc.so.6 nested under a version dir
+	if mk, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{
+		"gnu.org/glibc/v2.27.0/lib/glibc-2.27/libc.so.6": libc,
+		"gnu.org/glibc/v2.27.0/lib/other.so":             []byte("x"),
+	})), extTarGz); err != nil || mk != "3.2.0" {
+		t.Fatalf("gz = %q, %v (want 3.2.0)", mk, err)
+	}
+	// xz path
+	if mk, err := glibcMinKernelFromTarball(xzBytes(t, tarBytes(map[string][]byte{"a/libc.so.6": libc})), extTarXz); err != nil || mk != "3.2.0" {
+		t.Fatalf("xz = %q, %v", mk, err)
+	}
+	// no libc.so.6
+	if _, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{"a/other": libc})), extTarGz); err == nil {
+		t.Error("missing libc.so.6 should error")
+	}
+	// libc.so.6 that is not an ELF
+	if _, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{"a/libc.so.6": []byte("garbage")})), extTarGz); err == nil {
+		t.Error("non-ELF libc.so.6 should error")
+	}
+	// bad gzip / bad xz
+	if _, err := glibcMinKernelFromTarball([]byte("not gzip"), extTarGz); err == nil {
+		t.Error("bad gzip should error")
+	}
+	if _, err := glibcMinKernelFromTarball([]byte("not xz"), extTarXz); err == nil {
+		t.Error("bad xz should error")
+	}
+	// corrupt tar header -> tr.Next error (a full 512-byte block of garbage)
+	if _, err := glibcMinKernelFromTarball(gzBytes(bytes.Repeat([]byte{0xff}, 512)), extTarGz); err == nil {
+		t.Error("corrupt tar header should error")
+	}
+	// truncated entry -> io.Copy error: full header (size 2000) but the stream is
+	// cut mid-data, so copying the libc.so.6 body hits an unexpected EOF.
+	full := tarBytes(map[string][]byte{"a/libc.so.6": make([]byte, 2000)})
+	if _, err := glibcMinKernelFromTarball(gzBytes(full[:612]), extTarGz); err == nil {
+		t.Error("truncated entry should error on io.Copy")
+	}
+	// osCreateTemp failure via the seam
+	oc := osCreateTemp
+	osCreateTemp = func(string, string) (*os.File, error) { return nil, errBoom }
+	if _, err := glibcMinKernelFromTarball(gzBytes(tarBytes(map[string][]byte{"a/libc.so.6": libc})), extTarGz); err == nil {
+		t.Error("osCreateTemp failure should propagate")
+	}
+	osCreateTemp = oc
+}
+
+// TestPublishGlibcBottleMinKernel: publishing gnu.org/glibc stamps min-kernel
+// and does NOT flavor the tag.
+func TestPublishGlibcBottleMinKernel(t *testing.T) {
+	dir := t.TempDir()
+	bp := filepath.Join(dir, "v2.27.0.tar.gz")
+	if err := os.WriteFile(bp, gzBytes(tarBytes(map[string][]byte{
+		"gnu.org/glibc/v2.27.0/lib/glibc-2.27/libc.so.6": abiNoteELF(3, 10, 0),
+	})), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	op := ociPush
+	defer func() { ociPush = op }()
+	var gotTag string
+	var gotAnn map[string]string
+	ociPush = func(_, _, ver, _, _ string, _ []byte, _ string, _ []bottle.Referrer, ann map[string]string) error {
+		gotTag, gotAnn = ver, ann
+		return nil
+	}
+	if code, _, errs := run2(t, "publish", "--to", "oci://r.example/x", "--project", glibcProject,
+		"--version", "2.27.0", "--platform", "linux/x86-64", bp); code != 0 {
+		t.Fatalf("glibc publish code=%d err=%q", code, errs)
+	}
+	if gotTag != "2.27.0" {
+		t.Errorf("glibc tag = %q, want unflavored 2.27.0", gotTag)
+	}
+	if gotAnn[bottle.GlibcMinKernelAnnotation] != "3.10.0" {
+		t.Errorf("min-kernel annotation = %q, want 3.10.0", gotAnn[bottle.GlibcMinKernelAnnotation])
+	}
+	// a glibc tarball WITHOUT libc.so.6 fails the publish
+	bad := filepath.Join(dir, "v9.tar.gz")
+	os.WriteFile(bad, gzBytes(tarBytes(map[string][]byte{"x/y": []byte("z")})), 0o644)
+	if code, _, _ := run2(t, "publish", "--to", "oci://r.example/x", "--project", glibcProject,
+		"--version", "9", "--platform", "linux/x86-64", bad); code != 1 {
+		t.Error("glibc bottle without libc.so.6 should fail")
 	}
 }
