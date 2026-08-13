@@ -41,7 +41,9 @@ var (
 	factoryBuild     = func(r *build.Runner, rec *pantry.Recipe, project, constraint string, tgt, host target.Target, out string) (build.Result, error) {
 		return r.Build(rec, project, constraint, tgt, host, out)
 	}
-	factoryHasPlatform = func(dist, project, ver, osn, arch string) (bool, error) {
+	factoryUpstreamVersions = bottle.VersionsFor
+	factoryDownload         = bottle.DownloadBottle
+	factoryHasPlatform      = func(dist, project, ver, osn, arch string) (bool, error) {
 		c, err := bottle.NewOCIClient(dist)
 		if err != nil {
 			return false, err
@@ -73,6 +75,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	platform := fs.String("platform", envOr("PLATFORM", ""), "target os/arch, e.g. linux/x86-64 (required)")
 	bottles := fs.String("bottles", "dist", "local directory the built bottles are staged in")
 	maxVersions := fs.Int("max-versions", envInt("MAX_VERSIONS"), "cap versions built per requested project, newest first (0 = all)")
+	mirrorFrom := fs.String("mirror-from", "", "instead of building, copy each bottle from this upstream pkgx dist (e.g. https://dist.pkgx.dev) and republish it signed + attested — for versions we cannot or need not rebuild, such as ancient glibc")
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
 	force := fs.Bool("force", os.Getenv("FORCE") != "", "rebuild and republish even when the bottle is already in the registry")
@@ -144,6 +147,12 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	}
 
 	list := closureOf(*pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
+	if *mirrorFrom != "" {
+		// Mirroring needs no recipe (no build, and the versions come from the
+		// upstream dist), so a requested project the closure walk had to drop for
+		// want of one is still mirrored.
+		list = appendMissing(list, want)
+	}
 	fmt.Fprintf(stdout, "closure: %d project(s) for %s (from %d requested)\n", len(list), *platform, len(want))
 
 	pkgxBin := *pkgx
@@ -159,10 +168,26 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		osn: osn, arch: arch, platform: *platform,
 		dist: *to, bottles: *bottles, glibc: *glibc,
 		force: *force, key: kp, when: factoryTime(),
+		mirror: strings.TrimRight(*mirrorFrom, "/"),
 		stdout: stdout, stderr: stderr,
+	}
+	if f.mirror != "" {
+		setUpstreamDist(f.mirror)
+		fmt.Fprintf(stdout, "mirror: copying bottles from %s (no build)\n", f.mirror)
 	}
 
 	for _, proj := range list {
+		if f.mirror != "" {
+			vers, err := f.mirrorVersionsFor(proj, requested[proj], *maxVersions)
+			if err != nil {
+				f.fail(proj, "", "versions", err)
+				continue
+			}
+			for _, v := range vers {
+				f.mirrorOne(proj, v)
+			}
+			continue
+		}
 		recPath := filepath.Join(*pantryDir, "projects", proj, "package.yml")
 		data, err := os.ReadFile(recPath)
 		if err != nil {
@@ -213,6 +238,7 @@ type factory struct {
 	force    bool
 	key      *sign.Keypair
 	when     time.Time
+	mirror   string // upstream dist to copy from, "" = build
 	stdout   io.Writer
 	stderr   io.Writer
 
@@ -295,6 +321,103 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 	}
 	fmt.Fprintf(f.stdout, "✅ OK %s %s %s\n", proj, flavoredTag(proj, res.Version, f.glibc), f.platform)
 	f.ok++
+}
+
+// mirrorVersionsFor lists the versions to copy for a project: what the UPSTREAM
+// dist actually carries for this platform (newest first, capped) for a requested
+// project, or just its newest for a closure-only dependency. Upstream's listing
+// — not the recipe's tags — is the truth here: only a version upstream published
+// a bottle for can be copied.
+func (f *factory) mirrorVersionsFor(proj string, requested bool, max int) ([]string, error) {
+	vs, err := factoryUpstreamVersions(proj, f.osn, f.arch)
+	if err != nil {
+		return nil, err
+	}
+	if len(vs) == 0 {
+		return nil, fmt.Errorf("no upstream bottle for %s/%s", f.osn, f.arch)
+	}
+	out := make([]string, 0, len(vs))
+	for i := len(vs) - 1; i >= 0; i-- { // upstream lists ascending
+		out = append(out, vs[i].Raw)
+	}
+	if !requested {
+		return out[:1], nil
+	}
+	if max > 0 && len(out) > max {
+		out = out[:max]
+	}
+	fmt.Fprintf(f.stdout, "versions %s: %d to consider (%s, upstream)\n", proj, len(out), f.platform)
+	return out, nil
+}
+
+// mirrorOne copies one upstream bottle into our registry, republished with our
+// own SBOM, provenance and signature (and, for glibc, its min-kernel floor).
+func (f *factory) mirrorOne(proj, ver string) {
+	tag := flavoredTag(proj, ver, f.glibc)
+	if !f.force {
+		switch published, err := factoryHasPlatform(f.dist, proj, tag, f.osn, f.arch); {
+		case err != nil:
+			fmt.Fprintf(f.stderr, "factory: publish-check %s %s: %v\n", proj, tag, err)
+		case published:
+			fmt.Fprintf(f.stdout, "⏭  SKIP %s %s (%s) — already published\n", proj, tag, f.platform)
+			f.skipped++
+			return
+		}
+	}
+	data, ext, err := factoryDownload(proj, ver, f.osn, f.arch)
+	if err != nil {
+		f.fail(proj, ver, "fetch", err)
+		return
+	}
+	// Stage it in the same pkgx dist layout a build writes, so the Pages mirror
+	// picks a mirrored bottle up exactly like a built one.
+	dir := filepath.Join(f.bottles, filepath.FromSlash(proj), f.osn, f.arch)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		f.fail(proj, ver, "fetch", err)
+		return
+	}
+	path := filepath.Join(dir, "v"+ver+ext)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		f.fail(proj, ver, "fetch", err)
+		return
+	}
+	if _, err := factoryPublish(publishOptions{
+		Dist: f.dist, Project: proj, Version: ver,
+		OS: f.osn, Arch: f.arch, Path: path,
+		Glibc: f.glibc, Key: f.key, Time: f.when,
+	}); err != nil {
+		f.fail(proj, ver, "publish", err)
+		return
+	}
+	fmt.Fprintf(f.stdout, "✅ MIRRORED %s %s %s (%d KiB)\n", proj, tag, f.platform, len(data)/1024)
+	f.ok++
+}
+
+// appendMissing returns list plus every want not already in it, order preserved.
+func appendMissing(list, want []string) []string {
+	have := map[string]bool{}
+	for _, p := range list {
+		have[p] = true
+	}
+	for _, p := range want {
+		if !have[p] {
+			have[p] = true
+			list = append(list, p)
+		}
+	}
+	return list
+}
+
+// setUpstreamDist points the bottle package at the dist being mirrored. Upstream
+// static dists carry no signatures (attestations are OCI referrers), and bottle
+// verifies by default, so verification is turned off for the copy unless the
+// operator demanded it — mirroring copies bytes, it does not install them, and
+// what we publish is re-signed with OUR key.
+func setUpstreamDist(from string) {
+	bottle.DistBase = from
+	if _, ok := os.LookupEnv("PKGX_VERIFY"); !ok {
+		os.Setenv("PKGX_VERIFY", "0")
+	}
 }
 
 // fail records a failed (project, version) at a stage.

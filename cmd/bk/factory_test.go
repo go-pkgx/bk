@@ -15,6 +15,7 @@ import (
 	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bk/versions"
+	"github.com/go-pkgx/bottle"
 )
 
 // published records what the stubbed publish seam was asked to push.
@@ -597,6 +598,276 @@ func TestRunFactoryFailureFileWriteErrors(t *testing.T) {
 	}
 	if !strings.Contains(h.out.String(), "1 built") {
 		t.Fatalf("stdout = %s", h.out.String())
+	}
+}
+
+// withMirrorSeams stubs the upstream listing + download and restores the
+// bottle package's dist pointer.
+func withMirrorSeams(t *testing.T, versions map[string][]string, download func(project, ver, osn, arch string) ([]byte, string, error)) {
+	t.Helper()
+	uv, dl, dist := factoryUpstreamVersions, factoryDownload, bottle.DistBase
+	t.Cleanup(func() { factoryUpstreamVersions, factoryDownload, bottle.DistBase = uv, dl, dist })
+	factoryUpstreamVersions = func(project, _, _ string) ([]bottle.Ver, error) {
+		vs, ok := versions[project]
+		if !ok {
+			return nil, errors.New("404 not found")
+		}
+		var out []bottle.Ver // upstream lists ascending
+		for _, v := range vs {
+			out = append(out, bottle.ParseVer(v))
+		}
+		return out, nil
+	}
+	factoryDownload = download
+}
+
+// TestRunFactoryMirrors is the sweep path: copy upstream bottles into our
+// registry, re-signed and attested, without building anything.
+func TestRunFactoryMirrors(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "gnu.org/glibc", "versions:\n  github: a/glibc/tags\nbuild: make\n")
+	withMirrorSeams(t, map[string][]string{"gnu.org/glibc": {"2.27.0", "2.38.0", "2.44.0"}},
+		func(_, ver, _, _ string) ([]byte, string, error) { return []byte("bottle-" + ver), ".tar.xz", nil })
+
+	if code := h.run(t, "--recipes", "gnu.org/glibc", "--mirror-from", "https://dist.pkgx.dev/",
+		"--bottles", filepath.Join(t.TempDir(), "dist")); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	if len(h.built) != 0 {
+		t.Fatalf("mirror mode must not build: %v", h.built)
+	}
+	if bottle.DistBase != "https://dist.pkgx.dev" {
+		t.Fatalf("upstream dist = %q (trailing slash must be trimmed)", bottle.DistBase)
+	}
+	if os.Getenv("PKGX_VERIFY") != "0" {
+		t.Fatalf("PKGX_VERIFY = %q; an unsigned upstream cannot be copied fail-closed", os.Getenv("PKGX_VERIFY"))
+	}
+	// newest first, every version, and the staged tarball is what got published
+	var tags []string
+	for _, p := range h.published {
+		tags = append(tags, p.tag)
+		if filepath.Base(p.path) != "v"+p.version+".tar.xz" {
+			t.Fatalf("staged path = %q", p.path)
+		}
+		b, err := os.ReadFile(p.path)
+		if err != nil || string(b) != "bottle-"+p.version {
+			t.Fatalf("staged bytes = %q, err = %v", b, err)
+		}
+	}
+	if strings.Join(tags, ",") != "2.44.0,2.38.0,2.27.0" {
+		t.Fatalf("tags = %v", tags)
+	}
+
+	// --max-versions caps the copy at the newest N, as it does for builds
+	h2 := newFactoryHarness(t)
+	writeClosureRecipe(t, h2.pantry, "gnu.org/glibc", "versions:\n  github: a/glibc/tags\nbuild: make\n")
+	withMirrorSeams(t, map[string][]string{"gnu.org/glibc": {"2.27.0", "2.38.0", "2.44.0"}},
+		func(_, ver, _, _ string) ([]byte, string, error) { return []byte(ver), ".tar.gz", nil })
+	if code := h2.run(t, "--recipes", "gnu.org/glibc", "--mirror-from", "https://d",
+		"--max-versions", "2", "--bottles", filepath.Join(t.TempDir(), "dist")); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if len(h2.published) != 2 || h2.published[0].version != "2.44.0" || h2.published[1].version != "2.38.0" {
+		t.Fatalf("capped copy = %+v", h2.published)
+	}
+	out := h.out.String()
+	for _, want := range []string{
+		"mirror: copying bottles from https://dist.pkgx.dev (no build)",
+		"versions gnu.org/glibc: 3 to consider (linux/x86-64, upstream)",
+		"✅ MIRRORED gnu.org/glibc 2.44.0 linux/x86-64",
+		"=== summary (linux/x86-64): 3 built, 0 skipped, 0 failed ===",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestRunFactoryMirrorNeedsNoRecipe: mirroring is recipe-free — a project the
+// closure walk drops for want of a recipe is still copied, and a dependency
+// only gets its newest.
+func TestRunFactoryMirrorNeedsNoRecipe(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "app.org", "dependencies:\n  lib.org: '*'\nversions:\n  github: a/app/tags\nbuild: make\n")
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	withMirrorSeams(t, map[string][]string{
+		"app.org":      {"1.0.0", "2.0.0"},
+		"lib.org":      {"0.1.0", "0.2.0"},
+		"norecipe.org": {"9.0.0"},
+	}, func(_, ver, _, _ string) ([]byte, string, error) { return []byte(ver), ".tar.gz", nil })
+
+	if code := h.run(t, "--recipes", "app.org norecipe.org", "--mirror-from", "https://dist.example",
+		"--bottles", filepath.Join(t.TempDir(), "dist")); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	var got []string
+	for _, p := range h.published {
+		got = append(got, p.project+"@"+p.version)
+	}
+	// deps first, one version for the dep, every version for the requested ones
+	if strings.Join(got, " ") != "lib.org@0.2.0 app.org@2.0.0 app.org@1.0.0 norecipe.org@9.0.0" {
+		t.Fatalf("published = %v", got)
+	}
+}
+
+// TestRunFactoryMirrorFailures: nothing upstream, a fetch error, an unwritable
+// staging dir and a publish error are each recorded, never fatal.
+func TestRunFactoryMirrorFailures(t *testing.T) {
+	stage := func(t *testing.T) string { return filepath.Join(t.TempDir(), "dist") }
+
+	t.Run("no upstream bottle", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		withMirrorSeams(t, map[string][]string{"lib.org": nil}, nil)
+		if code := h.run(t, "--recipes", "lib.org", "--mirror-from", "https://d", "--bottles", stage(t)); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if got := h.failuresFile(t); got != "lib.org latest versions\n" {
+			t.Fatalf("failures = %q", got)
+		}
+		if !strings.Contains(h.detailFile(t), "no upstream bottle for linux/x86-64") {
+			t.Fatalf("detail = %q", h.detailFile(t))
+		}
+	})
+
+	t.Run("upstream listing fails", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		withMirrorSeams(t, nil, nil)
+		if code := h.run(t, "--recipes", "lib.org", "--mirror-from", "https://d", "--bottles", stage(t)); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if got := h.failuresFile(t); got != "lib.org latest versions\n" {
+			t.Fatalf("failures = %q", got)
+		}
+	})
+
+	t.Run("fetch fails", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		withMirrorSeams(t, map[string][]string{"lib.org": {"1.0.0"}},
+			func(string, string, string, string) ([]byte, string, error) {
+				return nil, "", errors.New("502 bad gateway")
+			})
+		if code := h.run(t, "--recipes", "lib.org", "--mirror-from", "https://d", "--bottles", stage(t)); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if got := h.failuresFile(t); got != "lib.org 1.0.0 fetch\n" {
+			t.Fatalf("failures = %q", got)
+		}
+	})
+
+	t.Run("staging dir unwritable", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		withMirrorSeams(t, map[string][]string{"lib.org": {"1.0.0"}},
+			func(string, string, string, string) ([]byte, string, error) { return []byte("x"), ".tar.gz", nil })
+		blocked := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(blocked, nil, 0o644); err != nil { // a FILE where the tree must go
+			t.Fatal(err)
+		}
+		if code := h.run(t, "--recipes", "lib.org", "--mirror-from", "https://d", "--bottles", blocked); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if got := h.failuresFile(t); got != "lib.org 1.0.0 fetch\n" {
+			t.Fatalf("failures = %q", got)
+		}
+	})
+
+	t.Run("write fails", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		withMirrorSeams(t, map[string][]string{"lib.org": {"1.0.0"}},
+			func(string, string, string, string) ([]byte, string, error) { return []byte("x"), ".tar.gz", nil })
+		// a leftover DIRECTORY where the tarball must be written
+		bottles := stage(t)
+		if err := os.MkdirAll(filepath.Join(bottles, "lib.org", "linux", "x86-64", "v1.0.0.tar.gz"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if code := h.run(t, "--recipes", "lib.org", "--mirror-from", "https://d", "--bottles", bottles); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if got := h.failuresFile(t); got != "lib.org 1.0.0 fetch\n" {
+			t.Fatalf("failures = %q", got)
+		}
+	})
+
+	t.Run("publish fails", func(t *testing.T) {
+		h := newFactoryHarness(t)
+		withMirrorSeams(t, map[string][]string{"lib.org": {"1.0.0"}},
+			func(string, string, string, string) ([]byte, string, error) { return []byte("x"), ".tar.gz", nil })
+		factoryPublish = func(publishOptions) (string, error) { return "", errors.New("403 denied") }
+		if code := h.run(t, "--recipes", "lib.org", "--mirror-from", "https://d", "--bottles", stage(t)); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if got := h.failuresFile(t); got != "lib.org 1.0.0 publish\n" {
+			t.Fatalf("failures = %q", got)
+		}
+	})
+}
+
+// TestRunFactoryMirrorSkipAndForce: an already-published version is skipped, an
+// unreachable registry still mirrors, and --force re-copies.
+func TestRunFactoryMirrorSkipAndForce(t *testing.T) {
+	newHarness := func(t *testing.T) *factoryHarness {
+		h := newFactoryHarness(t)
+		withMirrorSeams(t, map[string][]string{"lib.org": {"1.0.0"}},
+			func(string, string, string, string) ([]byte, string, error) { return []byte("x"), ".tar.gz", nil })
+		return h
+	}
+	t.Run("skip", func(t *testing.T) {
+		h := newHarness(t)
+		factoryHasPlatform = func(string, string, string, string, string) (bool, error) { return true, nil }
+		if code := h.run(t, "--recipes", "lib.org", "--mirror-from", "https://d", "--bottles", filepath.Join(t.TempDir(), "d")); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if len(h.published) != 0 || !strings.Contains(h.out.String(), "0 built, 1 skipped, 0 failed") {
+			t.Fatalf("published = %v\n%s", h.published, h.out.String())
+		}
+	})
+	t.Run("force", func(t *testing.T) {
+		h := newHarness(t)
+		factoryHasPlatform = func(string, string, string, string, string) (bool, error) { return true, nil }
+		if code := h.run(t, "--recipes", "lib.org", "--mirror-from", "https://d", "--force", "--bottles", filepath.Join(t.TempDir(), "d")); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if len(h.published) != 1 {
+			t.Fatalf("published = %v", h.published)
+		}
+	})
+	t.Run("registry unreachable", func(t *testing.T) {
+		h := newHarness(t)
+		factoryHasPlatform = func(string, string, string, string, string) (bool, error) {
+			return false, errors.New("dial tcp: refused")
+		}
+		if code := h.run(t, "--recipes", "lib.org", "--mirror-from", "https://d", "--bottles", filepath.Join(t.TempDir(), "d")); code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if len(h.published) != 1 || !strings.Contains(h.errb.String(), "publish-check lib.org 1.0.0") {
+			t.Fatalf("published = %v, stderr = %s", h.published, h.errb.String())
+		}
+	})
+}
+
+// TestSetUpstreamDistKeepsAnExplicitVerify: an operator who demanded
+// verification keeps it (the copy then fails closed, as asked).
+func TestSetUpstreamDistKeepsAnExplicitVerify(t *testing.T) {
+	old := bottle.DistBase
+	t.Cleanup(func() { bottle.DistBase = old })
+	t.Setenv("PKGX_VERIFY", "1")
+	setUpstreamDist("https://dist.example")
+	if os.Getenv("PKGX_VERIFY") != "1" {
+		t.Fatalf("PKGX_VERIFY = %q", os.Getenv("PKGX_VERIFY"))
+	}
+}
+
+// TestFactoryUpstreamSeamsAreReal exercises the production wiring of the
+// mirror seams (they are stubbed everywhere else).
+func TestFactoryUpstreamSeamsAreReal(t *testing.T) {
+	old := bottle.DistBase
+	t.Cleanup(func() { bottle.DistBase = old })
+	t.Setenv("PKGX_VERIFY", "0")
+	bottle.DistBase = "https://127.0.0.1:1/dist" // nothing listening
+	if _, err := factoryUpstreamVersions("lib.org", "linux", "x86-64"); err == nil {
+		t.Fatal("want a listing error")
+	}
+	if _, _, err := factoryDownload("lib.org", "1.0.0", "linux", "x86-64"); err == nil {
+		t.Fatal("want a download error")
 	}
 }
 
