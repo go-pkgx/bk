@@ -226,7 +226,16 @@ func SanitizedEnv(home, pkgxDir string) []string {
 		// standard build-sandbox posture (Homebrew/distros do the same).
 		"FORCE_UNSAFE_CONFIGURE=1",
 	}
-	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "PKGX_PANTRY_DIR", "PKGX_PANTRY_PATH", "GITHUB_TOKEN"} {
+	// LD_LIBRARY_PATH is passed through when the caller set one. Normally it is
+	// absent and must stay so — a host's library path is exactly the kind of
+	// leakage the sanitised env exists to stop. But in a FROM-scratch builder
+	// there is no system libc at all: every tool, `mkdir` included, finds its
+	// libc.so.6 through that variable, and dropping it makes the very first
+	// command of a build fail with
+	//   mkdir: error while loading shared libraries: libc.so.6: cannot open …
+	// The caller opting in (an ENV in the builder image) is a deliberate choice,
+	// not ambient host state.
+	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "PKGX_PANTRY_DIR", "PKGX_PANTRY_PATH", "GITHUB_TOKEN", "LD_LIBRARY_PATH"} {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}
