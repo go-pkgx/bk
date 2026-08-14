@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,3 +85,29 @@ func TestMainSeam(t *testing.T) {
 		t.Error("main did not call osExit")
 	}
 }
+
+// TestTrustEmbeddedCAs: bk's HTTPS calls must trust the embedded bundle, which
+// on a FROM-scratch builder is the ONLY trust store there is.
+func TestTrustEmbeddedCAs(t *testing.T) {
+	oldTr, oldClient := http.DefaultTransport, http.DefaultClient.Transport
+	defer func() { http.DefaultTransport, http.DefaultClient.Transport = oldTr, oldClient }()
+
+	trustEmbeddedCAs()
+	tr, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || tr.TLSClientConfig == nil || tr.TLSClientConfig.RootCAs == nil {
+		t.Fatal("default transport carries no trust store")
+	}
+	if http.DefaultClient.Transport != http.DefaultTransport {
+		t.Fatal("the default client must use the same transport")
+	}
+	// a transport we cannot configure is left alone rather than replaced
+	http.DefaultTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) { return nil, nil })
+	trustEmbeddedCAs()
+	if _, ok := http.DefaultTransport.(*http.Transport); ok {
+		t.Fatal("an unknown transport must not be swapped out")
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
