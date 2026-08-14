@@ -205,7 +205,15 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		)
 		// Shared driver flags: glibc sysroot (its headers + the kernel headers it
 		// includes), glibc crt/libc, and llvm's compiler-rt builtins (no libgcc).
-		base := `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld`
+		// -L takes NO space: libtool parses the flag itself and rejects a
+		// separated form outright ("require no space between '-L' and '/…'"),
+		// which is what broke pcre2. -Wno-unused-command-line-argument keeps the
+		// LINK flags (--rtlib/--unwindlib/-fuse-ld) from making clang warn when
+		// it is merely compiling: a warning there turns into an error under the
+		// -Werror probe several configure scripts run, and xz then refuses to
+		// configure at all ("CFLAGS contains something that makes -Werror
+		// complain").
+		base := `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument`
 		// C: no unwinder (exception-free C). C++: libc++ headers + its libunwind,
 		// from the libcxx.llvm.org bottle (-stdlib=libc++ makes the driver link
 		// -lc++ itself when it links a C++ target).
@@ -220,8 +228,17 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		// closure model). --disable-new-dtags emits DT_RPATH (searched for the
 		// loader's own NEEDED libs).
 		glibcLD = `-Wl,--dynamic-linker="${BK_GLIBC_LIB}` + glibcLoader(tgt.Arch) +
-			`" -Wl,-rpath,"$BK_GLIBC_LIB" -L "${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib" -Wl,--disable-new-dtags`
+			`" -Wl,-rpath,"$BK_GLIBC_LIB" -L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib" -Wl,--disable-new-dtags`
 		ld = append(ld, glibcLD)
+		// Pin the compiler to the pkgx llvm one. The flag set above is clang's
+		// (--rtlib/--unwindlib/-fuse-ld=lld), and the bottle provides `cc` and
+		// `clang` but NOT `gcc` — while autoconf probes `gcc` FIRST, so a
+		// ./configure recipe silently picked the container's gcc and died with
+		// `cc: error: unrecognized command-line option '--unwindlib=none'`.
+		// MEASURED: this is what separated 4/9 from 9/9 recipes in the pilot.
+		// Scoped to this mode: a global CC=clang was measured and rejected for
+		// ordinary builds, where the flags stay compiler-neutral.
+		out = append(out, `export CC="${CC:-clang}"`, `export CXX="${CXX:-clang++}"`)
 	}
 
 	if len(ld) > 0 {

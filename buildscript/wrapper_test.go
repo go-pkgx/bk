@@ -163,11 +163,15 @@ func TestWrapLibcPkgxLinuxX86(t *testing.T) {
 		`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]* | sort -V | tail -n1)/"`,
 		`export BK_LIBCXX_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/libcxx.llvm.org/v[0-9]* | sort -V | tail -n1)/"`,
 		// C: glibc sysroot + compiler-rt, no unwinder (exception-free C).
-		`export CFLAGS="-fPIC --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld --unwindlib=none -Wno-implicit-function-declaration`,
+		`export CFLAGS="-fPIC --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=none -Wno-implicit-function-declaration`,
 		// C++: libc++ headers FIRST (before glibc's), then sysroot + libunwind.
-		`export CXXFLAGS="-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1" --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld --unwindlib=libunwind -fPIC`,
+		`export CXXFLAGS="-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1" --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=libunwind -fPIC`,
+		// The compiler is pinned to the pkgx clang: the flags are clang-only and
+		// autoconf would otherwise probe the container's gcc first.
+		`export CC="${CC:-clang}"`,
+		`export CXX="${CXX:-clang++}"`,
 		// PT_INTERP = the bottle's x86-64 loader; libc + libc++/libunwind lib search paths; DT_RPATH.
-		`-Wl,--dynamic-linker="${BK_GLIBC_LIB}ld-linux-x86-64.so.2" -Wl,-rpath,"$BK_GLIBC_LIB" -L "${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib" -Wl,--disable-new-dtags`,
+		`-Wl,--dynamic-linker="${BK_GLIBC_LIB}ld-linux-x86-64.so.2" -Wl,-rpath,"$BK_GLIBC_LIB" -L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib" -Wl,--disable-new-dtags`,
 	}
 	for _, w := range wants {
 		if !strings.Contains(s, w) {
