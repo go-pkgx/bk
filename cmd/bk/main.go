@@ -85,6 +85,9 @@ func main() {
 	case "python-venv-stubber.sh":
 		osExit(pythonVenvStubber(os.Args[1:], os.Stderr))
 		return
+	case "cc", "gcc", "c++", "g++":
+		osExit(ccShim(filepath.Base(os.Args[0]), os.Args[1:], os.Stderr))
+		return
 	}
 	osExit(run(os.Args[1:], os.Stdout, os.Stderr))
 }

@@ -250,6 +250,12 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		out = append(out,
 			`export CC="${CC:-clang `+glibcCC+`}"`,
 			`export CXX="${CXX:-clang++ `+glibcCXX+`}"`,
+			// What the cc/gcc/c++/g++ shims re-exec. A recipe that calls the
+			// compiler by name instead of through $CC (sqlite's autosetup: "No
+			// working C compiler found. Tried cc and gcc") then still gets the
+			// sovereign driver.
+			`export BK_CC="clang `+glibcCC+`"`,
+			`export BK_CXX="clang++ `+glibcCXX+`"`,
 		)
 	}
 
