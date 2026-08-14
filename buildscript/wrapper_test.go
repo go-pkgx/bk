@@ -166,10 +166,12 @@ func TestWrapLibcPkgxLinuxX86(t *testing.T) {
 		`export CFLAGS="-fPIC --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=none -Wno-implicit-function-declaration`,
 		// C++: libc++ headers FIRST (before glibc's), then sysroot + libunwind.
 		`export CXXFLAGS="-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1" --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=libunwind -fPIC`,
-		// The compiler is pinned to the pkgx clang: the flags are clang-only and
-		// autoconf would otherwise probe the container's gcc first.
-		`export CC="${CC:-clang}"`,
-		`export CXX="${CXX:-clang++}"`,
+		// The compiler is pinned to the pkgx clang AND carries the whole driver
+		// configuration, because libtool builds its own command lines from $CC
+		// and ignores CFLAGS/LDFLAGS.
+		`export CC="${CC:-clang --sysroot="$BK_GLIBC_PREFIX"`,
+		`export CXX="${CXX:-clang++ -stdlib=libc++`,
+		`--rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=none}"`,
 		// PT_INTERP = the bottle's x86-64 loader; libc + libc++/libunwind lib search paths; DT_RPATH.
 		`-Wl,--dynamic-linker="${BK_GLIBC_LIB}ld-linux-x86-64.so.2" -Wl,-rpath,"$BK_GLIBC_LIB" -L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib" -Wl,--disable-new-dtags`,
 	}

@@ -14,19 +14,44 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 
 	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bk/target"
+	"github.com/go-pkgx/bottle"
 )
+
+// trustEmbeddedCAs makes every HTTPS call bk performs — version listings, source
+// downloads, go-git clones — trust the Mozilla bundle bottle embeds, on top of
+// the system store. A FROM-scratch builder image has NO system trust store, so
+// without this bk cannot even list a version there:
+//
+//	versions: ls-remote https://github.com/lz4/lz4: tls: failed to verify
+//	certificate: x509: certificate signed by unknown authority
+//
+// Setting it on the default transport covers the standard library clients and
+// go-git alike, rather than threading a client through every call site.
+func trustEmbeddedCAs() {
+	tr, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return
+	}
+	tr = tr.Clone()
+	tr.TLSClientConfig = &tls.Config{RootCAs: bottle.CertPool()}
+	http.DefaultTransport = tr
+	http.DefaultClient.Transport = tr
+}
 
 var osExit = os.Exit
 
 func main() {
+	trustEmbeddedCAs()
 	// Multi-call ("busybox-style") dispatch: bk is materialised into a build's
 	// libexec dir as symlinks named after brewkit shims. When a recipe execs one
 	// (e.g. `fix-shebangs.ts bin/*`), argv[0] is the symlink path, so its
