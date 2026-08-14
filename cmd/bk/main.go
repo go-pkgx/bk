@@ -46,6 +46,13 @@ func trustEmbeddedCAs() {
 	}
 	tr = tr.Clone()
 	tr.TLSClientConfig = &tls.Config{RootCAs: bottle.CertPool()}
+	// HTTP/1.1 for the same reason bottle pulls use it: these are long,
+	// single-stream transfers (a source tarball, or github's ref advertisement
+	// for a repo the size of openssl's), and h2 flow control makes them stall —
+	// `ls-remote https://github.com/openssl/openssl: context deadline exceeded`
+	// from inside the builder, where every byte goes through this transport.
+	tr.ForceAttemptHTTP2 = false
+	tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 	http.DefaultTransport = tr
 	http.DefaultClient.Transport = tr
 	// go-git does NOT go through http.DefaultTransport — it keeps its own
