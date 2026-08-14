@@ -162,7 +162,7 @@ func TestBuildErrorBranches(t *testing.T) {
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
 	restore := func() {
 		osRemoveAll, osMkdirAll, osWriteFile, osRename = os.RemoveAll, os.MkdirAll, os.WriteFile, os.Rename
-		writeLibexec = buildscript.WriteLibexec
+		writeLibexec = buildscript.WriteLibexecFor
 	}
 
 	cases := map[string]func(r *Runner){
@@ -183,7 +183,7 @@ func TestBuildErrorBranches(t *testing.T) {
 		"fetch":        func(r *Runner) { r.Fetch = func(string, string, int) error { return errBoom } },
 		"touch":        func(r *Runner) { r.Touch = func(string) error { return errBoom } },
 		"writefile":    func(r *Runner) { osWriteFile = func(string, []byte, os.FileMode) error { return errBoom } },
-		"writelibexec": func(r *Runner) { writeLibexec = func(string) error { return errBoom } },
+		"writelibexec": func(r *Runner) { writeLibexec = func(string, bool) error { return errBoom } },
 		"run":          func(r *Runner) { r.Run = func(string, []string) error { return errBoom } },
 		"rename":       func(r *Runner) { osRename = func(string, string) error { return errBoom } },
 		"fixup":        func(r *Runner) { r.FixUp = func(fixup.Options) error { return errBoom } },

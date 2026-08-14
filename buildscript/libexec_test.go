@@ -83,3 +83,62 @@ func TestWriteLibexecErrors(t *testing.T) {
 }
 
 var errBoomLibexec = errors.New("boom")
+
+// TestWriteLibexecForCompilerShims: in pkgx-libc mode the libexec dir also gets
+// cc/gcc/c++/g++, because a recipe may call the compiler by NAME instead of
+// through $CC (sqlite's autosetup tries `cc` then `gcc`) and would otherwise
+// get a driver with none of the sovereign flags.
+func TestWriteLibexecForCompilerShims(t *testing.T) {
+	off := t.TempDir()
+	if err := WriteLibexecFor(off, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(off, "cc")); !os.IsNotExist(err) {
+		t.Fatal("cc must not appear outside pkgx-libc mode")
+	}
+	on := t.TempDir()
+	if err := WriteLibexecFor(on, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range append([]string{"fix-shebangs.ts"}, compilerShims...) {
+		fi, err := os.Lstat(filepath.Join(on, n))
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s: %v (want a symlink to bk)", n, err)
+		}
+	}
+	// idempotent
+	if err := WriteLibexecFor(on, true); err != nil {
+		t.Fatal(err)
+	}
+	// error branches: the base writer's, then the compiler-shim ones
+	oldExec, oldLink := osExecutable, osSymlink
+	defer func() { osExecutable, osSymlink = oldExec, oldLink }()
+	osExecutable = func() (string, error) { return "", errors.New("boom") }
+	if err := WriteLibexecFor(t.TempDir(), true); err == nil {
+		t.Fatal("want the executable-path error")
+	}
+	// and the SECOND lookup (the one the compiler shims do) failing on its own
+	n := 0
+	osExecutable = func() (string, error) {
+		n++
+		if n == 1 {
+			return oldExec()
+		}
+		return "", errors.New("boom")
+	}
+	if err := WriteLibexecFor(t.TempDir(), true); err == nil {
+		t.Fatal("want the compiler-shim executable-path error")
+	}
+	osExecutable = oldExec
+	calls := 0
+	osSymlink = func(a, b string) error {
+		calls++
+		if calls > len(shims) {
+			return errors.New("boom")
+		}
+		return oldLink(a, b)
+	}
+	if err := WriteLibexecFor(t.TempDir(), true); err == nil {
+		t.Fatal("want the compiler-shim symlink error")
+	}
+}

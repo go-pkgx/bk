@@ -34,4 +34,4 @@ var copyProps = copyPropsTree
 
 // writeLibexec is a seam over buildscript.WriteLibexec so Build's shim-write
 // error branch is testable.
-var writeLibexec = buildscript.WriteLibexec
+var writeLibexec = buildscript.WriteLibexecFor
