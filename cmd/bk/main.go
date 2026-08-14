@@ -22,6 +22,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/go-git/go-git/v5/plumbing/transport/client"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bottle"
@@ -46,6 +48,10 @@ func trustEmbeddedCAs() {
 	tr.TLSClientConfig = &tls.Config{RootCAs: bottle.CertPool()}
 	http.DefaultTransport = tr
 	http.DefaultClient.Transport = tr
+	// go-git does NOT go through http.DefaultTransport — it keeps its own
+	// protocol client — so the version listing (`ls-remote` over smart HTTP)
+	// needs the store installed separately, or it keeps failing on its own.
+	client.InstallProtocol("https", githttp.NewClient(&http.Client{Transport: tr}))
 }
 
 var osExit = os.Exit
