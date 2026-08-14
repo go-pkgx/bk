@@ -21,6 +21,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -241,8 +242,32 @@ func extractTar(tr *tar.Reader, destDir string, strip int) error {
 			if err := writeFile(target, permOr(mode, 0o644), tr); err != nil {
 				return err
 			}
+			if err := restoreTime(target, hdr.ModTime); err != nil {
+				return err
+			}
 		}
 	}
+}
+
+// restoreTime gives an extracted file the modification time the archive
+// recorded, exactly as tar(1) does. Recipes DEPEND on this: a release tarball
+// ships generated files NEWER than the sources they derive from precisely so
+// make leaves them alone. Stamping every file with "now" instead re-orders them
+// by archive position, and make then tries to regenerate — libexpat 2.8.3 dies
+// that way (doc/xmlwf.1 is archived before, hence stamped older than,
+// doc/xmlwf.xml → make runs the docbook rule with no docbook2x-man installed →
+// `test "x" != x` → Error 1), and the same trap is behind the autotools
+// maintainer-mode rebuilds MAKEFLAGS/TouchAutotools work around.
+//
+// An archive with no recorded time (zero) is left as written.
+func restoreTime(path string, mt time.Time) error {
+	if mt.IsZero() {
+		return nil
+	}
+	if err := osChtimes(path, mt, mt); err != nil {
+		return fmt.Errorf("fetch: set mtime %s: %w", path, err)
+	}
+	return nil
 }
 
 // extractZip extracts a zip archive held in data into destDir, stripping
@@ -295,6 +320,9 @@ func extractZip(data []byte, destDir string, strip int) error {
 			err = writeFile(target, permOr(mode, 0o644), rc)
 			rc.Close()
 			if err != nil {
+				return err
+			}
+			if err := restoreTime(target, f.Modified); err != nil {
 				return err
 			}
 		}

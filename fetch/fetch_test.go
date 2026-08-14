@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/ulikunitz/xz"
@@ -33,6 +34,7 @@ func restoreSeams(t *testing.T) {
 		osOpenFile = os.OpenFile
 		ioCopy = io.Copy
 		zipOpen = defaultZipOpen
+		osChtimes = os.Chtimes
 	})
 }
 
@@ -52,6 +54,7 @@ type tarEntry struct {
 	mode int64
 	body string
 	link string
+	mod  time.Time
 }
 
 func buildTar(t *testing.T, entries []tarEntry) []byte {
@@ -59,7 +62,7 @@ func buildTar(t *testing.T, entries []tarEntry) []byte {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for _, e := range entries {
-		hdr := &tar.Header{Name: e.name, Typeflag: e.typ, Mode: e.mode, Linkname: e.link}
+		hdr := &tar.Header{Name: e.name, Typeflag: e.typ, Mode: e.mode, Linkname: e.link, ModTime: e.mod}
 		if e.typ == tar.TypeReg {
 			hdr.Size = int64(len(e.body))
 		}
@@ -112,6 +115,7 @@ type zipEntry struct {
 	mode    fs.FileMode // 0 means "leave unset" (no Unix mode bits)
 	body    string
 	symlink bool
+	mod     time.Time
 }
 
 func buildZip(t *testing.T, entries []zipEntry) []byte {
@@ -119,7 +123,7 @@ func buildZip(t *testing.T, entries []zipEntry) []byte {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for _, e := range entries {
-		hdr := &zip.FileHeader{Name: e.name, Method: zip.Deflate}
+		hdr := &zip.FileHeader{Name: e.name, Method: zip.Deflate, Modified: e.mod}
 		if e.symlink {
 			hdr.SetMode(e.mode.Perm() | fs.ModeSymlink)
 		} else if e.mode != 0 {
@@ -678,5 +682,118 @@ func TestExtractTarGzFile(t *testing.T) {
 	osMkdirAll = failMkdirOn("out2")
 	if err := ExtractTarGzFile(src, filepath.Join(dir, "out2"), 1); err == nil {
 		t.Error("expected dest-mkdir error")
+	}
+}
+
+// TestExtractRestoresModTimes is the libexpat trap, in miniature: a release
+// tarball ships a GENERATED file (a man page) recorded as NEWER than the source
+// it derives from, so make leaves it alone. Extraction must preserve that
+// order — stamping every file with "now" re-orders them by archive position and
+// make tries to regenerate, which killed libexpat 2.8.3 (no docbook2x-man).
+func TestExtractRestoresModTimes(t *testing.T) {
+	restoreSeams(t)
+	src := time.Date(2026, 8, 10, 23, 50, 0, 0, time.UTC)
+	gen := time.Date(2026, 8, 10, 23, 51, 0, 0, time.UTC) // generated LAST, archived FIRST
+
+	t.Run("tar", func(t *testing.T) {
+		s := serve(t, gzWrap(t, buildTar(t, []tarEntry{
+			{name: "doc/", typ: tar.TypeDir, mode: 0o755},
+			{name: "doc/xmlwf.1", typ: tar.TypeReg, mode: 0o644, body: "man\n", mod: gen},
+			{name: "doc/xmlwf.xml", typ: tar.TypeReg, mode: 0o644, body: "<xml/>\n", mod: src},
+		})))
+		dir := t.TempDir()
+		if err := Fetch(s.URL+"/pkg.tar.gz", dir, 0); err != nil {
+			t.Fatal(err)
+		}
+		assertNewer(t, filepath.Join(dir, "doc/xmlwf.1"), filepath.Join(dir, "doc/xmlwf.xml"), gen)
+	})
+
+	t.Run("zip", func(t *testing.T) {
+		s := serve(t, buildZip(t, []zipEntry{
+			{name: "doc/xmlwf.1", mode: 0o644, body: "man\n", mod: gen},
+			{name: "doc/xmlwf.xml", mode: 0o644, body: "<xml/>\n", mod: src},
+		}))
+		dir := t.TempDir()
+		if err := Fetch(s.URL+"/pkg.zip", dir, 0); err != nil {
+			t.Fatal(err)
+		}
+		assertNewer(t, filepath.Join(dir, "doc/xmlwf.1"), filepath.Join(dir, "doc/xmlwf.xml"), gen)
+	})
+
+	// tar records "no time" as the epoch, and that is restored faithfully: with
+	// every file equally old, make still sees nothing to regenerate.
+	t.Run("epoch is preserved", func(t *testing.T) {
+		s := serve(t, gzWrap(t, buildTar(t, []tarEntry{
+			{name: "x.txt", typ: tar.TypeReg, mode: 0o644, body: "x\n"},
+		})))
+		dir := t.TempDir()
+		if err := Fetch(s.URL+"/pkg.tar.gz", dir, 0); err != nil {
+			t.Fatal(err)
+		}
+		fi, err := os.Stat(filepath.Join(dir, "x.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !fi.ModTime().UTC().Equal(time.Unix(0, 0).UTC()) {
+			t.Fatalf("mtime = %v, want the archived epoch", fi.ModTime().UTC())
+		}
+	})
+
+	// A genuinely absent time (no archive format records one) is left alone.
+	t.Run("zero time is left alone", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "f")
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := restoreTime(path, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		after, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !after.ModTime().Equal(before.ModTime()) {
+			t.Fatalf("mtime changed: %v → %v", before.ModTime(), after.ModTime())
+		}
+	})
+
+	// A failing utimes propagates rather than silently leaving a wrong mtime.
+	t.Run("chtimes fails", func(t *testing.T) {
+		osChtimes = func(string, time.Time, time.Time) error { return errors.New("boom") }
+		defer func() { osChtimes = os.Chtimes }()
+		for name, data := range map[string][]byte{
+			"/pkg.tar.gz": gzWrap(t, buildTar(t, []tarEntry{{name: "x", typ: tar.TypeReg, mode: 0o644, body: "x", mod: gen}})),
+			"/pkg.zip":    buildZip(t, []zipEntry{{name: "x", mode: 0o644, body: "x", mod: gen}}),
+		} {
+			s := serve(t, data)
+			if err := Fetch(s.URL+name, t.TempDir(), 0); err == nil {
+				t.Errorf("%s: want a set-mtime error", name)
+			}
+		}
+	})
+}
+
+// assertNewer checks a is strictly newer than b, and that a kept the recorded
+// time rather than "now".
+func assertNewer(t *testing.T, a, b string, want time.Time) {
+	t.Helper()
+	fa, err := os.Stat(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fa.ModTime().After(fb.ModTime()) {
+		t.Fatalf("%s (%v) must stay newer than %s (%v) — make would regenerate it",
+			filepath.Base(a), fa.ModTime(), filepath.Base(b), fb.ModTime())
+	}
+	if !fa.ModTime().UTC().Equal(want) {
+		t.Fatalf("mtime = %v, want the archived %v", fa.ModTime().UTC(), want)
 	}
 }

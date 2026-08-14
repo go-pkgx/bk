@@ -25,6 +25,7 @@ var (
 	osOpen        = os.Open
 	osSymlink     = os.Symlink
 	osOpenFile    = os.OpenFile
+	osChtimes     = os.Chtimes
 	ioCopy        = io.Copy
 	zipOpen       = defaultZipOpen
 )
