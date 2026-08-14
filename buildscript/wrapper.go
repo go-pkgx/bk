@@ -230,15 +230,27 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		glibcLD = `-Wl,--dynamic-linker="${BK_GLIBC_LIB}` + glibcLoader(tgt.Arch) +
 			`" -Wl,-rpath,"$BK_GLIBC_LIB" -L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib" -Wl,--disable-new-dtags`
 		ld = append(ld, glibcLD)
-		// Pin the compiler to the pkgx llvm one. The flag set above is clang's
-		// (--rtlib/--unwindlib/-fuse-ld=lld), and the bottle provides `cc` and
-		// `clang` but NOT `gcc` — while autoconf probes `gcc` FIRST, so a
+		// Pin the compiler to the pkgx llvm one AND carry the whole driver
+		// configuration inside it.
+		//
+		// Two reasons, both measured. (a) The flag set is clang's
+		// (--rtlib/--unwindlib/-fuse-ld=lld) while the bottle provides `cc` and
+		// `clang` but NOT `gcc`, and autoconf probes `gcc` FIRST — so a
 		// ./configure recipe silently picked the container's gcc and died with
 		// `cc: error: unrecognized command-line option '--unwindlib=none'`.
-		// MEASURED: this is what separated 4/9 from 9/9 recipes in the pilot.
+		// (b) libtool builds its own compile and LINK command lines and does not
+		// pass the recipe's CFLAGS/LDFLAGS to them, so a libtool link fell back
+		// to the GCC runtime — `ld.lld: cannot open crti.o … unable to find
+		// -lgcc`. It does preserve $CC verbatim, so the sysroot, the crt/lib
+		// search paths and the runtime choice belong there. (This is what
+		// distributions do for cross toolchains.)
+		//
 		// Scoped to this mode: a global CC=clang was measured and rejected for
 		// ordinary builds, where the flags stay compiler-neutral.
-		out = append(out, `export CC="${CC:-clang}"`, `export CXX="${CXX:-clang++}"`)
+		out = append(out,
+			`export CC="${CC:-clang `+glibcCC+`}"`,
+			`export CXX="${CXX:-clang++ `+glibcCXX+`}"`,
+		)
 	}
 
 	if len(ld) > 0 {
