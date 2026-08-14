@@ -115,7 +115,13 @@ func (o WrapOptions) depPlus() string {
 		if o.Glibc != "" {
 			// Pin the exact glibc version as the sysroot floor. Only this version
 			// is then installed under $PKGX_DIR, so wrapFlags' version-sort picks it.
-			glibcSpec = `"+gnu.org/glibc@=` + strings.TrimPrefix(o.Glibc, "=") + `"`
+			//
+			// The pin is `@<version>` with NO operator: pkgx accepts a bare numeric
+			// after `@` and REJECTS `@=2.27.0` with "Error: invalid semver". That
+			// error aborts the whole env eval, so nothing at all gets installed —
+			// which is how a pinned build ended up with unexpanded glibc globs AND
+			// the container's gcc (the eval never put the pkgx llvm bin/cc on PATH).
+			glibcSpec = `"+gnu.org/glibc@` + strings.TrimPrefix(o.Glibc, "=") + `"`
 		}
 		parts = append(parts, glibcSpec, `"+kernel.org/linux-headers"`, `"+gnu.org/binutils"`, `"+libcxx.llvm.org"`)
 	}
@@ -183,11 +189,19 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		// "v[0-9]*/" pattern skips that symlink and lands on a concrete version
 		// dir (no metacharacters, glob-safe downstream). The `set +f` re-enables
 		// globbing in each subshell in case pkgx's env eval left the shell noglob.
+		//
+		// The glob must NOT carry the trailing slash: `sort -V` compares "v2/"
+		// ABOVE "v2.27.0/" (the '/' outranks '.'), so a trailing-slash pattern
+		// selects the LEAST specific entry — `v2`, a FLOATING symlink. A binary
+		// whose PT_INTERP goes through `v2` silently loads whatever glibc `v2`
+		// points at later, which defeats the whole point of pinning a floor.
+		// Globbing without the slash sorts v2 < v2.27 < v2.27.0, so the concrete
+		// version dir wins; the slash is appended afterwards.
 		out = append(out,
-			`export BK_GLIBC_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/gnu.org/glibc/v[0-9]*/ | sort -V | tail -n1)"`,
-			`export BK_GLIBC_LIB="$(set +f; printf '%s\n' "${BK_GLIBC_PREFIX}"lib/glibc-[0-9]*/ | sort -V | tail -n1)"`,
-			`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]*/ | sort -V | tail -n1)"`,
-			`export BK_LIBCXX_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/libcxx.llvm.org/v[0-9]*/ | sort -V | tail -n1)"`,
+			`export BK_GLIBC_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/gnu.org/glibc/v[0-9]* | sort -V | tail -n1)/"`,
+			`export BK_GLIBC_LIB="$(set +f; printf '%s\n' "${BK_GLIBC_PREFIX}"lib/glibc-[0-9]* | sort -V | tail -n1)/"`,
+			`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]* | sort -V | tail -n1)/"`,
+			`export BK_LIBCXX_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/libcxx.llvm.org/v[0-9]* | sort -V | tail -n1)/"`,
 		)
 		// Shared driver flags: glibc sysroot (its headers + the kernel headers it
 		// includes), glibc crt/libc, and llvm's compiler-rt builtins (no libgcc).

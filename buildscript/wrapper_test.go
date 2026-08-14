@@ -154,11 +154,14 @@ func TestWrapLibcPkgxLinuxX86(t *testing.T) {
 	wants := []string{
 		// glibc + kernel-headers + binutils + libcxx bottles join the eval.
 		`"+zlib.net" "+llvm.org" "+gnu.org/glibc" "+kernel.org/linux-headers" "+gnu.org/binutils" "+libcxx.llvm.org"`,
-		// build-time resolution of each bottle prefix (noglob-safe subshell glob).
-		`export BK_GLIBC_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/gnu.org/glibc/v[0-9]*/ | sort -V | tail -n1)"`,
-		`export BK_GLIBC_LIB="$(set +f; printf '%s\n' "${BK_GLIBC_PREFIX}"lib/glibc-[0-9]*/ | sort -V | tail -n1)"`,
-		`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]*/ | sort -V | tail -n1)"`,
-		`export BK_LIBCXX_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/libcxx.llvm.org/v[0-9]*/ | sort -V | tail -n1)"`,
+		// Build-time resolution of each bottle prefix (noglob-safe subshell glob).
+		// The pattern carries NO trailing slash: sort -V ranks "v2/" ABOVE
+		// "v2.27.0/", so a slashed pattern would select the floating `v2` symlink
+		// instead of the concrete version dir. The slash is appended after.
+		`export BK_GLIBC_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/gnu.org/glibc/v[0-9]* | sort -V | tail -n1)/"`,
+		`export BK_GLIBC_LIB="$(set +f; printf '%s\n' "${BK_GLIBC_PREFIX}"lib/glibc-[0-9]* | sort -V | tail -n1)/"`,
+		`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]* | sort -V | tail -n1)/"`,
+		`export BK_LIBCXX_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/libcxx.llvm.org/v[0-9]* | sort -V | tail -n1)/"`,
 		// C: glibc sysroot + compiler-rt, no unwinder (exception-free C).
 		`export CFLAGS="-fPIC --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L "$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld --unwindlib=none -Wno-implicit-function-declaration`,
 		// C++: libc++ headers FIRST (before glibc's), then sysroot + libunwind.
@@ -225,8 +228,14 @@ func TestWrapLibcPkgxGlibcPin(t *testing.T) {
 			Home: "/bk/home", SrcRoot: "/bk/build", PkgxDir: "/opt/pkgx",
 			PkgxBin: "/opt/pkgx/bin/pkgx", LibcPkgx: true, Glibc: in,
 		})
-		if !strings.Contains(s, `"+gnu.org/glibc@=2.27.0"`) {
-			t.Errorf("glibc=%q: missing pinned +gnu.org/glibc@=2.27.0 in:\n%s", in, s)
+		// `@<version>`, no operator: pkgx REJECTS `@=2.27.0` ("invalid semver")
+		// and that error aborts the ENTIRE env eval, so nothing installs and the
+		// build silently falls back to the container's toolchain.
+		if !strings.Contains(s, `"+gnu.org/glibc@2.27.0"`) {
+			t.Errorf("glibc=%q: missing pinned +gnu.org/glibc@2.27.0 in:\n%s", in, s)
+		}
+		if strings.Contains(s, "glibc@=") {
+			t.Errorf("glibc=%q: pkgx rejects the @= form:\n%s", in, s)
 		}
 		if strings.Contains(s, `"+gnu.org/glibc" `) {
 			t.Errorf("glibc=%q: unpinned glibc spec present", in)
@@ -237,7 +246,7 @@ func TestWrapLibcPkgxGlibcPin(t *testing.T) {
 		Target: linuxTgt(), Host: linuxTgt(), Home: "/h", SrcRoot: "/b",
 		PkgxDir: "/opt/pkgx", PkgxBin: "/opt/pkgx/bin/pkgx", LibcPkgx: true,
 	})
-	if !strings.Contains(s, `"+gnu.org/glibc"`) || strings.Contains(s, "glibc@=") {
+	if !strings.Contains(s, `"+gnu.org/glibc"`) || strings.Contains(s, "glibc@") {
 		t.Errorf("no-pin should use unversioned glibc:\n%s", s)
 	}
 }
