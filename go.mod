@@ -3,10 +3,11 @@ module github.com/go-pkgx/bk
 go 1.26.4
 
 require (
+	github.com/bluekeyes/go-gitdiff v0.9.0
 	github.com/go-attest/sbom v0.1.0
 	github.com/go-attest/sign v0.1.0
 	github.com/go-git/go-git/v5 v5.19.2
-	github.com/go-pkgx/bottle v0.5.3-0.20260813182645-2dea463a3f27
+	github.com/go-pkgx/bottle v0.5.3-0.20260814085237-24bd2b2e36e1
 	github.com/go-regexp/engine v0.1.0
 	github.com/go-versions/semver v0.1.0
 	github.com/hashicorp/hcl/v2 v2.24.0
@@ -24,7 +25,6 @@ require (
 	github.com/agext/levenshtein v1.2.1 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/apparentlymart/go-textseg/v17 v17.0.1 // indirect
-	github.com/bluekeyes/go-gitdiff v0.9.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
