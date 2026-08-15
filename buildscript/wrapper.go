@@ -197,11 +197,22 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		// points at later, which defeats the whole point of pinning a floor.
 		// Globbing without the slash sorts v2 < v2.27 < v2.27.0, so the concrete
 		// version dir wins; the slash is appended afterwards.
+		// bkresolve prints the newest concrete version dir of a bottle, or NOTHING
+		// when that bottle is not installed. A shell leaves an unmatched pattern
+		// LITERAL, and a literal `v[0-9]*` in the flags poisons the link — that is
+		// how a build with no libcxx bottle ended up passing
+		// `-L/pkgx/libcxx.llvm.org/v[0-9]*/lib` to the linker and failing
+		// configure's very first "can the compiler create executables" probe.
 		out = append(out,
-			`export BK_GLIBC_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/gnu.org/glibc/v[0-9]* | sort -V | tail -n1)/"`,
-			`export BK_GLIBC_LIB="$(set +f; printf '%s\n' "${BK_GLIBC_PREFIX}"lib/glibc-[0-9]* | sort -V | tail -n1)/"`,
-			`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]* | sort -V | tail -n1)/"`,
-			`export BK_LIBCXX_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/libcxx.llvm.org/v[0-9]* | sort -V | tail -n1)/"`,
+			`bkresolve() { set +f; for d in $1; do case "$d" in *'*'*|*'['*) continue;; esac; printf '%s\n' "$d"; done | sort -V | tail -n1; }`,
+			`export BK_GLIBC_PREFIX="$(bkresolve "$PKGX_DIR/gnu.org/glibc/v[0-9]*")"`,
+			`[ -n "$BK_GLIBC_PREFIX" ] && export BK_GLIBC_PREFIX="$BK_GLIBC_PREFIX/"`,
+			`export BK_GLIBC_LIB="$(bkresolve "${BK_GLIBC_PREFIX}lib/glibc-[0-9]*")"`,
+			`[ -n "$BK_GLIBC_LIB" ] && export BK_GLIBC_LIB="$BK_GLIBC_LIB/"`,
+			`export BK_KHDR_PREFIX="$(bkresolve "$PKGX_DIR/kernel.org/linux-headers/v[0-9]*")"`,
+			`[ -n "$BK_KHDR_PREFIX" ] && export BK_KHDR_PREFIX="$BK_KHDR_PREFIX/"`,
+			`export BK_LIBCXX_PREFIX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/v[0-9]*")"`,
+			`[ -n "$BK_LIBCXX_PREFIX" ] && export BK_LIBCXX_PREFIX="$BK_LIBCXX_PREFIX/"`,
 		)
 		// Shared driver flags: glibc sysroot (its headers + the kernel headers it
 		// includes), glibc crt/libc, and llvm's compiler-rt builtins (no libgcc).
@@ -221,14 +232,16 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		// libc++'s headers MUST precede glibc's on the search path — its <cstdio>
 		// pulls libc++'s own <stdio.h> wrapper and #errors if a C <stdio.h> is
 		// found first — so the libc++ -isystem goes BEFORE base's glibc/kernel ones.
-		glibcCXX = `-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1" ` + base + ` --unwindlib=libunwind`
+		// ${VAR:+…} so an ABSENT libcxx bottle contributes nothing at all rather
+		// than an unmatched pattern.
+		glibcCXX = `${BK_LIBCXX_PREFIX:+-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1"} ` + base + ` ${BK_LIBCXX_PREFIX:+--unwindlib=libunwind}`
 		// PT_INTERP = the bottle's loader; search paths for glibc + libc++/libunwind
 		// libs (the $ORIGIN rewrite by fixup drops these, so at deploy libc.so.6 /
 		// libc++.so.1 come from their bottles via LD_LIBRARY_PATH — the mkscratch
 		// closure model). --disable-new-dtags emits DT_RPATH (searched for the
 		// loader's own NEEDED libs).
 		glibcLD = `-Wl,--dynamic-linker="${BK_GLIBC_LIB}` + glibcLoader(tgt.Arch) +
-			`" -Wl,-rpath,"$BK_GLIBC_LIB" -L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib" -Wl,--disable-new-dtags`
+			`" -Wl,-rpath,"$BK_GLIBC_LIB" ${BK_LIBCXX_PREFIX:+-L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib"} -Wl,--disable-new-dtags`
 		ld = append(ld, glibcLD)
 		// Pin the compiler to the pkgx llvm one AND carry the whole driver
 		// configuration inside it.

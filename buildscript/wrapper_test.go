@@ -154,26 +154,25 @@ func TestWrapLibcPkgxLinuxX86(t *testing.T) {
 	wants := []string{
 		// glibc + kernel-headers + binutils + libcxx bottles join the eval.
 		`"+zlib.net" "+llvm.org" "+gnu.org/glibc" "+kernel.org/linux-headers" "+gnu.org/binutils" "+libcxx.llvm.org"`,
-		// Build-time resolution of each bottle prefix (noglob-safe subshell glob).
-		// The pattern carries NO trailing slash: sort -V ranks "v2/" ABOVE
-		// "v2.27.0/", so a slashed pattern would select the floating `v2` symlink
-		// instead of the concrete version dir. The slash is appended after.
-		`export BK_GLIBC_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/gnu.org/glibc/v[0-9]* | sort -V | tail -n1)/"`,
-		`export BK_GLIBC_LIB="$(set +f; printf '%s\n' "${BK_GLIBC_PREFIX}"lib/glibc-[0-9]* | sort -V | tail -n1)/"`,
-		`export BK_KHDR_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/kernel.org/linux-headers/v[0-9]* | sort -V | tail -n1)/"`,
-		`export BK_LIBCXX_PREFIX="$(set +f; printf '%s\n' "$PKGX_DIR"/libcxx.llvm.org/v[0-9]* | sort -V | tail -n1)/"`,
+		// Build-time resolution of each bottle prefix. bkresolve DROPS an
+		// unmatched pattern instead of letting the shell pass it through literally:
+		// a literal `v[0-9]*` in the flags reaches the linker and breaks the very
+		// first configure probe.
+		`bkresolve() { set +f; for d in $1; do case "$d" in *'*'*|*'['*) continue;; esac; printf '%s\n' "$d"; done | sort -V | tail -n1; }`,
+		`export BK_GLIBC_PREFIX="$(bkresolve "$PKGX_DIR/gnu.org/glibc/v[0-9]*")"`,
+		`export BK_LIBCXX_PREFIX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/v[0-9]*")"`,
 		// C: glibc sysroot + compiler-rt, no unwinder (exception-free C).
 		`export CFLAGS="-fPIC --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=none -Wno-implicit-function-declaration`,
 		// C++: libc++ headers FIRST (before glibc's), then sysroot + libunwind.
-		`export CXXFLAGS="-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1" --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=libunwind -fPIC`,
+		`export CXXFLAGS="${BK_LIBCXX_PREFIX:+-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1"} --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument ${BK_LIBCXX_PREFIX:+--unwindlib=libunwind} -fPIC`,
 		// The compiler is pinned to the pkgx clang AND carries the whole driver
 		// configuration, because libtool builds its own command lines from $CC
 		// and ignores CFLAGS/LDFLAGS.
 		`export CC="${CC:-clang --sysroot="$BK_GLIBC_PREFIX"`,
-		`export CXX="${CXX:-clang++ -stdlib=libc++`,
+		`export CXX="${CXX:-clang++ ${BK_LIBCXX_PREFIX:+-stdlib=libc++`,
 		`--rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=none}"`,
 		// PT_INTERP = the bottle's x86-64 loader; libc + libc++/libunwind lib search paths; DT_RPATH.
-		`-Wl,--dynamic-linker="${BK_GLIBC_LIB}ld-linux-x86-64.so.2" -Wl,-rpath,"$BK_GLIBC_LIB" -L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib" -Wl,--disable-new-dtags`,
+		`-Wl,--dynamic-linker="${BK_GLIBC_LIB}ld-linux-x86-64.so.2" -Wl,-rpath,"$BK_GLIBC_LIB" ${BK_LIBCXX_PREFIX:+-L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib"} -Wl,--disable-new-dtags`,
 	}
 	for _, w := range wants {
 		if !strings.Contains(s, w) {
@@ -198,7 +197,7 @@ func TestWrapLibcPkgxArm64Loader(t *testing.T) {
 		t.Errorf("arm64 script leaked x86-64 flags:\n%s", s)
 	}
 	// arm64 CXXFLAGS leads with libc++ then the glibc sysroot (non-fPIC branch).
-	if !strings.Contains(s, `export CXXFLAGS="-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1" --sysroot="$BK_GLIBC_PREFIX"`) {
+	if !strings.Contains(s, `export CXXFLAGS="${BK_LIBCXX_PREFIX:+-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1"} --sysroot="$BK_GLIBC_PREFIX"`) {
 		t.Errorf("arm64 CXXFLAGS missing libc++/sysroot:\n%s", s)
 	}
 }
