@@ -18,6 +18,7 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-pkgx/bottle"
 	"github.com/ulikunitz/xz"
 )
 
@@ -365,8 +366,10 @@ func TestFetchBadZip(t *testing.T) {
 func TestFetchMalformedTar(t *testing.T) {
 	s := serve(t, bytes.Repeat([]byte{'x'}, 1024))
 	err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
-	if err == nil || !strings.Contains(err.Error(), "read tar") {
-		t.Fatalf("err = %v; want read tar error", err)
+	// Tar extraction delegates to bottle.Extract, which surfaces the underlying
+	// archive/tar error directly ("invalid tar header").
+	if err == nil || !strings.Contains(err.Error(), "tar header") {
+		t.Fatalf("err = %v; want a malformed-tar error", err)
 	}
 }
 
@@ -389,8 +392,8 @@ func TestFetchTarPathTraversal(t *testing.T) {
 	s := serve(t, data)
 	dir := t.TempDir()
 	err := Fetch(s.URL+"/pkg.tar", dir, 0)
-	if err == nil || !strings.Contains(err.Error(), "path traversal") {
-		t.Fatalf("err = %v; want path traversal", err)
+	if !errors.Is(err, bottle.ErrInsecurePath) {
+		t.Fatalf("err = %v; want bottle.ErrInsecurePath", err)
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "evil.txt")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("evil.txt escaped destDir, err = %v", err)
@@ -403,6 +406,20 @@ func TestFetchTarAbsolutePath(t *testing.T) {
 	})
 	s := serve(t, data)
 	err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
+	if !errors.Is(err, bottle.ErrInsecurePath) {
+		t.Fatalf("err = %v; want bottle.ErrInsecurePath", err)
+	}
+}
+
+func TestFetchZipAbsolutePath(t *testing.T) {
+	// The zip extractor keeps bk's own safeTarget; an absolute entry name is
+	// rejected with the "absolute path" diagnostic (tar now delegates to
+	// bottle.Extract, so this is the case that still exercises that branch).
+	data := buildZip(t, []zipEntry{
+		{name: "/abs.txt", mode: 0o644, body: "evil"},
+	})
+	s := serve(t, data)
+	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "absolute path") {
 		t.Fatalf("err = %v; want absolute path", err)
 	}
@@ -429,27 +446,10 @@ func failMkdirOn(marker string) func(string, fs.FileMode) error {
 	}
 }
 
-func TestFetchTarMkdirErrors(t *testing.T) {
-	cases := []struct {
-		name    string
-		entries []tarEntry
-	}{
-		{"dir entry", []tarEntry{{name: "boomdir/", typ: tar.TypeDir, mode: 0o755}}},
-		{"symlink parent", []tarEntry{{name: "boomdir/l", typ: tar.TypeSymlink, mode: 0o777, link: "x"}}},
-		{"file parent", []tarEntry{{name: "boomdir/f", typ: tar.TypeReg, mode: 0o644, body: "x"}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			restoreSeams(t)
-			osMkdirAll = failMkdirOn("boomdir")
-			s := serve(t, buildTar(t, tc.entries))
-			err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
-			if err == nil || !strings.Contains(err.Error(), "mkdir boom") {
-				t.Fatalf("err = %v; want mkdir boom", err)
-			}
-		})
-	}
-}
+// Tar extraction now delegates to bottle.Extract; its mkdir / symlink /
+// open-file / copy error branches live in and are covered by the bottle
+// package. The zip extractor keeps bk's own inline logic, so the Zip* seam
+// tests below continue to exercise those bk seams.
 
 func TestFetchZipMkdirErrors(t *testing.T) {
 	cases := []struct {
@@ -473,17 +473,6 @@ func TestFetchZipMkdirErrors(t *testing.T) {
 	}
 }
 
-func TestFetchTarSymlinkError(t *testing.T) {
-	restoreSeams(t)
-	osSymlink = func(_, _ string) error { return errors.New("symlink boom") }
-	data := buildTar(t, []tarEntry{{name: "l", typ: tar.TypeSymlink, mode: 0o777, link: "x"}})
-	s := serve(t, data)
-	err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
-	if err == nil || !strings.Contains(err.Error(), "symlink boom") {
-		t.Fatalf("err = %v; want symlink boom", err)
-	}
-}
-
 func TestFetchZipSymlinkError(t *testing.T) {
 	restoreSeams(t)
 	osSymlink = func(_, _ string) error { return errors.New("symlink boom") }
@@ -495,17 +484,6 @@ func TestFetchZipSymlinkError(t *testing.T) {
 	}
 }
 
-func TestFetchTarOpenFileError(t *testing.T) {
-	restoreSeams(t)
-	osOpenFile = func(string, int, fs.FileMode) (*os.File, error) { return nil, errors.New("open boom") }
-	data := buildTar(t, []tarEntry{{name: "f", typ: tar.TypeReg, mode: 0o644, body: "x"}})
-	s := serve(t, data)
-	err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
-	if err == nil || !strings.Contains(err.Error(), "open boom") {
-		t.Fatalf("err = %v; want open boom", err)
-	}
-}
-
 func TestFetchZipOpenFileError(t *testing.T) {
 	restoreSeams(t)
 	osOpenFile = func(string, int, fs.FileMode) (*os.File, error) { return nil, errors.New("open boom") }
@@ -514,17 +492,6 @@ func TestFetchZipOpenFileError(t *testing.T) {
 	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "open boom") {
 		t.Fatalf("err = %v; want open boom", err)
-	}
-}
-
-func TestFetchTarCopyError(t *testing.T) {
-	restoreSeams(t)
-	ioCopy = func(io.Writer, io.Reader) (int64, error) { return 0, errors.New("copy boom") }
-	data := buildTar(t, []tarEntry{{name: "f", typ: tar.TypeReg, mode: 0o644, body: "x"}})
-	s := serve(t, data)
-	err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
-	if err == nil || !strings.Contains(err.Error(), "copy boom") {
-		t.Fatalf("err = %v; want copy boom", err)
 	}
 }
 
@@ -580,12 +547,50 @@ func TestFetchTarZeroModeFallbacks(t *testing.T) {
 	}
 }
 
+// TestFetchZipZeroModeFallback covers bk's permOr fallback (and writeFile) for a
+// zip regular entry carrying no Unix mode bits — the tar path that used to
+// exercise this now delegates to bottle.Extract.
+func TestFetchZipZeroModeFallback(t *testing.T) {
+	data := buildZip(t, []zipEntry{{name: "f", mode: 0, body: "x"}})
+	s := serve(t, data)
+	dir := t.TempDir()
+	if err := Fetch(s.URL+"/pkg.zip", dir, 0); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	fi, err := os.Stat(filepath.Join(dir, "f"))
+	if err != nil || fi.Mode().Perm() != 0o644 {
+		t.Fatalf("f mode = %v, %v; want 0644 fallback", fi.Mode(), err)
+	}
+}
+
+// TestFetchZipRegCopyError covers writeFile's copy-error branch via a zip
+// regular entry (the tar equivalent moved to bottle.Extract).
+func TestFetchZipRegCopyError(t *testing.T) {
+	restoreSeams(t)
+	ioCopy = func(io.Writer, io.Reader) (int64, error) { return 0, errors.New("copy boom") }
+	data := buildZip(t, []zipEntry{{name: "f", mode: 0o644, body: "x"}})
+	s := serve(t, data)
+	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+	if err == nil || !strings.Contains(err.Error(), "copy boom") {
+		t.Fatalf("err = %v; want copy boom", err)
+	}
+}
+
 func TestSafeTargetSkipsFullyStripped(t *testing.T) {
 	if _, ok, err := safeTarget("/dest", "pkg-1.0", 1); err != nil || ok {
 		t.Fatalf("safeTarget = ok %v, err %v; want skip", ok, err)
 	}
 	if _, ok, err := safeTarget("/dest", "./", 0); err != nil || ok {
 		t.Fatalf("safeTarget(./) = ok %v, err %v; want skip", ok, err)
+	}
+}
+
+func TestPermOr(t *testing.T) {
+	if got := permOr(0o600, 0o644); got != 0o600 {
+		t.Errorf("permOr(0600, 0644) = %o; want 0600", got)
+	}
+	if got := permOr(0, 0o644); got != 0o644 {
+		t.Errorf("permOr(0, 0644) = %o; want 0644 fallback", got)
 	}
 }
 
@@ -762,12 +767,13 @@ func TestExtractRestoresModTimes(t *testing.T) {
 	})
 
 	// A failing utimes propagates rather than silently leaving a wrong mtime.
+	// (The tar path's mtime-error branch now lives in and is covered by the
+	// bottle package; here the zip extractor still uses bk's restoreTime.)
 	t.Run("chtimes fails", func(t *testing.T) {
 		osChtimes = func(string, time.Time, time.Time) error { return errors.New("boom") }
 		defer func() { osChtimes = os.Chtimes }()
 		for name, data := range map[string][]byte{
-			"/pkg.tar.gz": gzWrap(t, buildTar(t, []tarEntry{{name: "x", typ: tar.TypeReg, mode: 0o644, body: "x", mod: gen}})),
-			"/pkg.zip":    buildZip(t, []zipEntry{{name: "x", mode: 0o644, body: "x", mod: gen}}),
+			"/pkg.zip": buildZip(t, []zipEntry{{name: "x", mode: 0o644, body: "x", mod: gen}}),
 		} {
 			s := serve(t, data)
 			if err := Fetch(s.URL+name, t.TempDir(), 0); err == nil {

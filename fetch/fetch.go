@@ -201,52 +201,16 @@ func writeFile(target string, perm fs.FileMode, r io.Reader) error {
 	return f.Close()
 }
 
-// extractTar extracts every entry of tr into destDir, stripping strip
-// leading path components. Unsupported entry types (fifos, devices, ...)
-// are skipped. Our own safeTarget enforces path safety, so a tar
-// ErrInsecurePath (raised only under GODEBUG=tarinsecurepath=0) is
-// tolerated and the entry is vetted like any other.
+// extractTar extracts every entry of tr into destDir, stripping strip leading
+// path components. It delegates to the shared bottle.Extract, the pkgx
+// ecosystem's single tar extractor: it strips components, restores each regular
+// file's recorded mtime (tar(1) semantics — recipes such as libexpat 2.8.3
+// depend on generated files staying newer than their sources), rejects absolute
+// or directory-escaping names (and hard-link sources) with bottle.ErrInsecurePath,
+// and reproduces dirs, regular files, symlinks and hard links; unsupported entry
+// types (fifos, devices, ...) are skipped.
 func extractTar(tr *tar.Reader, destDir string, strip int) error {
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil && !errors.Is(err, tar.ErrInsecurePath) {
-			return fmt.Errorf("fetch: read tar: %w", err)
-		}
-		target, ok, err := safeTarget(destDir, hdr.Name, strip)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			continue
-		}
-		mode := hdr.FileInfo().Mode()
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := osMkdirAll(target, permOr(mode, 0o755)); err != nil {
-				return fmt.Errorf("fetch: create %s: %w", target, err)
-			}
-		case tar.TypeSymlink:
-			if err := osMkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return fmt.Errorf("fetch: create %s: %w", filepath.Dir(target), err)
-			}
-			if err := osSymlink(hdr.Linkname, target); err != nil {
-				return fmt.Errorf("fetch: symlink %s: %w", target, err)
-			}
-		case tar.TypeReg:
-			if err := osMkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return fmt.Errorf("fetch: create %s: %w", filepath.Dir(target), err)
-			}
-			if err := writeFile(target, permOr(mode, 0o644), tr); err != nil {
-				return err
-			}
-			if err := restoreTime(target, hdr.ModTime); err != nil {
-				return err
-			}
-		}
-	}
+	return bottle.Extract(tr, destDir, strip)
 }
 
 // restoreTime gives an extracted file the modification time the archive
