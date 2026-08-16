@@ -247,8 +247,14 @@ func SanitizedEnv(home, pkgxDir string) []string {
 	// dependency environment died). These name a distribution point, not host
 	// toolchain state, so passing them through does not reopen the leak
 	// SanitizedEnv guards against.
+	//
+	// PKGX_VERIFY travels with them, and for the same reason: it is the other
+	// half of the same decision — which registry, and on what terms. Verification
+	// is on by default and a build inherits that; the opt-out exists for a test
+	// harness pointed at a scratch registry of deliberately unsigned bottles,
+	// where the alternative is not "less safety" but "no test".
 	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "PKGX_PANTRY_DIR", "PKGX_PANTRY_PATH",
-		"PKGX_DIST", "PKGX_PANTRY", "PKGX_PANTRY_OVERLAY", "GITHUB_TOKEN", "LD_LIBRARY_PATH"} {
+		"PKGX_DIST", "PKGX_PANTRY", "PKGX_PANTRY_OVERLAY", "PKGX_VERIFY", "GITHUB_TOKEN", "LD_LIBRARY_PATH"} {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}
