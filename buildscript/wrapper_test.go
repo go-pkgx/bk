@@ -22,7 +22,7 @@ func TestWrapLinux(t *testing.T) {
 	wants := []string{
 		"#!/opt/bash\n",
 		"set -eo pipefail",
-		`eval "$(CLICOLOR_FORCE=1 /opt/pkgx/bin/pkgx "+openssl.org@1.1" "+zlib.net" "+llvm.org")"`,
+		`__bk_deps_env="$(CLICOLOR_FORCE=1 /opt/pkgx/bin/pkgx "+openssl.org@1.1" "+zlib.net" "+llvm.org")" || {`,
 		`export PATH="/bk/libexec:$PATH"`,
 		`export CMAKE_PREFIX_PATH="/opt/pkgx${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"`,
 		`export PKGX="/opt/pkgx/bin/pkgx"`,
@@ -128,7 +128,7 @@ func TestWrapHasCompilerAndDefaults(t *testing.T) {
 	}
 	// defaults: no deps => no eval block; default bash + pkgx
 	s2 := Wrap(WrapOptions{UserScript: "x", Target: darwinTgt(), Host: darwinTgt()})
-	if strings.Contains(s2, "eval \"$(") {
+	if strings.Contains(s2, "__bk_deps_env=") {
 		t.Error("no deps + darwin host => no eval block")
 	}
 	if !strings.HasPrefix(s2, "#!/bin/bash\n") {
@@ -136,7 +136,7 @@ func TestWrapHasCompilerAndDefaults(t *testing.T) {
 	}
 	// no-deps linux still gets the llvm.org default => an eval block appears
 	s3 := Wrap(WrapOptions{UserScript: "x", Target: linuxTgt(), Host: linuxTgt()})
-	if !strings.Contains(s3, `eval "$(CLICOLOR_FORCE=1 pkgx "+llvm.org")"`) {
+	if !strings.Contains(s3, `__bk_deps_env="$(CLICOLOR_FORCE=1 pkgx "+llvm.org")" || {`) {
 		t.Errorf("no-dep linux should still eval default llvm.org via `pkgx`: %s", s3)
 	}
 }
@@ -253,5 +253,34 @@ func TestWrapLibcPkgxGlibcPin(t *testing.T) {
 	})
 	if !strings.Contains(s, `"+gnu.org/glibc"`) || strings.Contains(s, "glibc@") {
 		t.Errorf("no-pin should use unversioned glibc:\n%s", s)
+	}
+}
+
+// TestWrapDepEnvIsFatal: a failed dependency environment must STOP the build.
+// `eval "$(pkgx +…)"` swallows it — the substitution is empty, eval succeeds,
+// and the build runs on with no deps, failing later with something unrelated.
+func TestWrapDepEnvIsFatal(t *testing.T) {
+	s := Wrap(WrapOptions{
+		UserScript: "make", Deps: []string{"zlib.net"},
+		Target: linuxTgt(), Host: linuxTgt(), PkgxBin: "/opt/pkgx/bin/pkgx",
+	})
+	for _, w := range []string{
+		`__bk_deps_env="$(CLICOLOR_FORCE=1 /opt/pkgx/bin/pkgx "+zlib.net" "+llvm.org")" || {`,
+		`echo "bk: the dependency environment failed`,
+		"  exit 1\n}",
+		`eval "$__bk_deps_env"`,
+		"unset __bk_deps_env",
+	} {
+		if !strings.Contains(s, w) {
+			t.Errorf("missing %q in:\n%s", w, s)
+		}
+	}
+	// the guard sits INSIDE the export-all window, so the eval'd assignments
+	// are still exported to the build
+	iSetA := strings.Index(s, "set -a")
+	iEval := strings.Index(s, `eval "$__bk_deps_env"`)
+	iSetPlusA := strings.Index(s, "set +a")
+	if !(iSetA < iEval && iEval < iSetPlusA) {
+		t.Fatalf("the eval must stay between set -a and set +a:\n%s", s)
 	}
 }

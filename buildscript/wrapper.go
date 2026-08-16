@@ -56,8 +56,18 @@ func Wrap(o WrapOptions) string {
 		if pkgx == "" {
 			pkgx = "pkgx"
 		}
+		// The dependency environment must be a HARD failure. `eval "$(pkgx +…)"`
+		// swallows it: when pkgx errors, the substitution is empty, `eval ""`
+		// succeeds, and the build carries on with NO deps — then dies much later
+		// with something unrelated ("C compiler cannot create executables",
+		// "cannot find -lncursesw") that costs an hour to trace back. Capture the
+		// output, check the status, and say which command failed.
 		b.WriteString("set -a\n")
-		fmt.Fprintf(&b, "eval \"$(CLICOLOR_FORCE=1 %s %s)\"\n", pkgx, plus)
+		fmt.Fprintf(&b, "__bk_deps_env=\"$(CLICOLOR_FORCE=1 %s %s)\" || {\n", pkgx, plus)
+		fmt.Fprintf(&b, "  echo \"bk: the dependency environment failed: %s %s\" >&2\n", pkgx, plus)
+		b.WriteString("  exit 1\n}\n")
+		b.WriteString("eval \"$__bk_deps_env\"\n")
+		b.WriteString("unset __bk_deps_env\n")
 		b.WriteString("set +a\n")
 	}
 	if o.BrewkitPath != "" {
