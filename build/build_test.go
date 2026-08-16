@@ -206,10 +206,12 @@ func TestSanitizedEnv(t *testing.T) {
 	t.Setenv("PKGX_DIST", "oci://http://cache:5111/go-pkgx/packages")
 	t.Setenv("PKGX_PANTRY", "https://pantry.example/projects")
 	t.Setenv("PKGX_PANTRY_OVERLAY", "https://overlay.example/projects")
+	// The opt-out a test harness needs when it points at unsigned fixtures.
+	t.Setenv("PKGX_VERIFY", "0")
 	os.Unsetenv("PKGX_PANTRY_DIR")
 	env := SanitizedEnv("/h", "/pkgx")
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "GITHUB_TOKEN=secret", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true", "FORCE_UNSAFE_CONFIGURE=1", "PKGX_DIST=oci://http://cache:5111/go-pkgx/packages", "PKGX_PANTRY=https://pantry.example/projects", "PKGX_PANTRY_OVERLAY=https://overlay.example/projects"} {
+	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "GITHUB_TOKEN=secret", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true", "FORCE_UNSAFE_CONFIGURE=1", "PKGX_DIST=oci://http://cache:5111/go-pkgx/packages", "PKGX_PANTRY=https://pantry.example/projects", "PKGX_PANTRY_OVERLAY=https://overlay.example/projects", "PKGX_VERIFY=0"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("SanitizedEnv missing %q in %v", want, env)
 		}
