@@ -949,3 +949,76 @@ func TestTailWriterWriteError(t *testing.T) {
 type errWriter struct{}
 
 func (errWriter) Write([]byte) (int, error) { return 0, errors.New("closed") }
+
+// TestRunFactoryVersionConstraint: --versions selects a LINE, which "newest N"
+// cannot. Our registry carries cmake 4.4.2 while 114 pantry recipes pin
+// `cmake.org: ^3`; no value of --max-versions reaches a 3.x from a newest-first
+// listing, so publishing the version those recipes actually need needs this.
+func TestRunFactoryVersionConstraint(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	if code := h.run(t, "--recipes", "lib.org", "--versions", "^1"); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	if got := strings.Join(h.built, " "); got != "lib.org@=1.0" {
+		t.Fatalf("built = %q, want only the 1.x line", got)
+	}
+	if !strings.Contains(h.out.String(), `versions lib.org: 1 dropped by --versions "^1"`) {
+		t.Fatalf("the drop must be said, not silent:\n%s", h.out.String())
+	}
+}
+
+// A constraint no version satisfies is a failure, not an empty success.
+func TestRunFactoryVersionConstraintMatchesNothing(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	// The factory tolerates per-project failures by design (it records them and
+	// keeps going), so what must be true is that NOTHING was built and the
+	// failure is on the record -- not that the process died.
+	h.run(t, "--recipes", "lib.org", "--versions", "^9")
+	if len(h.built) != 0 {
+		t.Fatalf("nothing may be built: %v", h.built)
+	}
+	if !strings.Contains(h.failuresFile(t), "lib.org  versions") && !strings.Contains(h.errb.String()+h.out.String(), `no version matches "^9"`) {
+		t.Fatalf("failure not reported:\n%s\n%s", h.out.String(), h.failuresFile(t))
+	}
+}
+
+// The same handle applies to mirror mode, which is where it is actually needed:
+// upstream publishes cmake 3.x bottles our registry lacks.
+func TestRunFactoryMirrorVersionConstraint(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "cmake.org", "versions:\n  github: a/cmake/tags\nbuild: make\n")
+	withMirrorSeams(t, map[string][]string{"cmake.org": {"3.31.12", "4.4.1", "4.4.2"}},
+		func(_, ver, _, _ string) ([]byte, string, error) { return []byte("bottle-" + ver), ".tar.xz", nil })
+
+	if code := h.run(t, "--recipes", "cmake.org", "--mirror-from", "https://dist.pkgx.dev",
+		"--versions", "^3", "--bottles", filepath.Join(t.TempDir(), "dist")); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	var tags []string
+	for _, p := range h.published {
+		tags = append(tags, p.tag)
+	}
+	if strings.Join(tags, ",") != "3.31.12" {
+		t.Fatalf("tags = %v, want only the 3.x line", tags)
+	}
+}
+
+// …and in mirror mode too, an unsatisfiable constraint is a recorded failure,
+// not a silent no-op that looks like "everything was already published".
+func TestRunFactoryMirrorVersionConstraintMatchesNothing(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "cmake.org", "versions:\n  github: a/cmake/tags\nbuild: make\n")
+	withMirrorSeams(t, map[string][]string{"cmake.org": {"4.4.1", "4.4.2"}},
+		func(_, ver, _, _ string) ([]byte, string, error) { return []byte("bottle-" + ver), ".tar.xz", nil })
+
+	h.run(t, "--recipes", "cmake.org", "--mirror-from", "https://dist.pkgx.dev",
+		"--versions", "^3", "--bottles", filepath.Join(t.TempDir(), "dist"))
+	if len(h.published) != 0 {
+		t.Fatalf("nothing may be published: %v", h.published)
+	}
+	if !strings.Contains(h.failuresFile(t), "cmake.org") {
+		t.Fatalf("failure not recorded: %q", h.failuresFile(t))
+	}
+}
