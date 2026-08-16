@@ -66,13 +66,12 @@ var closureOf = func(pantryDir string, tgt target.Target, want []string, warn fu
 	return order
 }
 
-// depName strips the version constraint from a "project@constraint" dep spec.
-func depName(spec string) string {
-	if i := strings.IndexByte(spec, '@'); i >= 0 {
-		return spec[:i]
-	}
-	return spec
-}
+// depName strips the version constraint from a dep spec, in BOTH the forms
+// build.DepSpecs renders: "project@1.2" and "project^6"/"project>=6". Keeping
+// the operator in the name made the closure look for
+// projects/invisible-island.net/ncurses^6/package.yml, miss it, and drop the
+// dependency — so readline was built with no ncurses in its environment.
+func depName(spec string) string { return build.SpecProject(spec) }
 
 func loadClosureRecipe(pantryDir, proj string) (*pantry.Recipe, error) {
 	b, err := os.ReadFile(filepath.Join(pantryDir, "projects", proj, "package.yml"))

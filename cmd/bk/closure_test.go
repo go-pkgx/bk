@@ -69,8 +69,40 @@ func TestRunClosureEnvFallback(t *testing.T) {
 }
 
 func TestDepName(t *testing.T) {
-	if depName("openssl.org@^1.1") != "openssl.org" || depName("zlib.net") != "zlib.net" {
-		t.Error("depName")
+	for spec, want := range map[string]string{
+		"openssl.org@^1.1":               "openssl.org",
+		"zlib.net":                       "zlib.net",
+		"invisible-island.net/ncurses^6": "invisible-island.net/ncurses",
+		"cmake.org~3.30":                 "cmake.org",
+		"gnu.org/gmp>=6":                 "gnu.org/gmp",
+		"llvm.org<19":                    "llvm.org",
+		"zlib.net=1.3.1":                 "zlib.net",
+	} {
+		if got := depName(spec); got != want {
+			t.Errorf("depName(%q)=%q want %q", spec, got, want)
+		}
+	}
+}
+
+// TestRunClosureRangeConstrainedDep pins the defect that hid gnu.org/readline's
+// ncurses: DepSpecs renders `dependencies: {invisible-island.net/ncurses: ^6}`
+// as "…/ncurses^6", and a closure that splits on "@" alone looked for a project
+// literally named "…/ncurses^6", skipped it, and built readline with no ncurses
+// in scope — `ld.lld: unable to find library -lncursesw`, three layers away.
+func TestRunClosureRangeConstrainedDep(t *testing.T) {
+	p := t.TempDir()
+	writeClosureRecipe(t, p, "app.org", "dependencies:\n  lib.org: ^6\nversions:\n  github: a/app/tags\nbuild: make\n")
+	writeClosureRecipe(t, p, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+
+	var out, errb bytes.Buffer
+	if code := runClosure([]string{"--pantry", p, "--platform", "linux/aarch64", "app.org"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb.String())
+	}
+	if lines := strings.Fields(out.String()); len(lines) != 2 || lines[0] != "lib.org" || lines[1] != "app.org" {
+		t.Errorf("order = %v, want [lib.org app.org]", lines)
+	}
+	if errb.Len() != 0 {
+		t.Errorf("a caret-constrained dep must resolve, not be skipped: %q", errb.String())
 	}
 }
 

@@ -82,8 +82,8 @@ func TestSpecProject(t *testing.T) {
 		"qux=1":          "qux",
 		"plain":          "plain",
 	} {
-		if got := specProject(spec); got != want {
-			t.Errorf("specProject(%q)=%q want %q", spec, got, want)
+		if got := SpecProject(spec); got != want {
+			t.Errorf("SpecProject(%q)=%q want %q", spec, got, want)
 		}
 	}
 }
@@ -134,8 +134,8 @@ func TestBaseToolchainAndEvalDeps(t *testing.T) {
 	if !contains(base, "gnu.org/bison") {
 		t.Errorf("base toolchain must include gnu.org/bison, got %v", base)
 	}
-	if specProject("gnu.org/gawk@5.3") != "gnu.org/gawk" {
-		t.Errorf("specProject should strip @5.3 for dedup")
+	if SpecProject("gnu.org/gawk@5.3") != "gnu.org/gawk" {
+		t.Errorf("SpecProject should strip @5.3 for dedup")
 	}
 	// EvalDeps = base + runtime + build, deduped by project, sorted
 	got := EvalDeps(

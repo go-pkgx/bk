@@ -82,10 +82,13 @@ func depSpec(project, constraint string) string {
 	}
 }
 
-// specProject extracts the bare project name from a rendered pkgspec, stopping
+// SpecProject extracts the bare project name from a rendered pkgspec, stopping
 // at the first version delimiter (@ or a range operator) so dedup keys match
-// regardless of the constraint form.
-func specProject(spec string) string {
+// regardless of the constraint form. depSpec renders a caret/tilde/range
+// constraint with NO separator (`invisible-island.net/ncurses^6`), so a
+// consumer that splits on "@" alone keeps the operator inside the project name
+// — which is how a constrained dependency silently drops out of a closure.
+func SpecProject(spec string) string {
 	if i := strings.IndexAny(spec, "@^~<>="); i >= 0 {
 		return spec[:i]
 	}
@@ -182,7 +185,7 @@ func EvalDeps(runtime, buildDeps map[string]any, tgt target.Target) []string {
 	var out []string
 	add := func(specs []string) {
 		for _, s := range specs {
-			key := specProject(s)
+			key := SpecProject(s)
 			if !seen[key] {
 				seen[key] = true
 				out = append(out, s)
