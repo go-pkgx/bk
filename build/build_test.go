@@ -201,10 +201,15 @@ func TestDepTokens(t *testing.T) {
 func TestSanitizedEnv(t *testing.T) {
 	t.Setenv("TERM", "xterm")
 	t.Setenv("GITHUB_TOKEN", "secret")
+	// Where the build's own `pkgx +deps` resolves from: a local registry cache
+	// and a corrected overlay only apply if they survive the sanitised env.
+	t.Setenv("PKGX_DIST", "oci://http://cache:5111/go-pkgx/packages")
+	t.Setenv("PKGX_PANTRY", "https://pantry.example/projects")
+	t.Setenv("PKGX_PANTRY_OVERLAY", "https://overlay.example/projects")
 	os.Unsetenv("PKGX_PANTRY_DIR")
 	env := SanitizedEnv("/h", "/pkgx")
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "GITHUB_TOKEN=secret", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true", "FORCE_UNSAFE_CONFIGURE=1"} {
+	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "GITHUB_TOKEN=secret", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true", "FORCE_UNSAFE_CONFIGURE=1", "PKGX_DIST=oci://http://cache:5111/go-pkgx/packages", "PKGX_PANTRY=https://pantry.example/projects", "PKGX_PANTRY_OVERLAY=https://overlay.example/projects"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("SanitizedEnv missing %q in %v", want, env)
 		}

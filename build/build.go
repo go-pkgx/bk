@@ -238,7 +238,17 @@ func SanitizedEnv(home, pkgxDir string) []string {
 	//   mkdir: error while loading shared libraries: libc.so.6: cannot open …
 	// The caller opting in (an ENV in the builder image) is a deliberate choice,
 	// not ambient host state.
-	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "PKGX_PANTRY_DIR", "PKGX_PANTRY_PATH", "GITHUB_TOKEN", "LD_LIBRARY_PATH"} {
+	// PKGX_DIST / PKGX_PANTRY / PKGX_PANTRY_OVERLAY choose WHERE the `pkgx +deps`
+	// line of the generated script resolves from. Dropping them silently sent
+	// every build back to the default ghcr.io registry and the upstream pantry —
+	// a local registry cache was bypassed by the builds it exists for, and a
+	// corrected overlay recipe was never seen (curl.se then asked for the
+	// unsatisfiable `openssl.org: ^1.1` of the upstream recipe and the whole
+	// dependency environment died). These name a distribution point, not host
+	// toolchain state, so passing them through does not reopen the leak
+	// SanitizedEnv guards against.
+	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "PKGX_PANTRY_DIR", "PKGX_PANTRY_PATH",
+		"PKGX_DIST", "PKGX_PANTRY", "PKGX_PANTRY_OVERLAY", "GITHUB_TOKEN", "LD_LIBRARY_PATH"} {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}
