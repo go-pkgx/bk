@@ -75,6 +75,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	platform := fs.String("platform", envOr("PLATFORM", ""), "target os/arch, e.g. linux/x86-64 (required)")
 	bottles := fs.String("bottles", "dist", "local directory the built bottles are staged in")
 	maxVersions := fs.Int("max-versions", envInt("MAX_VERSIONS"), "cap versions built per requested project, newest first (0 = all)")
+	versionSpec := fs.String("versions", envOr("VERSIONS", ""), `only consider versions of the REQUESTED projects that match this pkgx constraint, e.g. "^3", ">=2.4", "=1.2.3" (applied before --max-versions; closure-only dependencies still resolve to their newest)`)
 	mirrorFrom := fs.String("mirror-from", "", "instead of building, copy each bottle from this upstream pkgx dist (e.g. https://dist.pkgx.dev) and republish it signed + attested — for versions we cannot or need not rebuild, such as ancient glibc")
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
@@ -169,6 +170,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		dist: *to, bottles: *bottles, glibc: *glibc,
 		force: *force, key: kp, when: factoryTime(),
 		mirror: strings.TrimRight(*mirrorFrom, "/"),
+		want:   strings.TrimSpace(*versionSpec),
 		stdout: stdout, stderr: stderr,
 	}
 	if f.mirror != "" {
@@ -239,6 +241,7 @@ type factory struct {
 	key      *sign.Keypair
 	when     time.Time
 	mirror   string // upstream dist to copy from, "" = build
+	want     string // pkgx constraint the requested projects' versions must satisfy, "" = any
 	stdout   io.Writer
 	stderr   io.Writer
 
@@ -267,12 +270,15 @@ func (f *factory) versionsFor(rec *pantry.Recipe, proj string, requested bool, m
 	if len(vts) == 0 {
 		return nil, fmt.Errorf("no candidate versions")
 	}
-	if max > 0 && len(vts) > max {
-		vts = vts[:max]
-	}
 	out := make([]string, 0, len(vts))
 	for _, vt := range vts {
 		out = append(out, vt.Version)
+	}
+	if out = f.matching(proj, out); len(out) == 0 {
+		return nil, fmt.Errorf("no version matches %q", f.want)
+	}
+	if max > 0 && len(out) > max {
+		out = out[:max]
 	}
 	fmt.Fprintf(f.stdout, "versions %s: %d to consider (%s)\n", proj, len(out), f.platform)
 	return out, nil
@@ -343,11 +349,36 @@ func (f *factory) mirrorVersionsFor(proj string, requested bool, max int) ([]str
 	if !requested {
 		return out[:1], nil
 	}
+	if out = f.matching(proj, out); len(out) == 0 {
+		return nil, fmt.Errorf("no upstream version matches %q", f.want)
+	}
 	if max > 0 && len(out) > max {
 		out = out[:max]
 	}
 	fmt.Fprintf(f.stdout, "versions %s: %d to consider (%s, upstream)\n", proj, len(out), f.platform)
 	return out, nil
+}
+
+// matching keeps only the versions satisfying --versions, and says how many it
+// dropped. It exists because "newest N" is the wrong handle for a LINE: our
+// registry carries cmake 4.4.2 while 114 pantry recipes pin `cmake.org: ^3`, and
+// no value of --max-versions reaches a 3.x from a newest-first listing. The
+// constraint grammar is pkgx's own, so `^3`, `~3.31`, `>=2.4` and `=1.2.3` all
+// mean here what they mean in a recipe.
+func (f *factory) matching(proj string, vers []string) []string {
+	if f.want == "" {
+		return vers
+	}
+	out := make([]string, 0, len(vers))
+	for _, v := range vers {
+		if bottle.ParseVer(v).Satisfies(f.want) {
+			out = append(out, v)
+		}
+	}
+	if n := len(vers) - len(out); n > 0 {
+		fmt.Fprintf(f.stdout, "versions %s: %d dropped by --versions %q\n", proj, n, f.want)
+	}
+	return out
 }
 
 // mirrorOne copies one upstream bottle into our registry, republished with our
