@@ -19,6 +19,9 @@ const osWriteFlags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 // verbatim.
 var (
 	httpGet       = http.Get
+	httpDo        = http.DefaultClient.Do
+	osCreateTemp  = os.CreateTemp
+	osRemove      = os.Remove
 	gitPlainClone = gogit.PlainClone
 	osRemoveAll   = os.RemoveAll
 	osMkdirAll    = os.MkdirAll
@@ -27,7 +30,10 @@ var (
 	osOpenFile    = os.OpenFile
 	osChtimes     = os.Chtimes
 	ioCopy        = io.Copy
-	zipOpen       = defaultZipOpen
+	// A SEPARATE seam for the download body: a test that injects a copy failure
+	// for the extractor must not also break the download, which retries.
+	ioCopyBody = io.Copy
+	zipOpen    = defaultZipOpen
 )
 
 // defaultZipOpen opens a file inside a zip archive for reading.

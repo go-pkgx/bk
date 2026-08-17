@@ -7,12 +7,14 @@ import (
 	"compress/gzip"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -380,8 +382,52 @@ func TestFetchZipBodyReadError(t *testing.T) {
 	}))
 	t.Cleanup(s.Close)
 	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
-	if err == nil || !strings.Contains(err.Error(), "read body") {
-		t.Fatalf("err = %v; want read body error", err)
+	// A server that keeps sending less than it announced is now reported as what
+	// it is, with the byte counts, once the resume attempts are exhausted —
+	// instead of an "unexpected EOF" from whichever decoder happened to be
+	// reading, which is how kernel.org/linux's 150 MB tarball failed.
+	if err == nil || !strings.Contains(err.Error(), "still truncated after") {
+		t.Fatalf("err = %v; want the truncation reported with its counts", err)
+	}
+}
+
+// TestFetchResumesATruncatedBody: the point of the whole exercise. The server
+// cuts the first response short and honours the Range request that follows, so
+// the fetch completes instead of failing.
+func TestFetchResumesATruncatedBody(t *testing.T) {
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	_, _ = zw.Write(buildTar(t, []tarEntry{{name: "pkg/hello.txt", typ: tar.TypeReg, mode: 0o644, body: "bonjour"}}))
+	_ = zw.Close()
+	full := gz.Bytes()
+	cut := len(full) / 2
+	var served int
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served++
+		if rng := r.Header.Get("Range"); rng != "" {
+			var off int
+			_, _ = fmt.Sscanf(rng, "bytes=%d-", &off)
+			w.Header().Set("Content-Length", strconv.Itoa(len(full)-off))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(full[off:])
+			return
+		}
+		// First response: announce everything, deliver half, then hang up.
+		w.Header().Set("Content-Length", strconv.Itoa(len(full)))
+		_, _ = w.Write(full[:cut])
+	}))
+	t.Cleanup(s.Close)
+
+	dest := t.TempDir()
+	if err := Fetch(s.URL+"/pkg.tar.gz", dest, 1); err != nil {
+		t.Fatalf("a resumable truncation must not fail the fetch: %v", err)
+	}
+	if served < 2 {
+		t.Errorf("served %d response(s); the resume request never happened", served)
+	}
+	b, err := os.ReadFile(filepath.Join(dest, "hello.txt"))
+	if err != nil || string(b) != "bonjour" {
+		t.Errorf("extracted %q err=%v, want the complete archive", b, err)
 	}
 }
 
