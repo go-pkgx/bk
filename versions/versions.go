@@ -170,11 +170,24 @@ func Resolve(spec any, constraint string) (string, string, error) {
 	case map[string]any:
 		return resolveMap(v, constraint)
 	case []any:
+		// Same two shapes as List: literal versions, or several source blocks.
 		candidates := make([]string, 0, len(v))
+		var strips, ignores []*onigmo.Regexp
 		for _, e := range v {
-			candidates = append(candidates, fmt.Sprint(e))
+			sub, ok := e.(map[string]any)
+			if !ok {
+				candidates = append(candidates, fmt.Sprint(e))
+				continue
+			}
+			c, s, i, err := gatherCandidates(sub)
+			if err != nil {
+				return "", "", err
+			}
+			candidates = append(candidates, c...)
+			strips = append(strips, s...)
+			ignores = append(ignores, i...)
 		}
-		return selectVersion(candidates, nil, nil, constraint)
+		return selectVersion(candidates, strips, ignores, constraint)
 	default:
 		return "", "", fmt.Errorf("versions: unsupported version spec %T", spec)
 	}
@@ -325,8 +338,24 @@ func List(spec any) ([]VersionTag, error) {
 			return nil, err
 		}
 	case []any:
+		// A list holds EITHER literal version strings, or several source blocks
+		// -- kernel.org/linux-headers lists one {url, match, strip} per kernel
+		// series. Stringifying a block yielded "map[match:... url:...]", which
+		// matches nothing, so every such recipe failed with "no candidate version
+		// matched" however healthy its sources were.
 		for _, e := range v {
-			candidates = append(candidates, fmt.Sprint(e))
+			sub, ok := e.(map[string]any)
+			if !ok {
+				candidates = append(candidates, fmt.Sprint(e))
+				continue
+			}
+			c, s, i, err := gatherCandidates(sub)
+			if err != nil {
+				return nil, err
+			}
+			candidates = append(candidates, c...)
+			strips = append(strips, s...)
+			ignores = append(ignores, i...)
 		}
 	default:
 		return nil, fmt.Errorf("versions: unsupported version spec %T", spec)
