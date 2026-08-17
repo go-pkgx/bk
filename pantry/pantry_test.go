@@ -192,3 +192,39 @@ func TestMustPanics(t *testing.T) {
 	}()
 	must(nil, errors.New("boom"))
 }
+
+// TestParseVersionsListOfSourceBlocks: a list-form `versions:` may hold source
+// BLOCKS, not just literal versions — kernel.org/linux-headers lists one
+// {url, match, strip} per kernel series. Rescuing the verbatim scalar text of
+// every element (to keep "3.0" from becoming 3) turned each mapping into the
+// empty string, and the recipe could no longer resolve a single version.
+func TestParseVersionsListOfSourceBlocks(t *testing.T) {
+	rec, err := Parse([]byte("distributable:\n  url: https://x/y-{{version}}.tar.xz\nversions:\n" +
+		"  - url: \"https://cdn.example/v6.x/\"\n    match: /linux-\\d+\\.tar\\.xz/\n    strip:\n      - /linux-/\n" +
+		"  - url: \"https://cdn.example/v5.x/\"\n    match: /linux-\\d+\\.tar\\.xz/\nbuild: make\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, ok := rec.Versions.([]any)
+	if !ok || len(list) != 2 {
+		t.Fatalf("versions = %#v", rec.Versions)
+	}
+	for i, e := range list {
+		m, ok := e.(map[string]any)
+		if !ok {
+			t.Fatalf("element %d is %T, want the source block intact", i, e)
+		}
+		if m["url"] == nil || m["match"] == nil {
+			t.Errorf("element %d lost its keys: %#v", i, m)
+		}
+	}
+	// …and a list of literal versions still keeps its verbatim text, which is
+	// what the rescue existed for: "3.0" must not become 3.
+	rec, err = Parse([]byte("distributable:\n  url: https://x\nversions:\n  - 3.0\n  - 3.1.4\nbuild: make\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.Versions.([]any); got[0] != "3.0" || got[1] != "3.1.4" {
+		t.Errorf("literal versions = %#v, want the exact source text", got)
+	}
+}

@@ -788,3 +788,43 @@ func TestHTTPGetRawSeam(t *testing.T) {
 		t.Error("bad URL: want NewRequest error")
 	}
 }
+
+// TestListAndResolveSourceBlocks: a list-form `versions:` can hold source
+// blocks rather than literal versions. Stringifying a block yielded
+// "map[match:… url:…]", which matches nothing — every such recipe failed with
+// "no candidate version matched" however healthy its sources were.
+func TestListAndResolveSourceBlocks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<a href="linux-6.1.2.tar.xz">linux-6.1.2.tar.xz</a> <a href="linux-6.2.0.tar.xz">x</a>`)
+	}))
+	defer srv.Close()
+	spec := []any{
+		map[string]any{
+			"url":   srv.URL + "/",
+			"match": `/linux-\d+\.\d+\.\d+\.tar\.xz/`,
+			"strip": []any{"/linux-/", `/\.tar\.xz/`},
+		},
+	}
+	got, err := List(spec)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 2 || got[0].Version != "6.2.0" {
+		t.Errorf("List = %v, want the two versions newest-first", got)
+	}
+	v, _, err := Resolve(spec, "*")
+	if err != nil || v != "6.2.0" {
+		t.Errorf("Resolve = %q err=%v, want 6.2.0", v, err)
+	}
+	// a list of literal versions keeps working
+	if v, _, err := Resolve([]any{"1.2.3", "1.3.0"}, "*"); err != nil || v != "1.3.0" {
+		t.Errorf("literal list: %q err=%v", v, err)
+	}
+	// a malformed block is reported by BOTH entry points, not silently skipped
+	if _, err := List([]any{map[string]any{"strip": 42}}); err == nil {
+		t.Error("List: expected an error for a malformed source block")
+	}
+	if _, _, err := Resolve([]any{map[string]any{"strip": 42}}, "*"); err == nil {
+		t.Error("Resolve: expected an error for a malformed source block")
+	}
+}

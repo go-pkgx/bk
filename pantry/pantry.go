@@ -118,9 +118,21 @@ func rawListVersions(root *yaml.Node, decoded any) any {
 		if node.Kind != yaml.SequenceNode {
 			return decoded
 		}
+		// Only a SCALAR element carries verbatim text worth rescuing. A list can
+		// also hold {url, match, strip} MAPPINGS -- kernel.org/linux-headers has
+		// one per kernel series -- and a mapping node's .Value is the empty
+		// string, so taking it turned every such source block into "" and the
+		// recipe could no longer resolve a single version.
+		dec, _ := decoded.([]any)
 		out := make([]any, 0, len(node.Content))
-		for _, c := range node.Content {
-			out = append(out, c.Value)
+		for i, c := range node.Content {
+			if c.Kind == yaml.ScalarNode {
+				out = append(out, c.Value)
+				continue
+			}
+			if i < len(dec) {
+				out = append(out, dec[i])
+			}
 		}
 		return out
 	}
