@@ -282,3 +282,31 @@ func sortedStrings(ss []string) bool {
 	}
 	return true
 }
+
+// TestEvalDepsRecipeConstraintBeatsBase: the base toolchain is a floor, not a
+// pin. gnu.org/texinfo declares `perl.org: ~5.42` because its XS modules are
+// compiled against that perl; when the base's unconstrained perl.org won, every
+// recipe running makeinfo died with "Perl API version v5.42.0 … does not match
+// v5.44.0". A recipe must be able to constrain a base project.
+func TestEvalDepsRecipeConstraintBeatsBase(t *testing.T) {
+	got := EvalDeps(map[string]any{"perl.org": "~5.42"}, nil, lin())
+	var perl []string
+	for _, s := range got {
+		if SpecProject(s) == "perl.org" {
+			perl = append(perl, s)
+		}
+	}
+	if len(perl) != 1 || perl[0] != "perl.org~5.42" {
+		t.Fatalf("perl specs = %v, want exactly [perl.org~5.42]", perl)
+	}
+	// a BUILD dep constrains it just as well
+	got = EvalDeps(nil, map[string]any{"gnu.org/gawk": "^5.4"}, lin())
+	if !contains(got, "gnu.org/gawk^5.4") || contains(got, "gnu.org/gawk@5.3") {
+		t.Errorf("a build dep must override the base's gawk pin: %v", got)
+	}
+	// …and a project the recipe says nothing about still comes from the base,
+	// with the base's own pin intact.
+	if !contains(EvalDeps(nil, nil, lin()), "gnu.org/gawk@5.3") {
+		t.Error("the base pin must survive when the recipe is silent")
+	}
+}

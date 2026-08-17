@@ -178,8 +178,21 @@ func BaseToolchain() []string {
 	}
 }
 
-// EvalDeps is the full `pkgx +…` set for a build: the base toolchain plus the
-// recipe's own runtime + build deps, de-duplicated and sorted.
+// EvalDeps is the full `pkgx +…` set for a build: the recipe's own runtime +
+// build deps, then the base toolchain filling whatever they did not ask for,
+// de-duplicated by project and sorted.
+//
+// The ORDER is the point. The base toolchain is a floor — "these tools must be
+// present" — not a pin, so a recipe that constrains one of those projects must
+// win. It used to lose: the base was added first and the dedup dropped the
+// recipe's spec, so gnu.org/texinfo, which declares `perl.org: ~5.42` because
+// its XS modules are compiled against that perl, silently got the base's
+// unconstrained perl.org — 5.44 — and every recipe that runs makeinfo died with
+//
+//	Perl API version v5.42.0 of …/TreeElementXS.c does not match v5.44.0
+//
+// The same silent override applied to every base project (gawk, make, bison…),
+// so a recipe could never correct one.
 func EvalDeps(runtime, buildDeps map[string]any, tgt target.Target) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -192,9 +205,9 @@ func EvalDeps(runtime, buildDeps map[string]any, tgt target.Target) []string {
 			}
 		}
 	}
-	add(BaseToolchain())
 	add(DepSpecs(runtime, tgt))
 	add(DepSpecs(buildDeps, tgt))
+	add(BaseToolchain())
 	sort.Strings(out)
 	return out
 }
