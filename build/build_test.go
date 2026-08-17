@@ -325,3 +325,14 @@ func TestBaseToolchainPerlMatchesTexinfo(t *testing.T) {
 		t.Errorf("a recipe must override the base perl pin: %v", got)
 	}
 }
+
+// TestBaseToolchainHasHelp2man: autotools recipes generate man pages with
+// help2man through build-aux/missing. It has to be in the EVAL, not merely on
+// PATH: pkgx only exports a package's runtime env for packages in the closure,
+// and help2man publishes the PERL5LIB that finds the Locale::gettext it bundles.
+// Without that, help2man runs and dies with "Can't locate Locale/gettext.pm".
+func TestBaseToolchainHasHelp2man(t *testing.T) {
+	if !contains(BaseToolchain(), "gnu.org/help2man") {
+		t.Errorf("base toolchain must include gnu.org/help2man, got %v", BaseToolchain())
+	}
+}
