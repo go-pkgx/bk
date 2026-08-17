@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net/http"
 	"path"
 	"path/filepath"
 	"strings"
@@ -47,37 +46,41 @@ func Fetch(url, destDir string, stripComponents int) error {
 	if kind == "" {
 		return fmt.Errorf("fetch: unknown archive extension in %q", url)
 	}
-	resp, err := httpGet(url)
+	// Download to a temp file FIRST, resumably: a truncated stream cannot be
+	// recovered once the extractor has begun consuming it.
+	path, err := download(url)
 	if err != nil {
-		return fmt.Errorf("fetch: GET %s: %w", url, err)
+		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch: GET %s: %s", url, resp.Status)
+	defer osRemove(path)
+	body, err := osOpen(path)
+	if err != nil {
+		return fmt.Errorf("fetch: open %s: %w", path, err)
 	}
+	defer body.Close()
 	if err := osMkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("fetch: create %s: %w", destDir, err)
 	}
 	switch kind {
 	case kindTarGz:
-		gz, err := gzip.NewReader(resp.Body)
+		gz, err := gzip.NewReader(body)
 		if err != nil {
 			return fmt.Errorf("fetch: read gzip from %s: %w", url, err)
 		}
 		defer gz.Close()
 		return extractTar(tar.NewReader(gz), destDir, stripComponents)
 	case kindTarXz:
-		xr, err := xz.NewReader(resp.Body)
+		xr, err := xz.NewReader(body)
 		if err != nil {
 			return fmt.Errorf("fetch: read xz from %s: %w", url, err)
 		}
 		return extractTar(tar.NewReader(xr), destDir, stripComponents)
 	case kindTarBz2:
-		return extractTar(tar.NewReader(bzip2.NewReader(resp.Body)), destDir, stripComponents)
+		return extractTar(tar.NewReader(bzip2.NewReader(body)), destDir, stripComponents)
 	case kindTar:
-		return extractTar(tar.NewReader(resp.Body), destDir, stripComponents)
+		return extractTar(tar.NewReader(body), destDir, stripComponents)
 	default: // kindZip
-		data, err := io.ReadAll(resp.Body)
+		data, err := io.ReadAll(body)
 		if err != nil {
 			return fmt.Errorf("fetch: read body of %s: %w", url, err)
 		}
