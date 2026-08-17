@@ -172,7 +172,7 @@ func TestWrapLibcPkgxLinuxX86(t *testing.T) {
 		`export CXX="${CXX:-clang++ ${BK_LIBCXX_PREFIX:+-stdlib=libc++`,
 		`--rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=none}"`,
 		// PT_INTERP = the bottle's x86-64 loader; libc + libc++/libunwind lib search paths; DT_RPATH.
-		`-Wl,--dynamic-linker="${BK_GLIBC_LIB}ld-linux-x86-64.so.2" -Wl,-rpath,"$BK_GLIBC_LIB" ${BK_LIBCXX_PREFIX:+-L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib"} -Wl,--disable-new-dtags`,
+		`-Wl,--dynamic-linker="${BK_GLIBC_LIB}ld-linux-x86-64.so.2" -Wl,-rpath,"$BK_GLIBC_LIB" ${BK_LIBCXX_PREFIX:+-L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib"} -Wl,--disable-new-dtags -Wl,--undefined-version`,
 	}
 	for _, w := range wants {
 		if !strings.Contains(s, w) {
@@ -282,5 +282,29 @@ func TestWrapDepEnvIsFatal(t *testing.T) {
 	iSetPlusA := strings.Index(s, "set +a")
 	if !(iSetA < iEval && iEval < iSetPlusA) {
 		t.Fatalf("the eval must stay between set -a and set +a:\n%s", s)
+	}
+}
+
+// TestWrapLibcPkgxUndefinedVersion: lld 17 defaults to --no-undefined-version,
+// where GNU ld — which every recipe is written against — merely warns. Without
+// restoring the permissive behaviour, a version script that names a symbol the
+// build did not produce is fatal: gnu.org/gettext dies on
+// 'iconv_ostream_create' because libtextstyle's script exports symbols its
+// configure left out.
+func TestWrapLibcPkgxUndefinedVersion(t *testing.T) {
+	s := Wrap(WrapOptions{
+		UserScript: "make", Target: target.Target{Platform: "linux", Arch: "aarch64"},
+		Host: target.Target{Platform: "linux", Arch: "aarch64"}, LibcPkgx: true,
+	})
+	if !strings.Contains(s, "-Wl,--undefined-version") {
+		t.Errorf("the lld strict default must be relaxed:\n%s", s)
+	}
+	// and only in the pkgx-libc mode, which is the one that uses lld
+	plain := Wrap(WrapOptions{
+		UserScript: "make", Target: target.Target{Platform: "linux", Arch: "aarch64"},
+		Host: target.Target{Platform: "linux", Arch: "aarch64"},
+	})
+	if strings.Contains(plain, "--undefined-version") {
+		t.Error("a system-libc build uses the system linker; leave its defaults alone")
 	}
 }
