@@ -31,7 +31,7 @@ func TestWrapLinux(t *testing.T) {
 		`export TMPDIR="$HOME/tmp"; mkdir -p "$TMPDIR"`,
 		"export FORCE_UNSAFE_CONFIGURE=1",
 		`export LDFLAGS="-Wl,-rpath,/opt/pkgx $LDFLAGS"`,
-		`export CFLAGS="-fPIC -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion $CFLAGS"`,
+		`export CFLAGS="-fPIC -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-error=incompatible-function-pointer-types $CFLAGS"`,
 		`export CXXFLAGS="-fPIC $CXXFLAGS"`,
 		"env -u GH_TOKEN -u GITHUB_TOKEN",
 		`cd "/bk/build"`,
@@ -58,7 +58,7 @@ func TestWrapLinuxArm64Flags(t *testing.T) {
 		Host:    target.Target{Platform: "linux", Arch: "aarch64"},
 		PkgxDir: "/opt/pkgx",
 	})
-	if !strings.Contains(s, `export CFLAGS="-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion $CFLAGS"`) {
+	if !strings.Contains(s, `export CFLAGS="-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-error=incompatible-function-pointer-types $CFLAGS"`) {
 		t.Errorf("arm64 CFLAGS wrong:\n%s", s)
 	}
 	// aarch64 links PIE by default: rpath slot, but no -pie / -fPIC / CXXFLAGS.

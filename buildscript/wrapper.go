@@ -292,7 +292,12 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		// the whole distro ecosystem (Fedora, Debian, …) demotes them back to
 		// warnings for the mass rebuild, so the toolchain default doesn't gate an
 		// otherwise-buildable recipe. C-only — CXXFLAGS keeps just the PIC flag.
-		cflags := "-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion"
+		// -Wno-error= (not -Wno-) for the function-pointer one: an incompatible
+		// function pointer is a real type error that can crash at run time, unlike
+		// an implicit declaration, so the diagnostic must stay VISIBLE in the build
+		// log even though it no longer fails the build. gnu.org/gettext trips it
+		// (iconv-ostream.c:297, an ostream vtable initialiser).
+		cflags := "-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-error=incompatible-function-pointer-types"
 		if glibcCC != "" {
 			cflags = glibcCC + " " + cflags
 		}
