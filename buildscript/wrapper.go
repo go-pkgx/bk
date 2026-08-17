@@ -250,8 +250,16 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		// libc++.so.1 come from their bottles via LD_LIBRARY_PATH — the mkscratch
 		// closure model). --disable-new-dtags emits DT_RPATH (searched for the
 		// loader's own NEEDED libs).
+		// --undefined-version: lld 17 flipped its default to --no-undefined-version,
+		// where GNU ld tolerates a version script naming a symbol the build did not
+		// produce. Recipes are written against GNU ld, so the strict default turns
+		// a long-standing warning into a fatal error — gnu.org/gettext dies with
+		//   ld.lld: error: version script assignment of 'global' to symbol
+		//   'iconv_ostream_create' failed: symbol not defined
+		// because libtextstyle's script exports symbols its configure left out.
+		// Distros switching to lld restore the permissive behaviour the same way.
 		glibcLD = `-Wl,--dynamic-linker="${BK_GLIBC_LIB}` + glibcLoader(tgt.Arch) +
-			`" -Wl,-rpath,"$BK_GLIBC_LIB" ${BK_LIBCXX_PREFIX:+-L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib"} -Wl,--disable-new-dtags`
+			`" -Wl,-rpath,"$BK_GLIBC_LIB" ${BK_LIBCXX_PREFIX:+-L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib"} -Wl,--disable-new-dtags -Wl,--undefined-version`
 		ld = append(ld, glibcLD)
 		// Pin the compiler to the pkgx llvm one AND carry the whole driver
 		// configuration inside it.
