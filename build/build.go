@@ -160,7 +160,16 @@ func valStr(v any) string {
 func BaseToolchain() []string {
 	return []string{
 		"gnu.org/autoconf", "gnu.org/automake", "gnu.org/libtool", "gnu.org/m4",
-		"gnu.org/make", "gnu.org/gettext", "gnu.org/texinfo", "perl.org",
+		"gnu.org/make", "gnu.org/gettext", "gnu.org/texinfo",
+		// Pin perl to the line texinfo is BUILT against. texinfo ships compiled
+		// XS modules and its own recipe says `perl.org: ~5.42` ("requires stable
+		// minor; must match gettext's perl"). Naming perl unconstrained here put
+		// the newest one (5.44) on PATH ahead of it, and every recipe that runs
+		// makeinfo died at install time with
+		//   Perl API version v5.42.0 of …/TreeElementXS.c does not match v5.44.0
+		// The base toolchain and the tools IN it have to agree; a recipe that
+		// needs another perl still overrides this (see EvalDeps).
+		"perl.org~5.42",
 		"gnu.org/sed", "gnu.org/coreutils", "gnu.org/grep",
 		// Pin gawk to 5.3: gawk 5.4.1 has a regression that silently mishandles
 		// the option-resolution scripts autotools packages use to generate config

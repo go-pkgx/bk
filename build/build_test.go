@@ -310,3 +310,18 @@ func TestEvalDepsRecipeConstraintBeatsBase(t *testing.T) {
 		t.Error("the base pin must survive when the recipe is silent")
 	}
 }
+
+// TestBaseToolchainPerlMatchesTexinfo: the base toolchain and the tools inside
+// it have to agree. texinfo ships compiled XS modules and asks for perl ~5.42;
+// an unconstrained perl put 5.44 on PATH ahead of it and makeinfo refused to
+// load its own modules, taking down every recipe that generates a .info manual.
+func TestBaseToolchainPerlMatchesTexinfo(t *testing.T) {
+	base := BaseToolchain()
+	if !contains(base, "perl.org~5.42") || contains(base, "perl.org") {
+		t.Errorf("perl must be pinned to texinfo's line, got %v", base)
+	}
+	// a recipe still wins over the pin
+	if got := EvalDeps(map[string]any{"perl.org": "^5.44"}, nil, lin()); !contains(got, "perl.org^5.44") || contains(got, "perl.org~5.42") {
+		t.Errorf("a recipe must override the base perl pin: %v", got)
+	}
+}
