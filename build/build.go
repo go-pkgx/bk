@@ -161,6 +161,12 @@ func BaseToolchain() []string {
 	return []string{
 		"gnu.org/autoconf", "gnu.org/automake", "gnu.org/libtool", "gnu.org/m4",
 		"gnu.org/make", "gnu.org/gettext", "gnu.org/texinfo",
+		// help2man for the same reason texinfo is here: autotools recipes generate
+		// their man pages with it through build-aux/missing, and it must be in the
+		// EVAL -- not merely on PATH -- because pkgx only exports a package's
+		// runtime env (help2man publishes PERL5LIB for the Locale::gettext it
+		// bundles) for packages in the closure. gnu.org/libidn2 died without it.
+		"gnu.org/help2man",
 		// Pin perl to the line texinfo is BUILT against. texinfo ships compiled
 		// XS modules and its own recipe says `perl.org: ~5.42` ("requires stable
 		// minor; must match gettext's perl"). Naming perl unconstrained here put
