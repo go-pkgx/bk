@@ -593,3 +593,33 @@ func TestPublishGlibcBottleMinKernel(t *testing.T) {
 		t.Error("glibc bottle without libc.so.6 should fail")
 	}
 }
+
+// TestPublishBottleReadsTheCodecFromTheFile: the media type must follow the
+// FILE, not a flag. A bottle mirrored from an upstream dist arrives in whatever
+// codec that dist used, and labelling a zstd tarball as gzip would make every
+// puller reach for the wrong decoder — a failure that looks like corruption.
+func TestPublishBottleReadsTheCodecFromTheFile(t *testing.T) {
+	var gotExt string
+	oldPush := ociPush
+	ociPush = func(_, _, _, _, _ string, _ []byte, ext string, _ []bottle.Referrer, _ map[string]string) error {
+		gotExt = ext
+		return nil
+	}
+	defer func() { ociPush = oldPush }()
+
+	for _, ext := range []string{bottle.ExtTarGz, bottle.ExtTarXz, bottle.ExtTarZst} {
+		p := filepath.Join(t.TempDir(), "v1.0.0"+ext)
+		if err := os.WriteFile(p, []byte("payload"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := publishBottle(publishOptions{
+			Dist: "oci://example.invalid/x", Project: "acme.org/tool", Version: "1.0.0",
+			OS: "linux", Arch: "aarch64", Path: p,
+		}); err != nil {
+			t.Fatalf("%s: %v", ext, err)
+		}
+		if gotExt != ext {
+			t.Errorf("file %s published as %q", ext, gotExt)
+		}
+	}
+}

@@ -206,9 +206,15 @@ func publishBottle(o publishOptions) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// The FILE decides the media type, not a flag: a bottle mirrored from an
+	// upstream dist arrives in whatever codec that dist used, and mislabelling it
+	// would make every puller decompress with the wrong decoder.
 	ext := bottle.ExtTarGz
-	if strings.HasSuffix(o.Path, bottle.ExtTarXz) {
+	switch {
+	case strings.HasSuffix(o.Path, bottle.ExtTarXz):
 		ext = bottle.ExtTarXz
+	case strings.HasSuffix(o.Path, bottle.ExtTarZst):
+		ext = bottle.ExtTarZst
 	}
 	// The SBOM/provenance keep the TRUE software version; only the registry TAG
 	// gets the glibc flavor, so builds of the same version against different

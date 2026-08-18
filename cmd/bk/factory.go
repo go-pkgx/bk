@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-attest/sign"
+	"github.com/go-pkgx/bk/bottlepkg"
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/overrides"
 	"github.com/go-pkgx/bk/pantry"
@@ -80,6 +81,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
 	force := fs.Bool("force", os.Getenv("FORCE") != "", "rebuild and republish even when the bottle is already in the registry")
+	compress := fs.String("compress", envOr("COMPRESS", "gzip"), "codec for NEW bottles: gzip or zstd. zstd measures better on every axis, but a bottle no consumer can decode is worse than a big one — flip this only once the readers are deployed")
 	signKey := fs.String("sign", "", "sign published bottles with this go-attest/sign secret key file (else $SIGNING_KEY)")
 	pkgx := fs.String("pkgx", "pkgx", "path to the pkgx binary used for the deps env")
 	failures := fs.String("failures", "failures.txt", "write the list of failed builds here")
@@ -163,6 +165,11 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	runner := buildFactory(pkgxBin)
 	runner.LibcMode = *libc
 	runner.Glibc = *glibc
+
+	if err := setCodec(*compress); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 2
+	}
 
 	f := &factory{
 		runner: runner, tgt: tgt, host: target.Host(),
@@ -555,4 +562,19 @@ func (t *tailWriter) tail() string {
 		lines = append(append([]string{}, lines...), string(t.part))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// setCodec maps the --compress flag onto the extension bottlepkg writes with.
+// Named codecs rather than extensions on the CLI: "zstd" is what an operator
+// knows the format as, ".tar.zst" is how it lands on disk.
+func setCodec(name string) error {
+	switch name {
+	case "gzip", "gz":
+		bottlepkg.Codec = bottle.ExtTarGz
+	case "zstd", "zst":
+		bottlepkg.Codec = bottle.ExtTarZst
+	default:
+		return fmt.Errorf("unknown --compress %q (gzip or zstd)", name)
+	}
+	return nil
 }

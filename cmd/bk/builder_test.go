@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-pkgx/bk/bottlepkg"
 	"github.com/go-pkgx/bottle"
 )
 
@@ -669,5 +670,42 @@ func TestBuilderIsDispatched(t *testing.T) {
 	}
 	if !strings.Contains(errb, "--out") {
 		t.Errorf("dispatched somewhere else: %q", errb)
+	}
+}
+
+func TestSetCodec(t *testing.T) {
+	orig := bottlepkg.Codec
+	t.Cleanup(func() { bottlepkg.Codec = orig })
+
+	for _, tc := range []struct{ in, want string }{
+		{"gzip", bottle.ExtTarGz},
+		{"gz", bottle.ExtTarGz},
+		{"zstd", bottle.ExtTarZst},
+		{"zst", bottle.ExtTarZst},
+	} {
+		if err := setCodec(tc.in); err != nil {
+			t.Fatalf("%s: %v", tc.in, err)
+		}
+		if bottlepkg.Codec != tc.want {
+			t.Errorf("--compress %s → %q, want %q", tc.in, bottlepkg.Codec, tc.want)
+		}
+	}
+	if err := setCodec("brotli"); err == nil {
+		t.Error("an unknown codec must be refused, not silently ignored")
+	}
+}
+
+// TestFactoryRejectsUnknownCompress: the flag is validated before anything is
+// built, so a typo costs a message rather than a run.
+func TestFactoryRejectsUnknownCompress(t *testing.T) {
+	orig := bottlepkg.Codec
+	t.Cleanup(func() { bottlepkg.Codec = orig })
+	var out, errb bytes.Buffer
+
+	if code := runFactory([]string{"--compress", "brotli", "--platform", "linux/aarch64", "--recipes", "lz4.org", "--pantry", t.TempDir()}, &out, &errb); code != 2 {
+		t.Errorf("exit %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "brotli") {
+		t.Errorf("the message does not name the bad value: %q", errb.String())
 	}
 }
