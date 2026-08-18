@@ -141,6 +141,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPublish(rest[1:], stdout, stderr)
 	case "closure":
 		return runClosure(rest[1:], stdout, stderr)
+	case "builder":
+		return runBuilder(rest[1:], stdout, stderr)
 	case "factory":
 		return runFactory(rest[1:], stdout, stderr)
 	default:
