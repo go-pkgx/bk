@@ -31,7 +31,7 @@ func TestWrapLinux(t *testing.T) {
 		`export TMPDIR="$HOME/tmp"; mkdir -p "$TMPDIR"`,
 		"export FORCE_UNSAFE_CONFIGURE=1",
 		`export LDFLAGS="-Wl,-rpath,/opt/pkgx $LDFLAGS"`,
-		`export CFLAGS="-fPIC -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-error=incompatible-function-pointer-types $CFLAGS"`,
+		`export CFLAGS="-fPIC -Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion $CFLAGS"`,
 		`export CXXFLAGS="-fPIC $CXXFLAGS"`,
 		"env -u GH_TOKEN -u GITHUB_TOKEN",
 		`cd "/bk/build"`,
@@ -58,7 +58,7 @@ func TestWrapLinuxArm64Flags(t *testing.T) {
 		Host:    target.Target{Platform: "linux", Arch: "aarch64"},
 		PkgxDir: "/opt/pkgx",
 	})
-	if !strings.Contains(s, `export CFLAGS="-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-error=incompatible-function-pointer-types $CFLAGS"`) {
+	if !strings.Contains(s, `export CFLAGS="-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion $CFLAGS"`) {
 		t.Errorf("arm64 CFLAGS wrong:\n%s", s)
 	}
 	// aarch64 links PIE by default: rpath slot, but no -pie / -fPIC / CXXFLAGS.
@@ -306,5 +306,44 @@ func TestWrapLibcPkgxUndefinedVersion(t *testing.T) {
 	})
 	if strings.Contains(plain, "--undefined-version") {
 		t.Error("a system-libc build uses the system linker; leave its defaults alone")
+	}
+}
+
+// TestIncompatibleFunctionPointerFlagIsClangOnly pins the compiler the flag
+// belongs to. gcc has no -Wincompatible-function-pointer-types (it spells the
+// check -Wincompatible-pointer-types), and an unknown warning name inside
+// -Wno-error= is a HARD ERROR there, not the silent no-op an unknown -Wno-
+// gets. Emitting it outside sovereign mode broke kernel.org/libcap in CI —
+// where bk compiles with the runner's gcc — while the clang-based sovereign
+// builder sailed through, which is exactly the shape of bug a test like this
+// exists to stop.
+func TestIncompatibleFunctionPointerFlagIsClangOnly(t *testing.T) {
+	const flag = "-Wno-error=incompatible-function-pointer-types"
+
+	gcc := Wrap(WrapOptions{
+		UserScript: "make install\n",
+		Target:     linuxTgt(), Host: linuxTgt(),
+		Home: "/bk/home", SrcRoot: "/bk/build", PkgxDir: "/opt/pkgx",
+		PkgxBin: "/opt/pkgx/bin/pkgx",
+	})
+	if strings.Contains(gcc, flag) {
+		t.Errorf("the clang-only flag reached a gcc build:\n%s", gcc)
+	}
+	// The C23 demotions gcc DOES understand must still be there — this is about
+	// one flag, not about giving up on building old C.
+	for _, want := range []string{"-Wno-implicit-function-declaration", "-Wno-implicit-int", "-Wno-int-conversion"} {
+		if !strings.Contains(gcc, want) {
+			t.Errorf("gcc build lost %s:\n%s", want, gcc)
+		}
+	}
+
+	clang := Wrap(WrapOptions{
+		UserScript: "make install\n",
+		Target:     linuxTgt(), Host: linuxTgt(),
+		Home: "/bk/home", SrcRoot: "/bk/build", PkgxDir: "/opt/pkgx",
+		PkgxBin: "/opt/pkgx/bin/pkgx", LibcPkgx: true,
+	})
+	if !strings.Contains(clang, flag) {
+		t.Errorf("sovereign (clang) build lost the flag gnu.org/gettext needs:\n%s", clang)
 	}
 }
