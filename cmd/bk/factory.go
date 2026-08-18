@@ -225,6 +225,12 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	if err := os.WriteFile(*failuresDetail, f.failuresDetail.Bytes(), 0o644); err != nil {
 		fmt.Fprintln(stderr, "factory:", err)
 	}
+	// Once the batch is over the other publishers have finished too, so a
+	// repair sticks — which is the whole reason this runs here rather than
+	// after each push.
+	if n := repairIndexes(f.dist, f.pushed, stdout, stderr); n > 0 {
+		fmt.Fprintf(stdout, "=== %d index(es) repaired after a concurrent publisher dropped a platform ===\n", n)
+	}
 	fmt.Fprintf(stdout, "=== summary (%s): %d built, %d skipped, %d failed ===\n", *platform, f.ok, f.skipped, f.failed)
 	if f.failures.Len() > 0 {
 		fmt.Fprint(stdout, "failures:\n", f.failures.String())
@@ -255,6 +261,10 @@ type factory struct {
 	ok, skipped, failed int
 	failures            bytes.Buffer
 	failuresDetail      bytes.Buffer
+
+	// pushed is what this run put in the registry, walked once at the end to
+	// check no concurrent publisher dropped a platform from an index.
+	pushed []published
 }
 
 // versionsFor lists the versions to build for a project: every candidate
@@ -324,16 +334,18 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 
 	// res.Version is what actually got built (the recipe's resolver may
 	// normalise the requested version), and is what the attestations record.
-	if _, err := factoryPublish(publishOptions{
+	tag, desc, err := factoryPublish(publishOptions{
 		Dist: f.dist, Project: proj, Version: res.Version,
 		OS: f.osn, Arch: f.arch, Path: res.BottlePath,
 		Glibc: f.glibc, Key: f.key, Time: f.when,
-	}); err != nil {
+	})
+	if err != nil {
 		f.fail(proj, res.Version, "publish", err)
 		return
 	}
 	fmt.Fprintf(f.stdout, "✅ OK %s %s %s\n", proj, flavoredTag(proj, res.Version, f.glibc), f.platform)
 	f.ok++
+	f.pushed = append(f.pushed, published{project: proj, tag: tag, desc: desc})
 }
 
 // mirrorVersionsFor lists the versions to copy for a project: what the UPSTREAM
@@ -419,16 +431,18 @@ func (f *factory) mirrorOne(proj, ver string) {
 		f.fail(proj, ver, "fetch", err)
 		return
 	}
-	if _, err := factoryPublish(publishOptions{
+	tag, desc, err := factoryPublish(publishOptions{
 		Dist: f.dist, Project: proj, Version: ver,
 		OS: f.osn, Arch: f.arch, Path: path,
 		Glibc: f.glibc, Key: f.key, Time: f.when,
-	}); err != nil {
+	})
+	if err != nil {
 		f.fail(proj, ver, "publish", err)
 		return
 	}
 	fmt.Fprintf(f.stdout, "✅ MIRRORED %s %s %s (%d KiB)\n", proj, tag, f.platform, len(data)/1024)
 	f.ok++
+	f.pushed = append(f.pushed, published{project: proj, tag: tag, desc: desc})
 }
 
 // appendMissing returns list plus every want not already in it, order preserved.

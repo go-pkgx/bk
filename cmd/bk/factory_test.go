@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/overrides"
@@ -69,13 +72,15 @@ func newFactoryHarness(t *testing.T) *factoryHarness {
 		v := strings.TrimPrefix(constraint, "=")
 		return build.Result{Version: v, BottlePath: filepath.Join(out, project, "v"+v+".tar.gz")}, nil
 	}
-	factoryPublish = func(o publishOptions) (string, error) {
+	factoryPublish = func(o publishOptions) (string, ocispec.Descriptor, error) {
 		tag := flavoredTag(o.Project, o.Version, o.Glibc)
 		h.published = append(h.published, publishedBottle{
 			project: o.Project, version: o.Version, tag: tag, osn: o.OS, arch: o.Arch,
 			dist: o.Dist, path: o.Path, glibc: o.Glibc, signed: o.Key != nil, when: o.Time,
 		})
-		return tag, nil
+		// A distinct digest per bottle, so a test can tell one published
+		// manifest from another the way the index check does.
+		return tag, ocispec.Descriptor{Digest: digest.FromString(o.Project + tag + o.Arch)}, nil
 	}
 	buildFactory = func(string) *build.Runner { return &build.Runner{} }
 	lookPath = func(s string) (string, error) { return "/usr/local/bin/" + s, nil }
@@ -352,7 +357,9 @@ func TestRunFactoryFailureStages(t *testing.T) {
 			}
 		}},
 		{"publish", "lib.org 2.0 publish\n", func(t *testing.T, h *factoryHarness) {
-			factoryPublish = func(publishOptions) (string, error) { return "", errors.New("403 denied") }
+			factoryPublish = func(publishOptions) (string, ocispec.Descriptor, error) {
+				return "", ocispec.Descriptor{}, errors.New("403 denied")
+			}
 		}},
 		{"versions listing", "lib.org latest versions\n", func(t *testing.T, h *factoryHarness) {
 			factoryList = func(any) ([]versions.VersionTag, error) { return nil, errors.New("spec has neither github nor url") }
@@ -791,7 +798,9 @@ func TestRunFactoryMirrorFailures(t *testing.T) {
 		h := newFactoryHarness(t)
 		withMirrorSeams(t, map[string][]string{"lib.org": {"1.0.0"}},
 			func(string, string, string, string) ([]byte, string, error) { return []byte("x"), ".tar.gz", nil })
-		factoryPublish = func(publishOptions) (string, error) { return "", errors.New("403 denied") }
+		factoryPublish = func(publishOptions) (string, ocispec.Descriptor, error) {
+			return "", ocispec.Descriptor{}, errors.New("403 denied")
+		}
 		if code := h.run(t, "--recipes", "lib.org", "--mirror-from", "https://d", "--bottles", stage(t)); code != 0 {
 			t.Fatalf("code = %d", code)
 		}
@@ -1020,5 +1029,53 @@ func TestRunFactoryMirrorVersionConstraintMatchesNothing(t *testing.T) {
 	}
 	if !strings.Contains(h.failuresFile(t), "cmake.org") {
 		t.Fatalf("failure not recorded: %q", h.failuresFile(t))
+	}
+}
+
+// TestFactoryRepairsIndexesAtTheEnd: every bottle a run publishes is re-checked
+// once the batch is over, when the other publishers have finished and a repair
+// sticks. Doing it per-push cannot work — the racer that dropped python.org's
+// arm64 landed AFTER that push had already verified itself.
+func TestFactoryRepairsIndexesAtTheEnd(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "app.org", "versions:\n  github: a/app/tags\nbuild: make\n")
+	e := &fakeEnsurer{repaired: map[string]bool{}}
+	withEnsurer(t, e, nil)
+
+	if code := h.run(t, "--to", "oci://example.invalid/pkgs", "--recipes", "app.org"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.errb.String())
+	}
+
+	if len(e.calls) == 0 {
+		t.Fatal("nothing was re-checked, so a dropped platform would go unnoticed")
+	}
+	if len(e.calls) != len(h.published) {
+		t.Errorf("checked %d of %d published bottles: %v", len(e.calls), len(h.published), e.calls)
+	}
+	// Nothing was broken, so nothing is announced.
+	if strings.Contains(h.out.String(), "REPAIRED") {
+		t.Errorf("a repair was reported on intact indexes:\n%s", h.out.String())
+	}
+}
+
+// TestFactoryAnnouncesARepair: when an index HAD lost a platform, the run says
+// so — a silent repair hides a defect that is still happening.
+func TestFactoryAnnouncesARepair(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "app.org", "versions:\n  github: a/app/tags\nbuild: make\n")
+	// Every index this run wrote comes back missing its platform.
+	e := &fakeEnsurer{repaired: map[string]bool{}, repairAll: true}
+	withEnsurer(t, e, nil)
+
+	if code := h.run(t, "--to", "oci://example.invalid/pkgs", "--recipes", "app.org"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.errb.String())
+	}
+
+	out := h.out.String()
+	if !strings.Contains(out, "🔧 REPAIRED index") {
+		t.Errorf("the repair is not announced:\n%s", out)
+	}
+	if !strings.Contains(out, "index(es) repaired") {
+		t.Errorf("no summary line:\n%s", out)
 	}
 }

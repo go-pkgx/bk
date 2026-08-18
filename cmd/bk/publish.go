@@ -19,6 +19,7 @@ import (
 	"github.com/go-attest/sbom/provenance"
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bottle"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/ulikunitz/xz"
 )
 
@@ -38,13 +39,15 @@ var (
 	sbomJSON      = func(d sbom.Document) ([]byte, error) { return d.CycloneDX() }
 	provJSON      = func(s provenance.Statement) ([]byte, error) { return s.JSON() }
 	simpleSigning = sign.SimpleSigningPayload
-	ociPush       = func(distBase, project, ver, osn, arch string, tarball []byte, ext string, refs []bottle.Referrer, annotations map[string]string) error {
+	ociPush       = func(distBase, project, ver, osn, arch string, tarball []byte, ext string, refs []bottle.Referrer, annotations map[string]string) (ocispec.Descriptor, error) {
 		c, err := bottle.NewOCIClient(distBase)
 		if err != nil {
-			return err
+			return ocispec.Descriptor{}, err
 		}
-		_, err = c.PushWithReferrersAnnotated(project, ver, osn, arch, tarball, ext, refs, annotations)
-		return err
+		// The DESCRIPTOR, not just an error: the end-of-run index check needs to
+		// name the manifest it is looking for, and it cannot discover it — that
+		// lookup would go through the index whose contents are in question.
+		return c.PushWithReferrersAnnotated(project, ver, osn, arch, tarball, ext, refs, annotations)
 	}
 )
 
@@ -161,7 +164,7 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 		}
 		kp = k
 	}
-	if _, err := publishBottle(publishOptions{
+	if _, _, err := publishBottle(publishOptions{
 		Dist: *to, Project: *project, Version: *version,
 		OS: osn, Arch: arch, Path: f.Arg(0), Glibc: *glibc, Key: kp,
 	}); err != nil {
@@ -201,10 +204,14 @@ type publishOptions struct {
 // a key) signature attached as referrers, and reports the registry tag it landed
 // under. Shared by `bk publish` and `bk factory`, so a factory-published bottle
 // carries byte-identical attestations, tags and glibc annotations.
-func publishBottle(o publishOptions) (string, error) {
+// publishBottle returns the registry tag it published under AND the descriptor
+// of the per-platform manifest it pushed. The descriptor is what the end-of-run
+// index check needs: it cannot discover the manifest, because that lookup would
+// go through the very index whose contents are in question.
+func publishBottle(o publishOptions) (string, ocispec.Descriptor, error) {
 	tarball, err := osReadFile(o.Path)
 	if err != nil {
-		return "", err
+		return "", ocispec.Descriptor{}, err
 	}
 	// The FILE decides the media type, not a flag: a bottle mirrored from an
 	// upstream dist arrives in whatever codec that dist used, and mislabelling it
@@ -226,7 +233,7 @@ func publishBottle(o publishOptions) (string, error) {
 	}
 	refs, err := buildReferrers(o.Project, o.Version, o.OS, o.Arch, tarball, when, o.Key)
 	if err != nil {
-		return "", err
+		return "", ocispec.Descriptor{}, err
 	}
 	tag := flavoredTag(o.Project, o.Version, o.Glibc)
 	var annotations map[string]string
@@ -237,7 +244,7 @@ func publishBottle(o publishOptions) (string, error) {
 		// glibc-by-kernel selector can pick it.
 		mk, err := glibcMinKernelFromTarball(tarball, ext)
 		if err != nil {
-			return "", err
+			return "", ocispec.Descriptor{}, err
 		}
 		annotations = map[string]string{bottle.GlibcMinKernelAnnotation: mk}
 	case o.Glibc != "":
@@ -245,10 +252,11 @@ func publishBottle(o publishOptions) (string, error) {
 		// which glibc, so a glibc-aware resolver matches it without parsing tags.
 		annotations = map[string]string{bottle.GlibcVersionAnnotation: strings.TrimPrefix(o.Glibc, "=")}
 	}
-	if err := ociPush(o.Dist, o.Project, tag, o.OS, o.Arch, tarball, ext, refs, annotations); err != nil {
-		return "", err
+	desc, err := ociPush(o.Dist, o.Project, tag, o.OS, o.Arch, tarball, ext, refs, annotations)
+	if err != nil {
+		return "", ocispec.Descriptor{}, err
 	}
-	return tag, nil
+	return tag, desc, nil
 }
 
 // flavoredTag is the registry tag a (project, version) lands under: the plain
