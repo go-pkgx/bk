@@ -23,6 +23,7 @@ import (
 	"github.com/go-attest/sbom/provenance"
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bottle"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/ulikunitz/xz"
 )
 
@@ -217,8 +218,8 @@ func TestPublishRuntimeErrors(t *testing.T) {
 	sbomJSON = os1
 	// ociPush failure via the seam
 	op := ociPush
-	ociPush = func(string, string, string, string, string, []byte, string, []bottle.Referrer, map[string]string) error {
-		return errBoom
+	ociPush = func(string, string, string, string, string, []byte, string, []bottle.Referrer, map[string]string) (ocispec.Descriptor, error) {
+		return ocispec.Descriptor{}, errBoom
 	}
 	if c, _, _ := run2(t, "publish", "--to", "oci://x/y", "--project", "p", "--version", "1",
 		"--platform", "linux/x86-64", b); c != 1 {
@@ -301,7 +302,7 @@ func TestBuildTime(t *testing.T) {
 
 func TestOCIPushBadBase(t *testing.T) {
 	// the default ociPush must surface NewOCIClient's error for a non-oci base
-	if err := ociPush("https://not-oci", "p", "1", "linux", "x86-64", []byte("x"), ".tar.gz", nil, nil); err == nil {
+	if _, err := ociPush("https://not-oci", "p", "1", "linux", "x86-64", []byte("x"), ".tar.gz", nil, nil); err == nil {
 		t.Error("expected NewOCIClient error")
 	}
 }
@@ -337,10 +338,10 @@ func TestPublishGlibcTag(t *testing.T) {
 	} {
 		var gotTag string
 		var gotAnn map[string]string
-		ociPush = func(_, _, ver, _, _ string, _ []byte, _ string, _ []bottle.Referrer, ann map[string]string) error {
+		ociPush = func(_, _, ver, _, _ string, _ []byte, _ string, _ []bottle.Referrer, ann map[string]string) (ocispec.Descriptor, error) {
 			gotTag = ver
 			gotAnn = ann
-			return nil
+			return ocispec.Descriptor{}, nil
 		}
 		args := []string{"publish", "--to", "oci://r.example/x", "--project", "curl.se",
 			"--version", "3.46.0", "--platform", "linux/x86-64"}
@@ -571,9 +572,9 @@ func TestPublishGlibcBottleMinKernel(t *testing.T) {
 	defer func() { ociPush = op }()
 	var gotTag string
 	var gotAnn map[string]string
-	ociPush = func(_, _, ver, _, _ string, _ []byte, _ string, _ []bottle.Referrer, ann map[string]string) error {
+	ociPush = func(_, _, ver, _, _ string, _ []byte, _ string, _ []bottle.Referrer, ann map[string]string) (ocispec.Descriptor, error) {
 		gotTag, gotAnn = ver, ann
-		return nil
+		return ocispec.Descriptor{}, nil
 	}
 	if code, _, errs := run2(t, "publish", "--to", "oci://r.example/x", "--project", bottle.GlibcProject,
 		"--version", "2.27.0", "--platform", "linux/x86-64", bp); code != 0 {
@@ -601,9 +602,9 @@ func TestPublishGlibcBottleMinKernel(t *testing.T) {
 func TestPublishBottleReadsTheCodecFromTheFile(t *testing.T) {
 	var gotExt string
 	oldPush := ociPush
-	ociPush = func(_, _, _, _, _ string, _ []byte, ext string, _ []bottle.Referrer, _ map[string]string) error {
+	ociPush = func(_, _, _, _, _ string, _ []byte, ext string, _ []bottle.Referrer, _ map[string]string) (ocispec.Descriptor, error) {
 		gotExt = ext
-		return nil
+		return ocispec.Descriptor{}, nil
 	}
 	defer func() { ociPush = oldPush }()
 
@@ -612,7 +613,7 @@ func TestPublishBottleReadsTheCodecFromTheFile(t *testing.T) {
 		if err := os.WriteFile(p, []byte("payload"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := publishBottle(publishOptions{
+		if _, _, err := publishBottle(publishOptions{
 			Dist: "oci://example.invalid/x", Project: "acme.org/tool", Version: "1.0.0",
 			OS: "linux", Arch: "aarch64", Path: p,
 		}); err != nil {
