@@ -34,12 +34,16 @@ func installTree(t *testing.T) string {
 	return dir
 }
 
-// TestCodecDefaultsToGzip is the safety property, not a preference: publishing a
-// codec the installed base cannot decode would break every install, and the
-// measurements alone are not a reason to flip a default.
-func TestCodecDefaultsToGzip(t *testing.T) {
-	if Codec != bottle.ExtTarGz {
-		t.Fatalf("Codec = %q; new bottles must stay gzip until the readers are deployed", Codec)
+// TestCodecDefaultsToZstd pins the migration's end state. It was ExtTarGz while
+// the readers were still shipping — the measurements alone were never the
+// reason to flip, the deployed readers were.
+//
+// What makes the default safe is not the codec, it is that a published bottle
+// is never rewritten: everything already in the catalogue stays gzip and stays
+// readable by any binary, and only new publishes change.
+func TestCodecDefaultsToZstd(t *testing.T) {
+	if Codec != bottle.ExtTarZst {
+		t.Fatalf("Codec = %q, want %q", Codec, bottle.ExtTarZst)
 	}
 }
 

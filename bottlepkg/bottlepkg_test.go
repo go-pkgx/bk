@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/go-pkgx/bottle"
+	"github.com/klauspost/compress/zstd"
 )
 
 var errBoom = errors.New("boom")
@@ -77,13 +80,29 @@ type entry struct {
 }
 
 // readBottle decompresses and parses a bottle, preserving entry order.
+// readBottle decodes a bottle with whatever codec Codec currently names, so the
+// structural assertions below follow the DEFAULT rather than pinning gzip — a
+// default that silently stopped producing a readable tar would go unnoticed
+// otherwise.
 func readBottle(t *testing.T, r io.Reader) ([]string, map[string]entry) {
 	t.Helper()
-	gz, err := gzip.NewReader(r)
-	if err != nil {
-		t.Fatal(err)
+	var dec io.Reader
+	switch Codec {
+	case bottle.ExtTarZst:
+		z, err := zstd.NewReader(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(z.Close)
+		dec = z
+	default:
+		gz, err := gzip.NewReader(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dec = gz
 	}
-	tr := tar.NewReader(gz)
+	tr := tar.NewReader(dec)
 	var order []string
 	entries := map[string]entry{}
 	for {
@@ -206,8 +225,11 @@ func TestBottleFileInfoHeaderError(t *testing.T) {
 }
 
 func TestBottleWriteHeaderError(t *testing.T) {
-	// The gzip header is written eagerly on the first tar header write, so a
-	// failing destination surfaces through tw.WriteHeader.
+	// Pinned to gzip: it writes its header EAGERLY on the first tar header
+	// write, so a failing destination surfaces right there. zstd buffers, so it
+	// is simply the wrong instrument for this assertion — the error would show
+	// up somewhere else, or not until Close.
+	withCodec(t, bottle.ExtTarGz)
 	if err := Bottle(makeTree(t), project, version, errWriter{}); !errors.Is(err, errBoom) {
 		t.Fatalf("err = %v, want errBoom", err)
 	}
@@ -232,8 +254,10 @@ func TestBottleCopyError(t *testing.T) {
 }
 
 func TestBottleTarCloseError(t *testing.T) {
-	// An empty tree writes nothing until tw.Close flushes the tar trailer,
-	// which triggers the first (failing) write to the destination.
+	// Pinned to gzip, same reason as TestBottleWriteHeaderError: an empty tree
+	// writes nothing until tw.Close flushes the tar trailer, which triggers the
+	// first (failing) write to the destination.
+	withCodec(t, bottle.ExtTarGz)
 	if err := Bottle(t.TempDir(), project, version, errWriter{}); !errors.Is(err, errBoom) {
 		t.Fatalf("err = %v, want errBoom", err)
 	}
@@ -247,7 +271,7 @@ func TestWriteBottle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(out, project, "darwin", "aarch64", "v"+version+".tar.gz")
+	want := filepath.Join(out, project, "darwin", "aarch64", "v"+version+Codec)
 	if p != want {
 		t.Fatalf("path = %q, want %q", p, want)
 	}

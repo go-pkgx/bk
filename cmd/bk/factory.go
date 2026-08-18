@@ -81,7 +81,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
 	force := fs.Bool("force", os.Getenv("FORCE") != "", "rebuild and republish even when the bottle is already in the registry")
-	compress := fs.String("compress", envOr("COMPRESS", "gzip"), "codec for NEW bottles: gzip or zstd. zstd measures better on every axis, but a bottle no consumer can decode is worse than a big one — flip this only once the readers are deployed")
+	compress := fs.String("compress", envOr("COMPRESS", "zstd"), "codec for NEW bottles: zstd or gzip. Already-published bottles are never rewritten, so gzip stays readable; this only governs what we create")
 	signKey := fs.String("sign", "", "sign published bottles with this go-attest/sign secret key file (else $SIGNING_KEY)")
 	pkgx := fs.String("pkgx", "pkgx", "path to the pkgx binary used for the deps env")
 	failures := fs.String("failures", "failures.txt", "write the list of failed builds here")
