@@ -300,14 +300,27 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		// the whole distro ecosystem (Fedora, Debian, …) demotes them back to
 		// warnings for the mass rebuild, so the toolchain default doesn't gate an
 		// otherwise-buildable recipe. C-only — CXXFLAGS keeps just the PIC flag.
-		// -Wno-error= (not -Wno-) for the function-pointer one: an incompatible
-		// function pointer is a real type error that can crash at run time, unlike
-		// an implicit declaration, so the diagnostic must stay VISIBLE in the build
-		// log even though it no longer fails the build. gnu.org/gettext trips it
-		// (iconv-ostream.c:297, an ostream vtable initialiser).
-		cflags := "-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion -Wno-error=incompatible-function-pointer-types"
+		cflags := "-Wno-implicit-function-declaration -Wno-implicit-int -Wno-int-conversion"
 		if glibcCC != "" {
-			cflags = glibcCC + " " + cflags
+			// CLANG ONLY, and only in sovereign mode, which is the only mode that
+			// compiles with clang. gcc has no -Wincompatible-function-pointer-types
+			// (it spells the check -Wincompatible-pointer-types), and an unknown
+			// warning name inside -Wno-error= is a hard error rather than the
+			// silent no-op an unknown -Wno- gets:
+			//
+			//   cc1: error: '-Wno-error=incompatible-function-pointer-types':
+			//   no option '-Wincompatible-function-pointer-types'; did you mean
+			//   '-Wincompatible-pointer-types'?
+			//
+			// which is how kernel.org/libcap stopped building in CI — where bk uses
+			// the runner's gcc — while the sovereign builder was unaffected.
+			//
+			// -Wno-error= (not -Wno-) because an incompatible function pointer is a
+			// real type error that can crash at run time, unlike an implicit
+			// declaration: the diagnostic stays VISIBLE in the build log even though
+			// it no longer fails the build. gnu.org/gettext trips it
+			// (iconv-ostream.c:297, an ostream vtable initialiser).
+			cflags = glibcCC + " " + cflags + " -Wno-error=incompatible-function-pointer-types"
 		}
 		if tgt.Arch == "x86-64" {
 			cflags = "-fPIC " + cflags
