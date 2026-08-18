@@ -140,18 +140,25 @@ func WriteBottle(installDir, project, version, os, arch, outDir string) (string,
 // Codec is the extension — and therefore the compression — new bottles are
 // written with. One of bottle.ExtTarGz or bottle.ExtTarZst.
 //
-// It defaults to gzip, which is what the catalogue holds today, NOT to the
-// codec that measures best. The order matters: a consumer that meets a bottle
-// compressed with something it cannot decode fails with "invalid header", which
-// reads like a corrupt download rather than a format it was never taught. So
-// the readers ship first (bottle v0.8.0), then this is flipped, and only new
-// publishes change — an already-published bottle is never rewritten.
+// It defaults to zstd. The readers shipped first (bottle v0.8.0, in pkgx, pkgm
+// and bk), which is the order that mattered: a consumer meeting a codec it
+// cannot decode fails with "invalid header", which reads like a corrupt
+// download rather than a format it was never taught.
+//
+// The blast radius of this default is bounded by construction. Bottles already
+// published are never rewritten — they stay gzip and stay readable by anything,
+// old binaries included. Only NEW publishes change, and an operator who needs
+// the old format says --compress gzip.
+//
+// Measured on the same package, version and platform (lz4.org 1.10.0,
+// linux/aarch64): the published gzip layer is 311 344 bytes, the zstd bottle
+// 169 518 — 1.83x smaller, and faster to decompress.
 //
 // Measured on real bottle payloads, zstd -19 beats xz on ratio, compression
 // time AND decompression time, and gzip has the poorest ratio of the three
 // while decompressing slower than zstd. Every install pays the decompression;
 // the factory pays the compression once.
-var Codec = bottle.ExtTarGz
+var Codec = bottle.ExtTarZst
 
 // compressor wraps w in the encoder Codec names. zstd is used at its highest
 // level: the factory compresses a bottle once and every consumer pays for the
