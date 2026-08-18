@@ -7,7 +7,7 @@ require (
 	github.com/go-attest/sbom v0.1.0
 	github.com/go-attest/sign v0.1.0
 	github.com/go-git/go-git/v5 v5.19.2
-	github.com/go-pkgx/bottle v0.7.1
+	github.com/go-pkgx/bottle v0.8.0
 	github.com/go-regexp/engine v0.1.0
 	github.com/go-versions/semver v0.1.0
 	github.com/hashicorp/hcl/v2 v2.24.0
@@ -33,6 +33,7 @@ require (
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
+	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
