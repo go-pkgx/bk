@@ -61,18 +61,22 @@ func Fetch(url, destDir string, stripComponents int) error {
 	if err := osMkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("fetch: create %s: %w", destDir, err)
 	}
+	// A mirror that answers 200 with an error page fails HERE, in the
+	// decompressor, with a message that blames the archive. Read the head once
+	// so the failure can say what actually arrived.
+	head := readHead(body)
 	switch kind {
 	case kindTarGz:
 		gz, err := gzip.NewReader(body)
 		if err != nil {
-			return fmt.Errorf("fetch: read gzip from %s: %w", url, err)
+			return fmt.Errorf("fetch: read gzip from %s: %w — %s", url, err, describeBody(head))
 		}
 		defer gz.Close()
 		return extractTar(tar.NewReader(gz), destDir, stripComponents)
 	case kindTarXz:
 		xr, err := xz.NewReader(body)
 		if err != nil {
-			return fmt.Errorf("fetch: read xz from %s: %w", url, err)
+			return fmt.Errorf("fetch: read xz from %s: %w — %s", url, err, describeBody(head))
 		}
 		return extractTar(tar.NewReader(xr), destDir, stripComponents)
 	case kindTarBz2:
