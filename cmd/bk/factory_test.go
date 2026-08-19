@@ -1141,3 +1141,98 @@ func TestIsBareVersion(t *testing.T) {
 		}
 	}
 }
+
+// TestMirrorCapUsesAUnionOfArches is the defect this prevents, and it was
+// self-inflicted: `--max-versions 3 --mirror-from …`, dispatched to repair split
+// indexes, created more of them. Each arch job took the newest three of ITS OWN
+// upstream list, and those lists differ — circleci.com carries 124 versions for
+// linux/aarch64 and 125 for linux/x86-64 — so the two jobs mirrored different
+// sets and every version only one of them picked landed alone in its index.
+func TestMirrorCapUsesAUnionOfArches(t *testing.T) {
+	old := factoryUpstreamVersions
+	defer func() { factoryUpstreamVersions = old }()
+	factoryUpstreamVersions = func(proj, osn, arch string) ([]bottle.Ver, error) {
+		// Ascending, as upstream lists are. x86-64 has one version aarch64 lacks.
+		switch arch {
+		case "x86-64":
+			return vers("1.0", "2.0", "3.0", "4.0"), nil
+		default:
+			return vers("1.0", "2.0", "4.0"), nil
+		}
+	}
+
+	var out, errb strings.Builder
+	for _, arch := range []string{"x86-64", "aarch64"} {
+		f := &factory{osn: "linux", arch: arch, platform: "linux/" + arch, stdout: &out, stderr: &errb}
+		got, err := f.mirrorVersionsFor("circleci.com", true, 3)
+		if err != nil {
+			t.Fatalf("%s: %v", arch, err)
+		}
+		want := "4.0 3.0 2.0"
+		if strings.Join(got, " ") != want {
+			t.Errorf("%s capped to %q, want %q — both arches must cut the SAME list",
+				arch, strings.Join(got, " "), want)
+		}
+	}
+}
+
+// TestMirrorWithoutACapIsUnchanged: the union only matters when cutting. An
+// uncapped mirror still walks exactly what its own platform carries.
+func TestMirrorWithoutACapIsUnchanged(t *testing.T) {
+	old := factoryUpstreamVersions
+	defer func() { factoryUpstreamVersions = old }()
+	calls := 0
+	factoryUpstreamVersions = func(proj, osn, arch string) ([]bottle.Ver, error) {
+		calls++
+		return vers("1.0", "2.0"), nil
+	}
+
+	var out, errb strings.Builder
+	f := &factory{osn: "linux", arch: "aarch64", platform: "linux/aarch64", stdout: &out, stderr: &errb}
+	got, err := f.mirrorVersionsFor("x.org", true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, " ") != "2.0 1.0" {
+		t.Errorf("got %q", strings.Join(got, " "))
+	}
+	if calls != 1 {
+		t.Errorf("consulted %d lists without a cap, want 1", calls)
+	}
+}
+
+// TestMirrorCapSurvivesAnUnreachableSibling: if the other arch's list cannot be
+// read, cap on ours and SAY the cut is uncoordinated — silently doing it is how
+// the split happened in the first place.
+func TestMirrorCapSurvivesAnUnreachableSibling(t *testing.T) {
+	old := factoryUpstreamVersions
+	defer func() { factoryUpstreamVersions = old }()
+	factoryUpstreamVersions = func(proj, osn, arch string) ([]bottle.Ver, error) {
+		if arch == "x86-64" {
+			return nil, errors.New("dns")
+		}
+		return vers("1.0", "2.0", "3.0"), nil
+	}
+
+	var out, errb strings.Builder
+	f := &factory{osn: "linux", arch: "aarch64", platform: "linux/aarch64", stdout: &out, stderr: &errb}
+	got, err := f.mirrorVersionsFor("x.org", true, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, " ") != "3.0 2.0" {
+		t.Errorf("got %q", strings.Join(got, " "))
+	}
+	if !strings.Contains(errb.String(), "capping on linux/aarch64 only") {
+		t.Errorf("the uncoordinated cut was not reported: %q", errb.String())
+	}
+}
+
+// vers builds an ascending upstream version list.
+func vers(raw ...string) []bottle.Ver {
+	out := make([]bottle.Ver, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, bottle.ParseVer(r))
+	}
+	return out
+}
