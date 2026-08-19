@@ -1,8 +1,11 @@
 package fetch
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"syscall"
 )
 
 // downloadAttempts is how many times a truncated download is resumed before the
@@ -69,6 +72,21 @@ func download(url string) (string, error) {
 			f.Close()
 			return path, nil
 		}
+		// A failure to WRITE is not a cut transfer. Retrying it wastes five
+		// attempts and then blames the network for a local problem:
+		//
+		//   fetch: write .../build/.clang-format: no space left on device
+		//   fetch: GET https://cdn.kernel.org/…/linux-6.13.9.tar.xz:
+		//          still truncated after 5 attempts (148553728 of 148565212 bytes)
+		//
+		// Those are the same runner, minutes apart — the disk filled, and every
+		// later download reported itself as truncated. The bytes had arrived;
+		// there was nowhere to put them. Stop, and say which it was.
+		if isWriteError(copyErr) {
+			f.Close()
+			osRemove(path)
+			return "", fmt.Errorf("fetch: GET %s: cannot write the download: %w", url, copyErr)
+		}
 		// Truncated: loop and resume from exactly where this attempt stopped.
 	}
 
@@ -90,4 +108,26 @@ func httpGetRange(url string, offset int64) (*http.Response, error) {
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	return httpDo(req)
+}
+
+// isWriteError reports whether err came from writing the download to disk
+// rather than from reading it off the network.
+//
+// io.Copy returns the two indistinguishably, so the distinction has to be made
+// on the error itself. A full disk, a read-only filesystem, a revoked fd: none
+// of them get better by asking the server again, and reporting them as
+// "truncated" sends whoever reads the log looking at the network.
+func isWriteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// io.Copy wraps nothing, so the syscall error arrives as-is (or inside a
+	// *fs.PathError when the writer is an *os.File).
+	for _, target := range []error{syscall.ENOSPC, syscall.EDQUOT, syscall.EROFS, syscall.EIO, syscall.EBADF, syscall.EFBIG} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	var pathErr *fs.PathError
+	return errors.As(err, &pathErr)
 }
