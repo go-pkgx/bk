@@ -76,7 +76,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	platform := fs.String("platform", envOr("PLATFORM", ""), "target os/arch, e.g. linux/x86-64 (required)")
 	bottles := fs.String("bottles", "dist", "local directory the built bottles are staged in")
 	maxVersions := fs.Int("max-versions", envInt("MAX_VERSIONS"), "cap versions built per requested project, newest first (0 = all)")
-	versionSpec := fs.String("versions", envOr("VERSIONS", ""), `only consider versions of the REQUESTED projects that match this pkgx constraint, e.g. "^3", ">=2.4", "=1.2.3" (applied before --max-versions; closure-only dependencies still resolve to their newest)`)
+	versionSpec := fs.String("versions", envOr("VERSIONS", ""), `only consider versions of the REQUESTED projects that match this pkgx constraint. A BARE version is a RANGE, not an exact match: "2.28.0" means >=2.28.0 within major 2, so an exact version needs "=2.28.0". Also "^3", ">=2.4". Applied before --max-versions; closure-only dependencies still resolve to their newest`)
 	mirrorFrom := fs.String("mirror-from", "", "instead of building, copy each bottle from this upstream pkgx dist (e.g. https://dist.pkgx.dev) and republish it signed + attested — for versions we cannot or need not rebuild, such as ancient glibc")
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
@@ -397,7 +397,23 @@ func (f *factory) matching(proj string, vers []string) []string {
 	if n := len(vers) - len(out); n > 0 {
 		fmt.Fprintf(f.stdout, "versions %s: %d dropped by --versions %q\n", proj, n, f.want)
 	}
+	// A BARE version is a caret range, not an exact match: "14" keeps every
+	// 14.x, and "2.28.0" keeps 2.29 and 2.33 too. An operator typing a version
+	// they read in an error message means THAT version — and finds out
+	// otherwise when the run builds a dozen, or fills a disk. Say it while the
+	// run is young.
+	if len(out) > 1 && isBareVersion(f.want) {
+		fmt.Fprintf(f.stderr, "versions %s: --versions %q is a RANGE and matched %d versions (%s); use %q for exactly one\n",
+			proj, f.want, len(out), strings.Join(out, " "), "="+f.want)
+	}
 	return out
+}
+
+// isBareVersion reports whether s is a version with no operator — the form
+// whose range semantics surprise people.
+func isBareVersion(s string) bool {
+	s = strings.TrimSpace(s)
+	return s != "" && s[0] >= '0' && s[0] <= '9'
 }
 
 // mirrorOne copies one upstream bottle into our registry, republished with our

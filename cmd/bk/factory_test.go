@@ -1079,3 +1079,65 @@ func TestFactoryAnnouncesARepair(t *testing.T) {
 		t.Errorf("no summary line:\n%s", out)
 	}
 }
+
+// TestMatchingWarnsABareVersionIsARange: `--versions 2.28.0` reads like "that
+// one version" and means ">=2.28.0 within major 2". A heal dispatched that way
+// walked every glibc from 2.28 to 2.33 and, on another run, filled the runner's
+// disk with kernel tarballs. The tool now says so while the run is young.
+func TestMatchingWarnsABareVersionIsARange(t *testing.T) {
+	var out, errb strings.Builder
+	f := &factory{want: "2.28.0", stdout: &out, stderr: &errb}
+
+	got := f.matching("gnu.org/glibc", []string{"2.28.0", "2.29.0", "2.33.0", "1.9.0"})
+
+	if len(got) != 3 {
+		t.Fatalf("matched %v", got)
+	}
+	if !strings.Contains(errb.String(), "is a RANGE") || !strings.Contains(errb.String(), `"=2.28.0"`) {
+		t.Errorf("no usable warning: %q", errb.String())
+	}
+}
+
+// TestMatchingIsQuietOnAnExactVersion: the warning must not fire for the form
+// it recommends, or it becomes noise the operator learns to skip.
+func TestMatchingIsQuietOnAnExactVersion(t *testing.T) {
+	var out, errb strings.Builder
+	f := &factory{want: "=2.28.0", stdout: &out, stderr: &errb}
+
+	got := f.matching("gnu.org/glibc", []string{"2.28.0", "2.29.0"})
+
+	if len(got) != 1 || got[0] != "2.28.0" {
+		t.Fatalf("matched %v", got)
+	}
+	if strings.Contains(errb.String(), "RANGE") {
+		t.Errorf("warned on an exact version: %q", errb.String())
+	}
+}
+
+// TestMatchingIsQuietOnASingleMatch: a bare version that happens to match one
+// version taught the operator nothing wrong.
+func TestMatchingIsQuietOnASingleMatch(t *testing.T) {
+	var out, errb strings.Builder
+	f := &factory{want: "2.28.0", stdout: &out, stderr: &errb}
+
+	f.matching("gnu.org/glibc", []string{"2.28.0", "1.0.0"})
+
+	if strings.Contains(errb.String(), "RANGE") {
+		t.Errorf("warned when the range matched exactly one: %q", errb.String())
+	}
+}
+
+// TestIsBareVersion draws the line where the surprise is: an operator form.
+func TestIsBareVersion(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"14", true}, {"2.28.0", true}, {" 2.28.0", true},
+		{"=2.28.0", false}, {"^3", false}, {">=2.4", false}, {"~5.42", false}, {"", false},
+	} {
+		if got := isBareVersion(tc.in); got != tc.want {
+			t.Errorf("isBareVersion(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
