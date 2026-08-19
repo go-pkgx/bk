@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -365,6 +366,16 @@ func (f *factory) mirrorVersionsFor(proj string, requested bool, max int) ([]str
 	for i := len(vs) - 1; i >= 0; i-- { // upstream lists ascending
 		out = append(out, vs[i].Raw)
 	}
+	// A CAP has to be computed from a list every arch job agrees on, or the two
+	// jobs mirror DIFFERENT sets and every version only one of them picked ends
+	// up alone in its index. Upstream lists differ per platform — circleci.com
+	// carries 124 versions for linux/aarch64 and 125 for linux/x86-64 — so
+	// `--max-versions 3 --mirror-from …` manufactured exactly the split indexes
+	// it was dispatched to repair. Cap on the union across the arches we publish
+	// for this OS: same input, same cut, on every runner.
+	if max > 0 {
+		out = f.unionWithSiblingArches(proj, out)
+	}
 	if !requested {
 		return out[:1], nil
 	}
@@ -608,3 +619,49 @@ func setCodec(name string) error {
 	}
 	return nil
 }
+
+// siblingArches are the architectures the factory publishes for a given OS.
+// Capping a mirror needs a platform-independent version list, and this is the
+// set to union over.
+var siblingArches = map[string][]string{
+	"linux":  {"x86-64", "aarch64"},
+	"darwin": {"x86-64", "aarch64"},
+}
+
+// unionWithSiblingArches folds in the upstream versions of the OTHER arches of
+// this OS, newest first, so a capped mirror cuts the same list everywhere.
+//
+// A version present only for a sibling arch stays in the list on purpose: this
+// job will report that upstream has no bottle for it here, which is a fact worth
+// printing, rather than silently choosing a different set than its sibling.
+func (f *factory) unionWithSiblingArches(proj string, mine []string) []string {
+	seen := map[string]bool{}
+	for _, v := range mine {
+		seen[v] = true
+	}
+	all := append([]string{}, mine...)
+	for _, arch := range siblingArches[f.osn] {
+		if arch == f.arch {
+			continue
+		}
+		vs, err := factoryUpstreamVersions(proj, f.osn, arch)
+		if err != nil {
+			// Can't reach the sibling list: cap on ours and say so, rather than
+			// pretend the cut is coordinated.
+			fmt.Fprintf(f.stderr, "versions %s: cannot read the %s/%s list, capping on %s only: %v\n",
+				proj, f.osn, arch, f.platform, err)
+			continue
+		}
+		for _, v := range vs {
+			if !seen[v.Raw] {
+				seen[v.Raw] = true
+				all = append(all, v.Raw)
+			}
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return lessVersionDesc(all[i], all[j]) })
+	return all
+}
+
+// lessVersionDesc orders versions newest first.
+func lessVersionDesc(a, b string) bool { return bottle.ParseVer(b).Satisfies("<" + a) }
