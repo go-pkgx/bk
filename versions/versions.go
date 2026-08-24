@@ -99,7 +99,7 @@ var (
 		if tok := osGetenv("GITHUB_TOKEN"); tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
-		resp, err := httpDo(req)
+		resp, err := httpDoRetrying(req)
 		if err != nil {
 			return nil, fmt.Errorf("versions: releases %s: %w", apiURL, err)
 		}
@@ -128,7 +128,7 @@ var (
 			return nil, err
 		}
 		req.Header.Set("User-Agent", userAgent)
-		return httpDo(req)
+		return httpDoRetrying(req)
 	}
 	ioReadAll = io.ReadAll
 	httpDo    = http.DefaultClient.Do

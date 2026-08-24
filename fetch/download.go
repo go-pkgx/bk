@@ -3,6 +3,7 @@ package fetch
 import (
 	"errors"
 	"fmt"
+	"github.com/go-pkgx/bk/httpretry"
 	"io/fs"
 	"net/http"
 	"syscall"
@@ -35,6 +36,13 @@ func download(url string) (string, error) {
 	for attempt := 0; attempt < downloadAttempts; attempt++ {
 		resp, err := httpGetRange(url, got)
 		if err != nil {
+			// A host that fails to answer is not a broken recipe. Retry the
+			// transient shapes — a timeout, a reset — and give up at once on an
+			// error that is itself an answer (a bad URL, an unusable TLS identity).
+			if httpretry.Transient(err, 0) && attempt < downloadAttempts-1 {
+				sleepFn(httpretry.Backoff(attempt))
+				continue
+			}
 			f.Close()
 			osRemove(path)
 			return "", fmt.Errorf("fetch: GET %s: %w", url, err)
@@ -56,6 +64,14 @@ func download(url string) (string, error) {
 				f, path, got, want = nf, nf.Name(), 0, 0
 			}
 		default:
+			// 502/503 cost freetype.org and ijg.org a place in the catalogue on a
+			// single unlucky draw. 5xx and 429 are the server failing to answer;
+			// a 4xx is the server answering, and repeating it hides the message.
+			if httpretry.Transient(nil, resp.StatusCode) && attempt < downloadAttempts-1 {
+				resp.Body.Close()
+				sleepFn(httpretry.Backoff(attempt))
+				continue
+			}
 			resp.Body.Close()
 			f.Close()
 			osRemove(path)
