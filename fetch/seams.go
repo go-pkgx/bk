@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 )
@@ -34,6 +35,9 @@ var (
 	// for the extractor must not also break the download, which retries.
 	ioCopyBody = io.Copy
 	zipOpen    = defaultZipOpen
+	// sleepFn paces the retry backoff; a test sets it to a no-op so the suite
+	// does not actually wait out three seconds of it.
+	sleepFn = time.Sleep
 )
 
 // defaultZipOpen opens a file inside a zip archive for reading.
