@@ -83,6 +83,7 @@ func Wrap(o WrapOptions) string {
 	fmt.Fprintf(&b, "export SRCROOT=%q\n", o.SrcRoot)
 	b.WriteString(tmpdirLine(o.Host) + "\n")
 	b.WriteString("if [ -n \"$CI\" ]; then export FORCE_UNSAFE_CONFIGURE=1; fi\n")
+	b.WriteString(libtoolToolVars)
 	b.WriteString("mkdir -p $HOME\n")
 	for _, f := range wrapFlags(o.Target, o.PkgxDir, o.HasBinutils, o.LibcPkgx) {
 		b.WriteString(f + "\n")
@@ -137,6 +138,32 @@ func (o WrapOptions) depPlus() string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// libtoolToolVars neutralises the absolute tool paths libtool bakes into the
+// scripts it ships.
+//
+// `libtoolize` opens with `: ${SED="<path>"}` — the path of the sed on the
+// machine that BUILT libtool. In the pkgx bottle that is
+// /__w/_actions/pkgxdev/brewkit/v1/libexec/sed, which exists nowhere else, so
+// libtoolize's every sed call fails. It still exits 0, and prints its version
+// with the program name stripped off (the name comes through that sed), so
+// autogen.sh's version probe reads it as absent and says:
+//
+//	You must have libtoolize version >= 2.x.x, but you have none.
+//
+// which names neither libtool nor a path. Measured on the shipped bottle:
+// bare `libtoolize --version` prints " (GNU libtool) 2.6.2" with two
+// no-such-file errors; SED=sed prints "libtoolize (GNU libtool) 2.6.2" clean.
+//
+// GREP/EGREP/FGREP default to /bin/grep, which happens to exist in the debian
+// build container and does NOT in a from-scratch sovereign one — the same
+// failure waiting for --libc=pkgx.
+//
+// `: ${VAR=...}` only assigns when unset, so exporting these wins, and := keeps
+// a value a recipe set deliberately. Every one of them is on PATH from the
+// gnu.org/sed and gnu.org/grep bottles the build env already carries.
+const libtoolToolVars = `export SED="${SED:-sed}" GREP="${GREP:-grep}" EGREP="${EGREP:-grep -E}" FGREP="${FGREP:-grep -F}"
+`
 
 // tmpdirLine sets TMPDIR (POSIX) or TMP/TEMP (windows host) under $HOME.
 func tmpdirLine(host target.Target) string {
