@@ -1,7 +1,8 @@
 // Package fixup performs the post-build relocatability fix-ups brewkit applies
-// before a package is bottled: rewriting hardcoded paths in .pc/.cmake files,
-// removing libtool .la files, consolidating lib64→lib, flattening single-dir
-// include trees, and (via rpath.go) fixing ELF RUNPATHs.
+// before a package is bottled: rewriting hardcoded paths in .pc/.cmake files
+// and in installed scripts, removing libtool .la files, consolidating
+// lib64→lib, flattening single-dir include trees, and (via rpath.go) fixing
+// ELF RUNPATHs.
 //
 // A Windows target needs NONE of this: a PE has no rpath/RUNPATH (DLLs colocate
 // next to the .exe or on PATH), there is no Mach-O or ELF to patch, no lib64
@@ -56,6 +57,9 @@ func FixUp(opts Options) error {
 		return err
 	}
 	if err := fixCMakeFiles(opts.Prefix, opts.BuildInstall, opts.log); err != nil {
+		return err
+	}
+	if err := fixStagingScripts(opts.Prefix, opts.BuildInstall, opts.log); err != nil {
 		return err
 	}
 	if !has(opts.Skips, "libtool-cleanup") {
@@ -153,7 +157,11 @@ func rewriteFile(path, buildInstall, prefix, repl string, log func(string, ...an
 	if buildInstall != "" {
 		text = strings.ReplaceAll(text, buildInstall, repl)
 	}
-	text = strings.ReplaceAll(text, prefix, repl)
+	// An empty prefix means "only the staging prefix" — ReplaceAll on "" would
+	// splice repl between every character of the file.
+	if prefix != "" {
+		text = strings.ReplaceAll(text, prefix, repl)
+	}
 	if text != orig {
 		log("fixing %s", path)
 		info, err := osStat(path)
