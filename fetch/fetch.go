@@ -80,15 +80,20 @@ func Fetch(url, destDir string, stripComponents int) error {
 		}
 		return extractTar(tar.NewReader(xr), destDir, stripComponents)
 	case kindTarBz2:
-		return extractTar(tar.NewReader(bzip2.NewReader(body)), destDir, stripComponents)
+		// compress/bzip2 has no eager constructor: NewReader always succeeds and
+		// the corruption surfaces mid-extract, out of extractTar, with neither
+		// the URL nor a hint. pcre.org 8.45 failed a whole factory run as
+		// "fetch: bzip2 data invalid: bad magic value" and nothing else.
+		err := extractTar(tar.NewReader(bzip2.NewReader(body)), destDir, stripComponents)
+		return wrapExtract(err, "bzip2", url, head)
 	case kindTar:
-		return extractTar(tar.NewReader(body), destDir, stripComponents)
+		return wrapExtract(extractTar(tar.NewReader(body), destDir, stripComponents), "tar", url, head)
 	default: // kindZip
 		data, err := io.ReadAll(body)
 		if err != nil {
 			return fmt.Errorf("fetch: read body of %s: %w", url, err)
 		}
-		return extractZip(data, destDir, stripComponents)
+		return wrapExtract(extractZip(data, destDir, stripComponents), "zip", url, head)
 	}
 }
 
