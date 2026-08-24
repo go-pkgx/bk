@@ -86,3 +86,35 @@ type readSeeker interface {
 	Read([]byte) (int, error)
 	Seek(int64, int) (int64, error)
 }
+
+// wrapExtract adds the URL, and a description of what actually arrived, to a
+// failure from a format whose reader cannot fail eagerly.
+//
+// gzip and xz reject a bad stream when their reader is constructed, so the
+// error can be described at that point. bzip2, plain tar and zip cannot: the
+// first bad byte is found during extraction, and the error surfaces out of
+// extractTar naming neither the URL nor the cause.
+//
+// The description is only added when the head PLAINLY is not an archive —
+// readable text, or nothing at all. Extraction also fails for reasons that have
+// nothing to do with the download (a full disk, a rejected zip-slip path), and
+// telling someone "the server returned an HTML page" about a write error would
+// be worse than saying nothing.
+func wrapExtract(err error, format, url string, head []byte) error {
+	if err == nil {
+		return nil
+	}
+	if d := describeIfNotArchive(head); d != "" {
+		return fmt.Errorf("fetch: read %s from %s: %w — %s", format, url, err, d)
+	}
+	return fmt.Errorf("fetch: read %s from %s: %w", format, url, err)
+}
+
+// describeIfNotArchive describes the body when it cannot be the archive we
+// asked for, and returns "" when it might be.
+func describeIfNotArchive(head []byte) string {
+	if len(head) == 0 || isMostlyText(head) {
+		return describeBody(head)
+	}
+	return ""
+}
