@@ -13,7 +13,16 @@ rather than a retrofit.
 
 ## Status
 
-Early. Implemented and 100%-covered so far:
+In production: `bk factory` is what fills
+[`ghcr.io/go-pkgx/packages`](https://github.com/orgs/go-pkgx/packages) —
+**1459 projects, 26 398 signed (project, os, arch, version) bottles** across
+linux/aarch64, linux/x86-64, darwin/aarch64, darwin/x86-64 and windows/x86-64 as
+of 2026-08-24. It is a moving target — re-measure it rather than trusting this
+line: `go run ./catalog` in
+[go-pkgx/packages](https://github.com/go-pkgx/packages) enumerates the registry
+itself, and <https://go-pkgx.github.io/packages> browses it.
+
+The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `go tool cover -func`, enforced in CI):
 
 | package  | what it does |
 |----------|--------------|
@@ -28,16 +37,27 @@ Early. Implemented and 100%-covered so far:
 | `fetch` | source download + extract (tar.gz/xz/bz2/zip, git), zip-slip-safe |
 | `bottlepkg` | package an install tree into a pkgx bottle + dist layout |
 | `build` | the pipeline orchestrator (`Runner`): dep-closure, base toolchain, sanitized env, autotools maintainer-mode defeat |
-| `cmd/bk` | `bk target`, `bk fixup <prefix>`, and **`bk build --recipe <yml> [--dist out] <project>`** (the full pipeline end to end) |
+| `overrides` | applies the factory's local recipe-override patches to a pantry checkout in pure Go — a `git diff` parsed and applied without shelling out to `git apply`, and idempotent (it resets the files it touches first) |
+| `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
+| `cmd/bk` | `target`, `fixup`, `versions`, `build`, `publish`, `closure`, `builder`, `factory` |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
-sanitized env → fix-up → package a bottle. **Proven end to end** on real
-packages: zlib.net (native darwin + a Windows cross-build to COFF/AMD64) and
-gnu.org/wget (openssl dependency → a running binary).
+sanitized env → fix-up → package a bottle. `bk factory` drives that over a whole
+list of projects: it expands them to their topologically-ordered runtime-dependency
+closure, skips any `(project, version, platform)` already published, applies the
+overrides, and publishes each bottle signed with an SBOM and provenance.
 
-Roadmap: Mach-O relocation (darwin fix-up), `{{deps.*}}` prefix tokens, and a
-comprehensive base-toolchain manifest.
+## Building bottles that owe nothing to the build container
+
+`--libc=pkgx` retargets the compiler at the pkgx `gnu.org/glibc` bottle — its crt
+objects, its libc, its dynamic linker — instead of the build container's, so the
+output runs `FROM scratch`. `--glibc <version>` pins that sysroot to an exact
+glibc line, and `bk builder` stages the sovereign rootfs itself: static Go
+binaries plus toolchain bottles from the signed registry, nothing else.
+
+[`docs/from-scratch-toolchain.md`](docs/from-scratch-toolchain.md) is the design
+note behind it, kept because its hazard list is still the one that bites.
 
 ### Recipes in YAML or HCL2
 
