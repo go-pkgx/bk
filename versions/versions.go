@@ -65,7 +65,7 @@ var (
 		rem := gogit.NewRemote(memory.NewStorage(), &gitconfig.RemoteConfig{Name: "origin", URLs: []string{repoURL}})
 		refs, err := rem.List(&gogit.ListOptions{})
 		if err != nil {
-			return nil, fmt.Errorf("versions: ls-remote %s: %w", repoURL, err)
+			return nil, fmt.Errorf("versions: ls-remote %s: %w", repoURL, describeRemoteErr(err))
 		}
 		var tags []string
 		for _, ref := range refs {
@@ -616,4 +616,28 @@ func matchesAny(res []*onigmo.Regexp, s string) bool {
 		}
 	}
 	return false
+}
+
+// notFoundish matches what a Git host says when a repository is not there. It
+// is the same answer it gives for a private one — GitHub 404s both, so the
+// client asks for credentials and reports the refusal.
+var notFoundish = regexp.MustCompile(`(?i)authentication required|repository not found`)
+
+// describeRemoteErr renames the one ls-remote failure that misleads.
+//
+// A recipe pointing at a repository that has been deleted or renamed fails as
+//
+//	versions: ls-remote https://github.com/jetporch/jetporch:
+//	  authentication required: Repository not found.
+//
+// which reads as a credentials problem in CI, and sends the reader to look at
+// tokens. It is not: GitHub answers 404 for a missing repository AND for a
+// private one, git cannot tell them apart, and asks for a password. Six of
+// eighty-one failures in one factory run wore that label; every one was a
+// pantry recipe whose upstream had gone away.
+func describeRemoteErr(err error) error {
+	if err == nil || !notFoundish.MatchString(err.Error()) {
+		return err
+	}
+	return fmt.Errorf("%w — the repository does not exist, or is private (a Git host answers 404 for both, so the client asks for credentials)", err)
 }
