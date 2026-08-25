@@ -69,7 +69,7 @@ var (
 func runFactory(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("factory", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	recipes := fs.String("recipes", envOr("RECIPES", ""), "space-separated projects to build (default: --recipes-file)")
+	recipes := fs.String("recipes", envOr("RECIPES", ""), `space-separated projects to build (default: --recipes-file). A word may carry its own version constraint after "@" — "cmake.org@=4.4.2" pins that project alone, which is what closing one index gap needs; --versions applies to every requested project at once`)
 	recipesFile := fs.String("recipes-file", "recipes.txt", "file listing one project per line (# comments allowed)")
 	pantryDir := fs.String("pantry", envOr("PANTRY", "pantry"), "pantry checkout to build from")
 	overridesDir := fs.String("overrides", "overrides", `directory of *.patch recipe overrides ("" to skip)`)
@@ -146,8 +146,14 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	requested := map[string]bool{}
-	for _, p := range want {
+	pins := map[string]string{}
+	for i, w := range want {
+		p, c := splitPin(w)
+		want[i] = p
 		requested[p] = true
+		if c != "" {
+			pins[p] = c
+		}
 	}
 
 	list := closureOf(*pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
@@ -177,9 +183,10 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		osn: osn, arch: arch, platform: *platform,
 		dist: *to, bottles: *bottles, glibc: *glibc,
 		force: *force, key: kp, when: factoryTime(),
-		mirror: strings.TrimRight(*mirrorFrom, "/"),
-		want:   strings.TrimSpace(*versionSpec),
-		stdout: stdout, stderr: stderr,
+		mirror:  strings.TrimRight(*mirrorFrom, "/"),
+		want:    strings.TrimSpace(*versionSpec),
+		wantPer: pins,
+		stdout:  stdout, stderr: stderr,
 	}
 	if f.mirror != "" {
 		setUpstreamDist(f.mirror)
@@ -256,8 +263,12 @@ type factory struct {
 	when     time.Time
 	mirror   string // upstream dist to copy from, "" = build
 	want     string // pkgx constraint the requested projects' versions must satisfy, "" = any
-	stdout   io.Writer
-	stderr   io.Writer
+	// wantPer overrides want for one project, from a `project@constraint` word
+	// in --recipes. Closing an index gap needs ONE named version of ONE project,
+	// and --versions applies to every requested project at once.
+	wantPer map[string]string
+	stdout  io.Writer
+	stderr  io.Writer
 
 	ok, skipped, failed int
 	failures            bytes.Buffer
@@ -293,7 +304,7 @@ func (f *factory) versionsFor(rec *pantry.Recipe, proj string, requested bool, m
 		out = append(out, vt.Version)
 	}
 	if out = f.matching(proj, out); len(out) == 0 {
-		return nil, fmt.Errorf("no version matches %q", f.want)
+		return nil, fmt.Errorf("no version matches %q", f.constraintFor(proj))
 	}
 	if max > 0 && len(out) > max {
 		out = out[:max]
@@ -395,27 +406,43 @@ func (f *factory) mirrorVersionsFor(proj string, requested bool, max int) ([]str
 // no value of --max-versions reaches a 3.x from a newest-first listing. The
 // constraint grammar is pkgx's own, so `^3`, `~3.31`, `>=2.4` and `=1.2.3` all
 // mean here what they mean in a recipe.
+// constraintFor is the version constraint in force for one project: its own
+// `project@constraint` word if it carried one, else the global --versions.
+func (f *factory) constraintFor(proj string) string {
+	if w, ok := f.wantPer[proj]; ok {
+		return w
+	}
+	return f.want
+}
+
 func (f *factory) matching(proj string, vers []string) []string {
-	if f.want == "" {
+	want := f.constraintFor(proj)
+	if want == "" {
 		return vers
+	}
+	// Name WHERE the constraint came from: an operator reading "1 dropped" has
+	// to know which knob to turn, and the two are set in different places.
+	source := `--versions "` + want + `"`
+	if _, pinned := f.wantPer[proj]; pinned {
+		source = `the pin "` + proj + "@" + want + `"`
 	}
 	out := make([]string, 0, len(vers))
 	for _, v := range vers {
-		if bottle.ParseVer(v).Satisfies(f.want) {
+		if bottle.ParseVer(v).Satisfies(want) {
 			out = append(out, v)
 		}
 	}
 	if n := len(vers) - len(out); n > 0 {
-		fmt.Fprintf(f.stdout, "versions %s: %d dropped by --versions %q\n", proj, n, f.want)
+		fmt.Fprintf(f.stdout, "versions %s: %d dropped by %s\n", proj, n, source)
 	}
 	// A BARE version is a caret range, not an exact match: "14" keeps every
 	// 14.x, and "2.28.0" keeps 2.29 and 2.33 too. An operator typing a version
 	// they read in an error message means THAT version — and finds out
 	// otherwise when the run builds a dozen, or fills a disk. Say it while the
 	// run is young.
-	if len(out) > 1 && isBareVersion(f.want) {
-		fmt.Fprintf(f.stderr, "versions %s: --versions %q is a RANGE and matched %d versions (%s); use %q for exactly one\n",
-			proj, f.want, len(out), strings.Join(out, " "), "="+f.want)
+	if len(out) > 1 && isBareVersion(want) {
+		fmt.Fprintf(f.stderr, "versions %s: %s is a RANGE and matched %d versions (%s); use %q for exactly one\n",
+			proj, source, len(out), strings.Join(out, " "), "="+want)
 	}
 	return out
 }
@@ -513,6 +540,23 @@ func (f *factory) failDetail(proj, ver, stage string, err error, detail string) 
 	fmt.Fprintf(&f.failures, "%s %s %s\n", proj, ver, stage)
 	fmt.Fprintf(&f.failuresDetail, "########## %s %s (%s) — %s failed: %v\n%s\n\n", proj, ver, f.platform, stage, err, detail)
 	f.failed++
+}
+
+// splitPin cuts a requested word into its project and its own version
+// constraint: "cmake.org@=4.4.2" is the project cmake.org pinned to exactly
+// 4.4.2. Without an "@" the constraint is empty and --versions governs.
+//
+// This exists because closing an index gap is inherently per-project: the
+// worklist says cmake.org needs 4.4.2 and groonga.org needs 16.0.9, and
+// --versions applies one constraint to every requested project at once. Without
+// it each gap costs its own dispatch, and a batch built with --max-versions 1
+// quietly builds whatever upstream released this week instead — which is what
+// happened, and why 17 of 18 targets in one run were never touched.
+func splitPin(word string) (proj, constraint string) {
+	if i := strings.IndexByte(word, '@'); i >= 0 {
+		return word[:i], word[i+1:]
+	}
+	return word, ""
 }
 
 // factoryWant is the requested project list: the --recipes words if given, else
