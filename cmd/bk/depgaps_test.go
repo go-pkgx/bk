@@ -89,7 +89,7 @@ func TestUnsatisfiableCountsBothDepKinds(t *testing.T) {
 	writeGapRecipe(t, root, "c.org", minimal+"dependencies:\n  openssl.org: ^3\n  zlib.net: '*'\n  never.published: ^9\n")
 
 	have := map[string][]string{"openssl.org": {"3.5.0"}, "zlib.net": {"1.3.2"}}
-	got, err := unsatisfiable(root, linuxTarget(), have)
+	got, absent, err := unsatisfiable(root, linuxTarget(), have)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +100,11 @@ func TestUnsatisfiableCountsBothDepKinds(t *testing.T) {
 	if len(blocking) != 2 || blocking[0] != "a.org" || blocking[1] != "b.org" {
 		t.Fatalf("blocking = %v, want a.org and b.org", blocking)
 	}
+	// never.published is a MISSING PROJECT, not a missing version line, and
+	// lands in the other bucket rather than being dropped.
+	if by := absent["never.published"]; len(by) != 1 || by[0] != "c.org" {
+		t.Fatalf("absent = %v, want c.org blocked on never.published", absent)
+	}
 }
 
 func TestUnsatisfiableSkipsWhatItCannotJudge(t *testing.T) {
@@ -109,7 +114,7 @@ func TestUnsatisfiableSkipsWhatItCannotJudge(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "projects", "broken.org", "README.md"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := unsatisfiable(root, linuxTarget(), map[string][]string{"openssl.org": {"3.5.0"}})
+	got, _, err := unsatisfiable(root, linuxTarget(), map[string][]string{"openssl.org": {"3.5.0"}})
 	if err != nil || len(got) != 0 {
 		t.Fatalf("got %v, %v — an unparseable recipe is the schema gate's problem", got, err)
 	}
@@ -124,7 +129,7 @@ func TestUnsatisfiableWalkErrors(t *testing.T) {
 		defer restoreWalk(filepathWalkDir)
 		boom := errors.New("boom")
 		filepathWalkDir = func(string, fs.WalkDirFunc) error { return boom }
-		if _, err := unsatisfiable(root, linuxTarget(), have); !errors.Is(err, boom) {
+		if _, _, err := unsatisfiable(root, linuxTarget(), have); !errors.Is(err, boom) {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -133,7 +138,7 @@ func TestUnsatisfiableWalkErrors(t *testing.T) {
 		filepathWalkDir = func(_ string, fn fs.WalkDirFunc) error {
 			return fn("whatever", nil, errors.New("stat failed"))
 		}
-		got, err := unsatisfiable(root, linuxTarget(), have)
+		got, _, err := unsatisfiable(root, linuxTarget(), have)
 		if err != nil || len(got) != 0 {
 			t.Fatalf("got %v, %v", got, err)
 		}
@@ -141,7 +146,7 @@ func TestUnsatisfiableWalkErrors(t *testing.T) {
 	t.Run("unreadable recipe is skipped", func(t *testing.T) {
 		defer restoreReadFileBK(osReadFile)
 		osReadFile = func(string) ([]byte, error) { return nil, errors.New("nope") }
-		got, err := unsatisfiable(root, linuxTarget(), have)
+		got, _, err := unsatisfiable(root, linuxTarget(), have)
 		if err != nil || len(got) != 0 {
 			t.Fatalf("got %v, %v", got, err)
 		}
@@ -151,7 +156,7 @@ func TestUnsatisfiableWalkErrors(t *testing.T) {
 		filepathWalkDir = func(_ string, fn fs.WalkDirFunc) error {
 			return fn("relative/package.yml", fakeEntry{"package.yml"}, nil)
 		}
-		got, err := unsatisfiable(root, linuxTarget(), have)
+		got, _, err := unsatisfiable(root, linuxTarget(), have)
 		if err != nil || len(got) != 0 {
 			t.Fatalf("got %v, %v", got, err)
 		}
@@ -248,7 +253,7 @@ func TestUnsatisfiableWalkPropagatesEntryReadError(t *testing.T) {
 		_ = fn("x", fakeEntry{"package.yml"}, nil)
 		return boom
 	}
-	if _, err := unsatisfiable(t.TempDir(), linuxTarget(), nil); !errors.Is(err, boom) {
+	if _, _, err := unsatisfiable(t.TempDir(), linuxTarget(), nil); !errors.Is(err, boom) {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -294,5 +299,58 @@ func TestRunDepgapsSurfacesAWalkFailure(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "tree gone") {
 		t.Errorf("the cause is not reported: %q", errb.String())
+	}
+}
+
+// TestReportAbsent: the second half of the front, ranked the same way, and
+// with a recipe counted once even when it names the project in both its
+// runtime and its build dependencies.
+func TestReportAbsent(t *testing.T) {
+	var b strings.Builder
+	reportAbsent(&b, map[string][]string{
+		"rust-lang.org": {"a.org", "a.org", "b.org", "c.org", "d.org"},
+		"openjdk.org":   {"e.org"},
+		"ruby-lang.org": {"f.org"},
+	}, "linux/x86-64", 2)
+	out := b.String()
+	if !strings.Contains(out, "3 project(s) with NOTHING published, blocking 6") {
+		t.Errorf("totals wrong (a.org must count once):\n%s", out)
+	}
+	if !strings.Contains(out, "4  rust-lang.org") {
+		t.Errorf("ranking wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "e.g. a.org, b.org, c.org") || strings.Contains(out, "d.org") {
+		t.Errorf("examples wrong or uncapped:\n%s", out)
+	}
+	if !strings.Contains(out, "… and 1 more project(s)") {
+		t.Errorf("the cut is not announced:\n%s", out)
+	}
+	// --top 0 lists everything, ties broken by name.
+	var all strings.Builder
+	reportAbsent(&all, map[string][]string{"b.org": {"x"}, "a.org": {"y"}}, "linux/x86-64", 0)
+	if strings.Index(all.String(), "a.org") > strings.Index(all.String(), "b.org") {
+		t.Errorf("ties are not broken by name:\n%s", all.String())
+	}
+}
+
+// TestRunDepgapsPrintsBothHalves: the command reports the version lines AND
+// the projects nothing is published for — reporting only the first sends the
+// operator at the smaller half.
+func TestRunDepgapsPrintsBothHalves(t *testing.T) {
+	root := t.TempDir()
+	writeGapRecipe(t, root, "a.org", minimal+"dependencies:\n  openssl.org: ^1.1\n  rust-lang.org: '*'\n")
+	reg := filepath.Join(root, "r.json")
+	if err := os.WriteFile(reg, []byte(regJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if code := runDepgaps([]string{"--pantry", root, "--overrides", "", "--registry", reg}, &out, io.Discard); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	if !strings.Contains(out.String(), "openssl.org ^1.1") {
+		t.Errorf("the version-line half is missing:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "NOTHING published") || !strings.Contains(out.String(), "rust-lang.org") {
+		t.Errorf("the missing-project half is missing:\n%s", out.String())
 	}
 }
