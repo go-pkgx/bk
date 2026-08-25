@@ -74,12 +74,19 @@ func runDepgaps(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	blocked, err := unsatisfiable(*pantryDir, tgt, have)
+	blocked, absent, err := unsatisfiable(*pantryDir, tgt, have)
 	if err != nil {
 		fmt.Fprintln(stderr, "depgaps:", err)
 		return 1
 	}
 	reportGaps(stdout, blocked, *platform, *top)
+	// The front has two halves and the second is usually the bigger one:
+	// measured on 2026-08-25, linux/x86-64 had 333 dependencies blocked by a
+	// missing version LINE and 797 by a project of which nothing at all is
+	// published — rust-lang.org alone accounting for 292. Reporting only the
+	// first sends the operator at the smaller half.
+	fmt.Fprintln(stdout)
+	reportAbsent(stdout, absent, *platform, *top)
 	return 0
 }
 
@@ -113,11 +120,11 @@ func publishedVersions(path, osn, arch string) (map[string][]string, error) {
 
 // unsatisfiable maps "project constraint" to the recipes that ask for it and
 // cannot be served.
-func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string) (map[string][]string, error) {
+func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string) (out, absent map[string][]string, err error) {
 	root := filepath.Join(pantryDir, "projects")
-	out := map[string][]string{}
-	err := filepathWalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || d.Name() != "package.yml" {
+	out, absent = map[string][]string{}, map[string][]string{}
+	err = filepathWalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() || d.Name() != "package.yml" {
 			return nil
 		}
 		rel, relErr := filepath.Rel(root, filepath.Dir(p))
@@ -138,15 +145,20 @@ func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string
 			for _, spec := range build.DepSpecs(deps, tgt) {
 				proj := build.SpecProject(spec)
 				c := strings.TrimPrefix(strings.TrimPrefix(spec, proj), "@")
-				if c == "" {
-					continue // unconstrained: any published version will do
-				}
 				vers, known := have[strings.ToLower(proj)]
+				// Existence is checked BEFORE the constraint: `rust-lang.org: "*"`
+				// asks for any version at all, and is blocked just as hard when
+				// there is none. Skipping unconstrained deps first hid 292
+				// recipes behind the one project that blocks the most.
 				if !known {
 					// Nothing of this project is published for this platform.
 					// That is a different gap — the project itself, not a
-					// version line — and mixing the two buries the actionable half.
+					// version line — so it is counted separately, not mixed in.
+					absent[strings.ToLower(proj)] = append(absent[strings.ToLower(proj)], filepath.ToSlash(rel))
 					continue
+				}
+				if c == "" {
+					continue // unconstrained, and something is published: fine
 				}
 				if !anySatisfies(vers, c) {
 					key := proj + " " + c
@@ -156,7 +168,7 @@ func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string
 		}
 		return nil
 	})
-	return out, err
+	return out, absent, err
 }
 
 // anySatisfies reports whether any published version meets the constraint,
@@ -207,3 +219,55 @@ func reportGaps(w io.Writer, blocked map[string][]string, platform string, top i
 // Seams over the filesystem walk, so a test can drive the error branches a
 // real directory will not reproduce.
 var filepathWalkDir = filepath.WalkDir
+
+// reportAbsent ranks the projects of which the registry carries NOTHING for
+// this platform, by how many recipes depend on them.
+//
+// This is a different repair from a missing version line, and a cheaper one:
+// every one of the twenty worst on 2026-08-25 existed upstream, so a mirror
+// run closed them. It is kept apart from the version-line ranking because
+// mixing them buries whichever is currently the actionable half.
+func reportAbsent(w io.Writer, absent map[string][]string, platform string, top int) {
+	type entry struct {
+		proj string
+		by   []string
+	}
+	all := make([]entry, 0, len(absent))
+	total := 0
+	for p, v := range absent {
+		sort.Strings(v)
+		all = append(all, entry{p, dedupeStrings(v)})
+		total += len(dedupeStrings(v))
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if len(all[i].by) != len(all[j].by) {
+			return len(all[i].by) > len(all[j].by)
+		}
+		return all[i].proj < all[j].proj
+	})
+	fmt.Fprintf(w, "%d project(s) with NOTHING published, blocking %d recipe-dependenc(ies) on %s\n\n",
+		len(all), total, platform)
+	for i, e := range all {
+		if top > 0 && i == top {
+			fmt.Fprintf(w, "… and %d more project(s)\n", len(all)-top)
+			break
+		}
+		ex := e.by
+		if len(ex) > 3 {
+			ex = ex[:3]
+		}
+		fmt.Fprintf(w, "%5d  %-34s  e.g. %s\n", len(e.by), e.proj, strings.Join(ex, ", "))
+	}
+}
+
+// dedupeStrings collapses a sorted slice. A recipe naming the same project in
+// both its runtime and its build dependencies is one blocked recipe, not two.
+func dedupeStrings(in []string) []string {
+	out := in[:0:0]
+	for i, s := range in {
+		if i == 0 || s != in[i-1] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
