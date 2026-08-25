@@ -1,9 +1,11 @@
 package fetch
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"github.com/go-pkgx/bk/httpretry"
+	"io"
 	"io/fs"
 	"net/http"
 	"syscall"
@@ -85,6 +87,24 @@ func download(url string) (string, error) {
 		resp.Body.Close()
 		got += n
 		if copyErr == nil && (want == 0 || got >= want) {
+			// The transfer completed — but a mirror answering 200 with a page
+			// instead of the archive completes too. pcre.org 8.45 failed a whole
+			// factory run as "bzip2 data invalid: bad magic value" while both of
+			// its URLs serve a perfectly good BZh9 tarball from another machine:
+			// SourceForge had handed the runner something else. That is a
+			// transient as surely as a timeout is, and it was the one shape the
+			// retry loop could not see, because the status said 200.
+			if magicWrong(url, path) && attempt < downloadAttempts-1 {
+				f.Close()
+				osRemove(path)
+				nf, err := osCreateTemp("", "bk-fetch-*")
+				if err != nil {
+					return "", fmt.Errorf("fetch: temp file: %w", err)
+				}
+				f, path, got, want = nf, nf.Name(), 0, 0
+				sleepFn(httpretry.Backoff(attempt))
+				continue
+			}
 			f.Close()
 			return path, nil
 		}
@@ -146,4 +166,37 @@ func isWriteError(err error) bool {
 	}
 	var pathErr *fs.PathError
 	return errors.As(err, &pathErr)
+}
+
+// archiveMagic is the first bytes each COMPRESSED format must start with. Only
+// compressed formats are listed: a plain .tar begins with a filename in ASCII,
+// which is indistinguishable from an error page by any cheap test, and a
+// mis-served .tar is caught later by the extractor with wrapExtract's
+// description.
+var archiveMagic = map[string][]byte{
+	kindTarGz:  {0x1f, 0x8b},
+	kindTarXz:  {0xfd, '7', 'z', 'X', 'Z', 0x00},
+	kindTarBz2: {'B', 'Z', 'h'},
+	kindZip:    {'P', 'K'},
+}
+
+// magicWrong reports whether a completed download does not begin the way its
+// extension promises — the signature of a mirror that answered 200 with
+// something other than the archive.
+func magicWrong(url, path string) bool {
+	want, ok := archiveMagic[detect(url)]
+	if !ok {
+		return false
+	}
+	f, err := osOpen(path)
+	if err != nil {
+		return false // unreadable is a different problem; let the extractor say so
+	}
+	defer f.Close()
+	head := make([]byte, len(want))
+	if _, err := io.ReadFull(f, head); err != nil {
+		// Shorter than the magic itself: certainly not the archive.
+		return true
+	}
+	return !bytes.Equal(head, want)
 }
