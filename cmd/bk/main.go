@@ -104,7 +104,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|closure|builder|factory> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|closure|depgaps|builder|factory> [args]")
 		return 2
 	}
 
@@ -141,6 +141,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPublish(rest[1:], stdout, stderr)
 	case "closure":
 		return runClosure(rest[1:], stdout, stderr)
+	case "depgaps":
+		return runDepgaps(rest[1:], stdout, stderr)
 	case "builder":
 		return runBuilder(rest[1:], stdout, stderr)
 	case "factory":
