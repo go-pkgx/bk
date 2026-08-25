@@ -71,6 +71,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	recipes := fs.String("recipes", envOr("RECIPES", ""), `space-separated projects to build (default: --recipes-file). A word may carry its own version constraint after "@" — "cmake.org@=4.4.2" pins that project alone, which is what closing one index gap needs; --versions applies to every requested project at once`)
 	recipesFile := fs.String("recipes-file", "recipes.txt", "file listing one project per line (# comments allowed)")
+	noClosure := fs.Bool("no-closure", os.Getenv("NO_CLOSURE") != "", "build ONLY the requested projects, not their dependency closure. For a repair run, where the dependencies are already published and rebuilding them at their newest upstream version starves the targets behind them")
 	pantryDir := fs.String("pantry", envOr("PANTRY", "pantry"), "pantry checkout to build from")
 	overridesDir := fs.String("overrides", "overrides", `directory of *.patch recipe overrides ("" to skip)`)
 	to := fs.String("to", envOr("DIST", "oci://ghcr.io/go-pkgx/packages"), "oci:// registry to publish to")
@@ -156,7 +157,22 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	list := closureOf(*pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
+	// The closure is what makes a first fill work: build a package's
+	// dependencies before it, so a consumer finds them in the registry too. It
+	// is the wrong shape for a REPAIR run, where every dependency is already
+	// published and only a named version of a named project is missing.
+	//
+	// Measured: 27 pinned targets expanded to 76 projects, and in 2h40 the run
+	// attempted 28 builds — three of them targets, twenty-five of them
+	// dependencies it rebuilt at their newest upstream version (zlib, ncurses,
+	// sqlite, the whole x.org stack, then python 3.14.7 and, the run before,
+	// llvm 22.1.8). It never reached the other 24 targets. A closure dep is
+	// resolved with the constraint "*", so it is rebuilt whenever upstream has
+	// moved, whether or not anything needed that.
+	list := want
+	if !*noClosure {
+		list = closureOf(*pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
+	}
 	if *mirrorFrom != "" {
 		// Mirroring needs no recipe (no build, and the versions come from the
 		// upstream dist), so a requested project the closure walk had to drop for
