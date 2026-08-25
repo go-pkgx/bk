@@ -215,6 +215,12 @@ func (r *Runner) concurrency() int {
 	return runtime.NumCPU()
 }
 
+// BuildDeps is a recipe's build-time dependency map, which lives under the
+// free-form `build:` node rather than in a typed field. Exported because a
+// recipe's build deps are as capable of naming an unpublishable version as its
+// runtime ones — `bk depgaps` counts both.
+func BuildDeps(recipe *pantry.Recipe) map[string]any { return buildDeps(recipe) }
+
 func buildDeps(recipe *pantry.Recipe) map[string]any {
 	if m, ok := recipe.Build.(map[string]any); ok {
 		if bd, ok := m["dependencies"].(map[string]any); ok {
