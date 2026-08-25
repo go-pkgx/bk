@@ -37,7 +37,7 @@ func TestDownloadRetriesATimeout(t *testing.T) {
 		if calls == 1 {
 			return nil, &net.OpError{Op: "dial", Err: timeoutErr{}}
 		}
-		return okBody("hello"), nil
+		return okBody(gzMagic + "hello"), nil
 	}
 	path, err := download("https://flaky.example/x.tar.gz")
 	if err != nil {
@@ -47,7 +47,7 @@ func TestDownloadRetriesATimeout(t *testing.T) {
 	if calls != 2 {
 		t.Errorf("attempts=%d, want 2", calls)
 	}
-	if b, _ := os.ReadFile(path); string(b) != "hello" {
+	if b, _ := os.ReadFile(path); string(b) != gzMagic+"hello" {
 		t.Errorf("body=%q", b)
 	}
 }
@@ -62,7 +62,7 @@ func TestDownloadRetriesA503(t *testing.T) {
 		if calls < 3 {
 			return &http.Response{StatusCode: 503, Status: "503 Service Unavailable", Body: http.NoBody}, nil
 		}
-		return okBody("data"), nil
+		return okBody(gzMagic + "data"), nil
 	}
 	path, err := download("https://flaky.example/x.tar.gz")
 	if err != nil {
@@ -141,3 +141,8 @@ func okBody(s string) *http.Response {
 }
 
 func restoreHTTPGet(f func(string) (*http.Response, error)) { httpGet = f }
+
+// gzMagic is what a .tar.gz must begin with. The retry fixtures carry it so the
+// magic check (see magic_test.go) does not treat them as a mirror that served
+// the wrong thing — which is exactly what it is for.
+const gzMagic = "\x1f\x8b"
