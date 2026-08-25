@@ -82,7 +82,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	mirrorFrom := fs.String("mirror-from", "", "instead of building, copy each bottle from this upstream pkgx dist (e.g. https://dist.pkgx.dev) and republish it signed + attested — for versions we cannot or need not rebuild, such as ancient glibc")
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
-	force := fs.Bool("force", os.Getenv("FORCE") != "", "rebuild and republish even when the bottle is already in the registry")
+	force := fs.Bool("force", os.Getenv("FORCE") != "", "rebuild and republish even when the bottle is already in the registry — the projects you REQUESTED only, never the dependency closure behind them")
 	compress := fs.String("compress", envOr("COMPRESS", "zstd"), "codec for NEW bottles: zstd or gzip. Already-published bottles are never rewritten, so gzip stays readable; this only governs what we create")
 	signKey := fs.String("sign", "", "sign published bottles with this go-attest/sign secret key file (else $SIGNING_KEY)")
 	pkgx := fs.String("pkgx", "pkgx", "path to the pkgx binary used for the deps env")
@@ -199,10 +199,11 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		osn: osn, arch: arch, platform: *platform,
 		dist: *to, bottles: *bottles, glibc: *glibc,
 		force: *force, key: kp, when: factoryTime(),
-		mirror:  strings.TrimRight(*mirrorFrom, "/"),
-		want:    strings.TrimSpace(*versionSpec),
-		wantPer: pins,
-		stdout:  stdout, stderr: stderr,
+		mirror:    strings.TrimRight(*mirrorFrom, "/"),
+		want:      strings.TrimSpace(*versionSpec),
+		wantPer:   pins,
+		requested: requested,
+		stdout:    stdout, stderr: stderr,
 	}
 	if f.mirror != "" {
 		setUpstreamDist(f.mirror)
@@ -283,8 +284,12 @@ type factory struct {
 	// in --recipes. Closing an index gap needs ONE named version of ONE project,
 	// and --versions applies to every requested project at once.
 	wantPer map[string]string
-	stdout  io.Writer
-	stderr  io.Writer
+	// requested is the set of projects the operator NAMED, as opposed to the
+	// ones the closure walk added. --force applies only to the first: see
+	// forcing.
+	requested map[string]bool
+	stdout    io.Writer
+	stderr    io.Writer
 
 	ok, skipped, failed int
 	failures            bytes.Buffer
@@ -331,9 +336,23 @@ func (f *factory) versionsFor(rec *pantry.Recipe, proj string, requested bool, m
 
 // buildOne builds and publishes one (project, version), unless the registry
 // already has that bottle for this platform.
+// forcing reports whether the skip-if-published check should be bypassed for
+// this project.
+//
+// --force means "rebuild what I asked for, even though it is published" — a
+// stale bottle refreshed on purpose. It used to mean that for the whole
+// dependency closure too, and that is a different and much more expensive
+// thing: dispatching 27 projects expanded to 76, and the run spent 2h40
+// rebuilding twenty-five published dependencies (zlib, ncurses, sqlite, the
+// x.org stack, python 3.14.7) before it had reached four of the targets.
+//
+// A dependency is in the list so that dependents find it in the registry. If it
+// is already there, that job is done.
+func (f *factory) forcing(proj string) bool { return f.force && f.requested[proj] }
+
 func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 	tag := flavoredTag(proj, ver, f.glibc)
-	if !f.force {
+	if !f.forcing(proj) {
 		switch published, err := factoryHasPlatform(f.dist, proj, tag, f.osn, f.arch); {
 		case err != nil:
 			// Treat an unreachable registry as "not published" and build: a
@@ -474,7 +493,7 @@ func isBareVersion(s string) bool {
 // own SBOM, provenance and signature (and, for glibc, its min-kernel floor).
 func (f *factory) mirrorOne(proj, ver string) {
 	tag := flavoredTag(proj, ver, f.glibc)
-	if !f.force {
+	if !f.forcing(proj) {
 		switch published, err := factoryHasPlatform(f.dist, proj, tag, f.osn, f.arch); {
 		case err != nil:
 			fmt.Fprintf(f.stderr, "factory: publish-check %s %s: %v\n", proj, tag, err)
