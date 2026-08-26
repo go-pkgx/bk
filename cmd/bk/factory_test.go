@@ -1161,18 +1161,47 @@ func TestMirrorCapUsesAUnionOfArches(t *testing.T) {
 		}
 	}
 
+	// The union decides WHERE to cut — both arches consider 4.0, 3.0, 2.0, so
+	// neither mirrors a version the other stopped short of. It does not decide
+	// WHAT to fetch: 3.0 is not there for aarch64, and asking upstream for it
+	// fails the entry outright (`gnu.org/gcc 16.2.0 fetch`, on a darwin/aarch64
+	// that carries sixteen versions but not that one).
+	//
+	// 3.0 then exists for x86-64 alone, which is what upstream says. The audit
+	// calls that an ABSENCE, not a lost index entry, and there is nothing to
+	// heal.
 	var out, errb strings.Builder
-	for _, arch := range []string{"x86-64", "aarch64"} {
-		f := &factory{osn: "linux", arch: arch, platform: "linux/" + arch, stdout: &out, stderr: &errb}
+	for _, tc := range []struct{ arch, want string }{
+		{"x86-64", "4.0 3.0 2.0"},
+		{"aarch64", "4.0 2.0"},
+	} {
+		f := &factory{osn: "linux", arch: tc.arch, platform: "linux/" + tc.arch, stdout: &out, stderr: &errb}
 		got, err := f.mirrorVersionsFor("circleci.com", true, 3)
 		if err != nil {
-			t.Fatalf("%s: %v", arch, err)
+			t.Fatalf("%s: %v", tc.arch, err)
 		}
-		want := "4.0 3.0 2.0"
-		if strings.Join(got, " ") != want {
-			t.Errorf("%s capped to %q, want %q — both arches must cut the SAME list",
-				arch, strings.Join(got, " "), want)
+		if strings.Join(got, " ") != tc.want {
+			t.Errorf("%s mirrored %q, want %q", tc.arch, strings.Join(got, " "), tc.want)
 		}
+	}
+}
+
+// TestMirrorSkipsAVersionThisArchDoesNotHaveAtAll: if the cut leaves this arch
+// nothing, say so rather than failing later in the fetch.
+func TestMirrorSkipsAVersionThisArchDoesNotHaveAtAll(t *testing.T) {
+	old := factoryUpstreamVersions
+	defer func() { factoryUpstreamVersions = old }()
+	factoryUpstreamVersions = func(proj, osn, arch string) ([]bottle.Ver, error) {
+		if arch == "x86-64" {
+			return vers("1.0", "9.0"), nil
+		}
+		return vers("1.0"), nil // the cut of 1 takes 9.0, which this arch lacks
+	}
+	var out, errb strings.Builder
+	f := &factory{osn: "linux", arch: "aarch64", platform: "linux/aarch64", stdout: &out, stderr: &errb}
+	if _, err := f.mirrorVersionsFor("x.org", true, 1); err == nil ||
+		!strings.Contains(err.Error(), "no upstream bottle") {
+		t.Fatalf("got %v, want a clear \"nothing to mirror here\"", err)
 	}
 }
 
@@ -1235,4 +1264,45 @@ func vers(raw ...string) []bottle.Ver {
 		out = append(out, bottle.ParseVer(r))
 	}
 	return out
+}
+
+// TestMirrorRequestedLeavesNothingPresent: the constraint and the cap both
+// match, and every version they leave belongs to the sibling arch. Say so here
+// rather than let the fetch fail one version at a time.
+func TestMirrorRequestedLeavesNothingPresent(t *testing.T) {
+	old := factoryUpstreamVersions
+	defer func() { factoryUpstreamVersions = old }()
+	factoryUpstreamVersions = func(proj, osn, arch string) ([]bottle.Ver, error) {
+		if arch == "x86-64" {
+			return vers("1.0", "3.0"), nil
+		}
+		return vers("1.0"), nil
+	}
+	var out, errb strings.Builder
+	f := &factory{osn: "linux", arch: "aarch64", platform: "linux/aarch64",
+		want: "^3", stdout: &out, stderr: &errb}
+	_, err := f.mirrorVersionsFor("x.org", true, 5)
+	if err == nil || !strings.Contains(err.Error(), "no upstream bottle") {
+		t.Fatalf("got %v, want a clear \"nothing here to mirror\"", err)
+	}
+}
+
+// TestMirrorClosureDepAbsentOnThisArch: a closure dependency takes the newest
+// the arches agree on. When that one belongs to the sibling only, there is
+// nothing to mirror here, and saying it beats a fetch failure three steps later.
+func TestMirrorClosureDepAbsentOnThisArch(t *testing.T) {
+	old := factoryUpstreamVersions
+	defer func() { factoryUpstreamVersions = old }()
+	factoryUpstreamVersions = func(proj, osn, arch string) ([]bottle.Ver, error) {
+		if arch == "x86-64" {
+			return vers("1.0", "7.0"), nil
+		}
+		return vers("1.0"), nil
+	}
+	var out, errb strings.Builder
+	f := &factory{osn: "linux", arch: "aarch64", platform: "linux/aarch64", stdout: &out, stderr: &errb}
+	if _, err := f.mirrorVersionsFor("x.org", false, 1); err == nil ||
+		!strings.Contains(err.Error(), "no upstream bottle") {
+		t.Fatalf("got %v, want a clear \"nothing here to mirror\"", err)
+	}
 }

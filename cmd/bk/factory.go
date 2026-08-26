@@ -409,8 +409,10 @@ func (f *factory) mirrorVersionsFor(proj string, requested bool, max int) ([]str
 		return nil, fmt.Errorf("no upstream bottle for %s/%s", f.osn, f.arch)
 	}
 	out := make([]string, 0, len(vs))
-	for i := len(vs) - 1; i >= 0; i-- { // upstream lists ascending
+	here := make(map[string]bool, len(vs)) // what THIS arch actually has
+	for i := len(vs) - 1; i >= 0; i-- {    // upstream lists ascending
 		out = append(out, vs[i].Raw)
+		here[vs[i].Raw] = true
 	}
 	// A CAP has to be computed from a list every arch job agrees on, or the two
 	// jobs mirror DIFFERENT sets and every version only one of them picked ends
@@ -422,8 +424,20 @@ func (f *factory) mirrorVersionsFor(proj string, requested bool, max int) ([]str
 	if max > 0 {
 		out = f.unionWithSiblingArches(proj, out)
 	}
+	// The union decides WHERE to cut, so both arches stop at the same version.
+	// It must not decide WHAT to fetch: one the sibling has and this arch does
+	// not is not there to mirror, and asking for it fails the entry outright —
+	//
+	//	gnu.org/gcc 16.2.0 fetch
+	//
+	// on a darwin/aarch64 that carries sixteen versions but not that one. So
+	// the cut runs on the union and the RESULT is intersected back with what
+	// this arch actually has.
 	if !requested {
-		return out[:1], nil
+		if p := keepPresent(out[:1], here); len(p) == 1 {
+			return p, nil
+		}
+		return nil, fmt.Errorf("no upstream bottle of %s for %s/%s at the version the arches agree on", proj, f.osn, f.arch)
 	}
 	if out = f.matching(proj, out); len(out) == 0 {
 		return nil, fmt.Errorf("no upstream version matches %q", f.want)
@@ -431,8 +445,23 @@ func (f *factory) mirrorVersionsFor(proj string, requested bool, max int) ([]str
 	if max > 0 && len(out) > max {
 		out = out[:max]
 	}
+	if out = keepPresent(out, here); len(out) == 0 {
+		return nil, fmt.Errorf("no upstream bottle of %s for %s/%s among the versions the arches agree on", proj, f.osn, f.arch)
+	}
 	fmt.Fprintf(f.stdout, "versions %s: %d to consider (%s, upstream)\n", proj, len(out), f.platform)
 	return out, nil
+}
+
+// keepPresent drops the versions this arch's upstream listing does not carry,
+// preserving order.
+func keepPresent(vers []string, here map[string]bool) []string {
+	out := vers[:0:0]
+	for _, v := range vers {
+		if here[v] {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // matching keeps only the versions satisfying --versions, and says how many it
