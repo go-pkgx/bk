@@ -40,6 +40,7 @@ func runBuilder(args []string, stdout, stderr io.Writer) int {
 	dist := fs.String("dist", "", "bottle registry to install from (default $PKGX_DIST)")
 	overlay := fs.String("overlay", "", "pantry overlay consulted before the upstream pantry (default $PKGX_PANTRY_OVERLAY)")
 	microvm := fs.Bool("microvm", false, "also write .weft-microvm/config.json so `weft microvm run` can boot the directory as-is")
+	container := fs.Bool("container", false, "also write /etc/ld.so.conf listing every staged library directory, so the tree runs as a CONTAINER root and not only under bk's build wrapper")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -66,16 +67,17 @@ func runBuilder(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if err := stageBuilder(stageOptions{
-		Root:    *out,
-		OS:      osn,
-		Arch:    arch,
-		Roots:   roots,
-		BkBin:   *bkBin,
-		PkgxBin: *pkgxBin,
-		MicroVM: *microvm,
-		Overlay: bottle.PantryOverlay,
-		Dist:    bottle.DistBase,
-		Log:     func(s string) { fmt.Fprintln(stdout, s) },
+		Root:      *out,
+		OS:        osn,
+		Arch:      arch,
+		Roots:     roots,
+		BkBin:     *bkBin,
+		PkgxBin:   *pkgxBin,
+		MicroVM:   *microvm,
+		Container: *container,
+		Overlay:   bottle.PantryOverlay,
+		Dist:      bottle.DistBase,
+		Log:       func(s string) { fmt.Fprintln(stdout, s) },
 	}); err != nil {
 		fmt.Fprintln(stderr, "builder:", err)
 		return 1
@@ -162,15 +164,16 @@ func splitToolchainSpec(s string) (project, constraint string) {
 
 // stageOptions is the whole input of a staging run.
 type stageOptions struct {
-	Root     string
-	OS, Arch string
-	Roots    map[string]string
-	BkBin    string
-	PkgxBin  string
-	MicroVM  bool
-	Overlay  string
-	Dist     string
-	Log      func(string)
+	Root      string
+	OS, Arch  string
+	Roots     map[string]string
+	BkBin     string
+	PkgxBin   string
+	MicroVM   bool
+	Container bool
+	Overlay   string
+	Dist      string
+	Log       func(string)
 }
 
 // stageBuilder materialises the rootfs. Order matters: the closure has to be
@@ -260,7 +263,70 @@ func stageBuilder(o stageOptions) error {
 		}
 		o.Log("builder: .weft-microvm/config.json written — `weft microvm run` can boot this directory")
 	}
+	if o.Container {
+		n, err := writeLdSoConf(o, pkgxDir)
+		if err != nil {
+			return fmt.Errorf("write /etc/ld.so.conf: %w", err)
+		}
+		o.Log(fmt.Sprintf("builder: /etc/ld.so.conf written — %d library director(ies)", n))
+	}
 	return nil
+}
+
+// writeLdSoConf lists every staged directory that holds a shared object, so a
+// process started INSIDE the tree can find libc.
+//
+// The tree is not self-sufficient by its filesystem alone, and it took running
+// it as a container to see why:
+//
+//   - Most bottles are MIRRORED: linked against a distro glibc, they carry
+//     RUNPATH=$ORIGIN/../lib and find libc through the loader's search path.
+//   - That path is compiled into the loader, and the mirrored glibc's is
+//     /opt/gnu.org/glibc/<ver>+brewing/lib — upstream's build staging dir. Its
+//     ldconfig has the same baked in, so `ldconfig -r <root>` cannot even build
+//     a cache inside the tree.
+//
+// What remains is LD_LIBRARY_PATH, which bk's build wrapper exports and PID 1
+// does not have. This file is the data an init needs to export it. Measured:
+// without it, /bin/sh in an Incus container built from this tree dies with
+// "libc.so.6: cannot open shared object file"; with it, clang compiles, links
+// and runs.
+//
+// The directories are FOUND, not globbed: libc.so.6 lives in
+// lib/glibc-2.44/, a versioned subdirectory a `*/v*/lib` pattern misses.
+func writeLdSoConf(o stageOptions, pkgxDir string) (int, error) {
+	seen := map[string]bool{}
+	err := filepath.WalkDir(pkgxDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			// A directory we cannot read means the list is INCOMPLETE, and an
+			// incomplete ld.so.conf breaks the container silently: one library
+			// missing and every binary that needs it dies with "cannot open
+			// shared object file", pointing at nothing.
+			return err
+		}
+		if d.IsDir() || !strings.Contains(d.Name(), ".so") {
+			return nil
+		}
+		seen[guestPath(filepath.Dir(p), pkgxDir)] = true
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	dirs := make([]string, 0, len(seen))
+	for d := range seen {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	etc := filepath.Join(o.Root, "etc")
+	if err := os.MkdirAll(etc, 0o755); err != nil {
+		return 0, err
+	}
+	body := strings.Join(dirs, "\n")
+	if body != "" {
+		body += "\n"
+	}
+	return len(dirs), os.WriteFile(filepath.Join(etc, "ld.so.conf"), []byte(body), 0o644)
 }
 
 // guestPath rewrites a staged path to the one it will have once the rootfs is
