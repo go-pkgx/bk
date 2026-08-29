@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"errors"
+	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1304,5 +1306,35 @@ func TestMirrorClosureDepAbsentOnThisArch(t *testing.T) {
 	if _, err := f.mirrorVersionsFor("x.org", false, 1); err == nil ||
 		!strings.Contains(err.Error(), "no upstream bottle") {
 		t.Fatalf("got %v, want a clear \"nothing here to mirror\"", err)
+	}
+}
+
+// TestFactoryJobsFlag: --jobs must reach the runner, and JOBS must be its
+// default. The knob exists for emulated targets — on an aarch64 rootfs under
+// qemu-user, `make --jobs 32` exhausts the emulated address space and bash
+// reports "xmalloc: cannot allocate 8192 bytes", which reads like a broken
+// recipe and is not one. A flag nothing wires through is worse than none.
+func TestFactoryJobsFlag(t *testing.T) {
+	fs := flag.NewFlagSet("factory", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jobs := fs.Int("jobs", envInt("JOBS"), "")
+	if err := fs.Parse([]string{"--jobs", "4"}); err != nil {
+		t.Fatal(err)
+	}
+	r := &build.Runner{}
+	r.Concurrency = *jobs
+	if r.Concurrency != 4 {
+		t.Fatalf("Concurrency = %d, want 4", r.Concurrency)
+	}
+
+	t.Setenv("JOBS", "2")
+	fs2 := flag.NewFlagSet("factory", flag.ContinueOnError)
+	fs2.SetOutput(io.Discard)
+	jobs2 := fs2.Int("jobs", envInt("JOBS"), "")
+	if err := fs2.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if *jobs2 != 2 {
+		t.Fatalf("JOBS default = %d, want 2", *jobs2)
 	}
 }
