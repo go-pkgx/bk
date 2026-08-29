@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -334,5 +335,44 @@ func TestBaseToolchainPerlMatchesTexinfo(t *testing.T) {
 func TestBaseToolchainHasHelp2man(t *testing.T) {
 	if !contains(BaseToolchain(), "gnu.org/help2man") {
 		t.Errorf("base toolchain must include gnu.org/help2man, got %v", BaseToolchain())
+	}
+}
+
+// TestSanitizedEnvPassesCacheAndQemu: two variables that must survive the
+// sanitised environment, each for a reason that was measured rather than
+// assumed.
+//
+// PKGX_CACHE names a distribution point, like PKGX_DIST beside it: dropping it
+// sends the `pkgx +deps` line of every generated script past the pull-through
+// cache the job was configured to use.
+//
+// QEMU_RESERVED_VA matters when the target is emulated. Our gnu.org/bash is
+// built with bash's own sbrk-based malloc, and under qemu-user's default
+// reserved address space it cannot allocate at all —
+//
+//	/bin/sh: xmalloc: setlinebuf.c:51: cannot allocate 2016 bytes (0 bytes allocated)
+//
+// on the first command of the build. In an emulated container our bash fails,
+// the same bash with QEMU_RESERVED_VA set succeeds, and the distribution's bash
+// (built --without-bash-malloc) never had the problem.
+func TestSanitizedEnvPassesCacheAndQemu(t *testing.T) {
+	t.Setenv("PKGX_CACHE", "oci://http://10.0.0.1:5111/go-pkgx/packages")
+	t.Setenv("QEMU_RESERVED_VA", "0x100000000")
+	env := SanitizedEnv("/root", "/pkgx")
+	for _, want := range []string{
+		"PKGX_CACHE=oci://http://10.0.0.1:5111/go-pkgx/packages",
+		"QEMU_RESERVED_VA=0x100000000",
+	} {
+		if !slices.Contains(env, want) {
+			t.Errorf("sanitised env dropped %q", want)
+		}
+	}
+	// The guard the allow-list exists for is unchanged: ambient host toolchain
+	// state still does not travel.
+	t.Setenv("HOMEBREW_PREFIX", "/opt/homebrew")
+	for _, got := range SanitizedEnv("/root", "/pkgx") {
+		if strings.HasPrefix(got, "HOMEBREW_PREFIX=") {
+			t.Error("sanitised env leaked HOMEBREW_PREFIX")
+		}
 	}
 }

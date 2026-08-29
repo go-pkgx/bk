@@ -281,8 +281,24 @@ func SanitizedEnv(home, pkgxDir string) []string {
 	// is on by default and a build inherits that; the opt-out exists for a test
 	// harness pointed at a scratch registry of deliberately unsigned bottles,
 	// where the alternative is not "less safety" but "no test".
+	// PKGX_CACHE belongs with PKGX_DIST for exactly the reason spelled out above:
+	// it names a distribution point. Dropping it sent the `pkgx +deps` line of
+	// every generated script past the pull-through cache the job had just been
+	// configured to use.
+	//
+	// QEMU_RESERVED_VA is passed through because a cross-arch build may be
+	// running under qemu-user, and our gnu.org/bash is built with bash's own
+	// sbrk-based malloc. Under qemu's default reserved address space it cannot
+	// allocate at all:
+	//   /bin/sh: xmalloc: setlinebuf.c:51: cannot allocate 2016 bytes (0 bytes allocated)
+	// on the FIRST command of the build, which then looks like a broken recipe —
+	// a make target failing, an `ln` linking a file to itself from an empty
+	// variable. Measured in an emulated container: our bash fails, the same bash
+	// with QEMU_RESERVED_VA set succeeds, and the distribution's bash (built
+	// --without-bash-malloc) never had the problem.
 	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "PKGX_PANTRY_DIR", "PKGX_PANTRY_PATH",
-		"PKGX_DIST", "PKGX_PANTRY", "PKGX_PANTRY_OVERLAY", "PKGX_VERIFY", "GITHUB_TOKEN", "LD_LIBRARY_PATH"} {
+		"PKGX_DIST", "PKGX_CACHE", "PKGX_PANTRY", "PKGX_PANTRY_OVERLAY", "PKGX_VERIFY", "GITHUB_TOKEN",
+		"LD_LIBRARY_PATH", "QEMU_RESERVED_VA"} {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}
