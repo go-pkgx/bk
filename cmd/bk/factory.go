@@ -82,6 +82,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	mirrorFrom := fs.String("mirror-from", "", "instead of building, copy each bottle from this upstream pkgx dist (e.g. https://dist.pkgx.dev) and republish it signed + attested — for versions we cannot or need not rebuild, such as ancient glibc")
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
+	jobs := fs.Int("jobs", envInt("JOBS"), "parallelism handed to each recipe build (`hw.concurrency`); 0 = one per CPU. Lower it when the target is emulated.")
 	force := fs.Bool("force", os.Getenv("FORCE") != "", "rebuild and republish even when the bottle is already in the registry — the projects you REQUESTED only, never the dependency closure behind them")
 	compress := fs.String("compress", envOr("COMPRESS", "zstd"), "codec for NEW bottles: zstd or gzip. Already-published bottles are never rewritten, so gzip stays readable; this only governs what we create")
 	signKey := fs.String("sign", "", "sign published bottles with this go-attest/sign secret key file (else $SIGNING_KEY)")
@@ -188,6 +189,12 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	runner := buildFactory(pkgxBin)
 	runner.LibcMode = *libc
 	runner.Glibc = *glibc
+	// Emulation is why this is reachable at all: on an aarch64 rootfs run
+	// through qemu-user, `make --jobs 32` exhausts the emulated address space
+	// and bash stops being able to allocate —
+	//   /bin/sh: xmalloc: hashlib.c:72: cannot allocate 8192 bytes
+	// which reads like a broken recipe and is not one.
+	runner.Concurrency = *jobs
 
 	if err := setCodec(*compress); err != nil {
 		fmt.Fprintln(stderr, "error:", err)
