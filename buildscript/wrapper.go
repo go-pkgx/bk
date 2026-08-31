@@ -328,7 +328,16 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 			// linux-gnu rustc's unwind crate links `gcc_s` by name
 			// (library/unwind/src/lib.rs), which is an ordinary lib/ entry of the
 			// gnu.org/gcc bottle and resolves when that bottle is in the closure.
-			`export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=--rtlib=compiler-rt"`,
+			// --rtlib=compiler-rt alone was NOT enough: passed through and
+			// measured, the link still ended in `unable to find library -lgcc`.
+			// So the search path for libgcc is added too, when a gnu.org/gcc
+			// bottle is installed — the same remedy proven on the cargo recipe,
+			// here once instead of per recipe. libgcc.a sits under
+			// lib/gcc/<triple>/<version>/, a directory lld does not search, and
+			// both parts move; ${VAR:+…} so an ABSENT gcc bottle contributes
+			// nothing rather than a literal glob.
+			`export BK_LIBGCC="$(bkresolve "$PKGX_DIR/gnu.org/gcc/v[0-9]*/lib/gcc/*/[0-9]*")"`,
+			`export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=--rtlib=compiler-rt${BK_LIBGCC:+ -L$BK_LIBGCC}"`,
 		)
 	}
 
