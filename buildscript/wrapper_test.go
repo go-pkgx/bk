@@ -347,3 +347,35 @@ func TestIncompatibleFunctionPointerFlagIsClangOnly(t *testing.T) {
 		t.Errorf("sovereign (clang) build lost the flag gnu.org/gettext needs:\n%s", clang)
 	}
 }
+
+// TestSovereignExportsRustflags: rustc does not go through $CC — it invokes
+// `cc` itself as the linker driver — so none of the sovereign compiler flags
+// reach it. clang's default runtime library is libgcc, and a tree with no
+// distribution has none:
+//
+//	ld.lld: error: unable to find library -lgcc
+//
+// which is every Rust recipe, not one: it surfaced on the build scripts of
+// getrandom and zerocopy, crates nobody named. The same --rtlib=compiler-rt this
+// mode already chooses for C and C++ is handed to rustc's linker invocation.
+func TestSovereignExportsRustflags(t *testing.T) {
+	opts := WrapOptions{
+		UserScript: "make", Deps: []string{"x"},
+		Target: linuxTgt(), Host: linuxTgt(),
+		Home: "/bk/home", SrcRoot: "/bk/build", PkgxDir: "/opt/pkgx",
+	}
+	sovereign := opts
+	sovereign.LibcPkgx = true
+	got := Wrap(sovereign)
+	if !strings.Contains(got, "-C link-arg=--rtlib=compiler-rt") {
+		t.Error("sovereign mode must hand rustc compiler-rt")
+	}
+	// Appended, never replacing: a recipe may set its own RUSTFLAGS.
+	if !strings.Contains(got, `RUSTFLAGS="${RUSTFLAGS:-}`) {
+		t.Error("RUSTFLAGS must append to what the caller set")
+	}
+	// Not in the ordinary mode, where the flags stay compiler-neutral.
+	if strings.Contains(Wrap(opts), "link-arg=--rtlib") {
+		t.Error("compiler-rt leaked into the non-sovereign mode")
+	}
+}
