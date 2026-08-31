@@ -50,8 +50,8 @@ github.com/go-git/go-git-fixtures/v4 v4.3.2-0.20231010084843-55a94097c399 h1:eMj
 github.com/go-git/go-git-fixtures/v4 v4.3.2-0.20231010084843-55a94097c399/go.mod h1:1OCfN199q1Jm3HZlxleg+Dw/mwps2Wbk9frAWm+4FII=
 github.com/go-git/go-git/v5 v5.19.2 h1:wkfn7vOlUBu8ivAWKBWisTiwJK4jYHzTF8Ndv1LyGqY=
 github.com/go-git/go-git/v5 v5.19.2/go.mod h1:QqCBE1EFN5ddFmrliLQ3/ntRCUjZU3EJuwuB/jWEHjk=
-github.com/go-pkgx/bottle v0.16.0 h1:1GgoaqRuHVQ54xr8sRpp11q4LNHzNDryOCEThQKgdSU=
-github.com/go-pkgx/bottle v0.16.0/go.mod h1:EciP2Fayb9db7xGk5d+vZR3Zsaj4v4Vg6jzxqkI41Lw=
+github.com/go-pkgx/bottle v0.17.0 h1:dVGyaWKk8yzbzBj/0yFzVAGoen1bdchrwQ3c6pRfrv0=
+github.com/go-pkgx/bottle v0.17.0/go.mod h1:Cx16Eys+LpMfAhtCffywD0E2STez0T40zhc0Um3vIKU=
 github.com/go-quicktest/qt v1.101.0 h1:O1K29Txy5P2OK0dGo59b7b0LR6wKfIhttaAhHUyn7eI=
 github.com/go-quicktest/qt v1.101.0/go.mod h1:14Bz/f7NwaXPtdYEgzsx46kqSxVwTbzVZsDC26tQJow=
 github.com/go-regexp/engine v0.1.0 h1:DnQjXFwUldJOcyau/0TAjhl244xC5nFfWy6YJ5aUlVY=
