@@ -314,6 +314,21 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 			// sovereign driver.
 			`export BK_CC="clang `+glibcCC+`"`,
 			`export BK_CXX="clang++ `+glibcCXX+`"`,
+			// rustc does NOT go through $CC: it invokes `cc` itself as the
+			// linker driver, with its own arguments, so none of the flags above
+			// reach it. clang's DEFAULT runtime library is libgcc, and a tree
+			// with no distribution has none:
+			//   ld.lld: error: unable to find library -lgcc
+			// which is every Rust recipe, not one — it surfaced on getrandom and
+			// zerocopy, build scripts of crates nobody named.
+			//
+			// The same choice this mode already makes for C and C++ (see
+			// --rtlib=compiler-rt above), handed to rustc's linker invocation.
+			// It is the BUILTINS that move; the unwinder is separate — on
+			// linux-gnu rustc's unwind crate links `gcc_s` by name
+			// (library/unwind/src/lib.rs), which is an ordinary lib/ entry of the
+			// gnu.org/gcc bottle and resolves when that bottle is in the closure.
+			`export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=--rtlib=compiler-rt"`,
 		)
 	}
 
