@@ -374,6 +374,15 @@ func TestSovereignExportsRustflags(t *testing.T) {
 	if !strings.Contains(got, `RUSTFLAGS="${RUSTFLAGS:-}`) {
 		t.Error("RUSTFLAGS must append to what the caller set")
 	}
+	// --rtlib alone was measured and found insufficient — the link still ended
+	// in "unable to find library -lgcc" — so the search path goes with it,
+	// guarded so an absent gcc bottle contributes nothing rather than a glob.
+	if !strings.Contains(got, `${BK_LIBGCC:+ -L$BK_LIBGCC}`) {
+		t.Error("RUSTFLAGS must carry the libgcc search path, guarded")
+	}
+	if !strings.Contains(got, `BK_LIBGCC="$(bkresolve`) {
+		t.Error("the libgcc path must be resolved, not spelled out")
+	}
 	// Not in the ordinary mode, where the flags stay compiler-neutral.
 	if strings.Contains(Wrap(opts), "link-arg=--rtlib") {
 		t.Error("compiler-rt leaked into the non-sovereign mode")
