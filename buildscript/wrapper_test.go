@@ -162,9 +162,9 @@ func TestWrapLibcPkgxLinuxX86(t *testing.T) {
 		`export BK_GLIBC_PREFIX="$(bkresolve "$PKGX_DIR/gnu.org/glibc/v[0-9]*")"`,
 		`export BK_LIBCXX_PREFIX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/v[0-9]*")"`,
 		// C: glibc sysroot + compiler-rt, no unwinder (exception-free C).
-		`export CFLAGS="-fPIC --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=none -Wno-implicit-function-declaration`,
+		`export CFLAGS="-fPIC --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB"${BK_LIBGCC:+ -L"$BK_LIBGCC"} --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=none -Wno-implicit-function-declaration`,
 		// C++: libc++ headers FIRST (before glibc's), then sysroot + libunwind.
-		`export CXXFLAGS="${BK_LIBCXX_PREFIX:+-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1"} --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument ${BK_LIBCXX_PREFIX:+--unwindlib=libunwind} -fPIC`,
+		`export CXXFLAGS="${BK_LIBCXX_PREFIX:+-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1"} --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB"${BK_LIBGCC:+ -L"$BK_LIBGCC"} --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument ${BK_LIBCXX_PREFIX:+--unwindlib=libunwind} -fPIC`,
 		// The compiler is pinned to the pkgx clang AND carries the whole driver
 		// configuration, because libtool builds its own command lines from $CC
 		// and ignores CFLAGS/LDFLAGS.
@@ -348,17 +348,24 @@ func TestIncompatibleFunctionPointerFlagIsClangOnly(t *testing.T) {
 	}
 }
 
-// TestSovereignExportsRustflags: rustc does not go through $CC — it invokes
-// `cc` itself as the linker driver — so none of the sovereign compiler flags
-// reach it. clang's default runtime library is libgcc, and a tree with no
-// distribution has none:
+// TestSovereignCarriesLibgccInTheDriver: rustc does not go through $CC — it
+// invokes `cc` itself as the linker driver — and it emits a bare `-lgcc` of its
+// own on *-linux-gnu, which --rtlib=compiler-rt does not remove. A tree with no
+// distribution has no libgcc on any default search path:
 //
 //	ld.lld: error: unable to find library -lgcc
 //
 // which is every Rust recipe, not one: it surfaced on the build scripts of
-// getrandom and zerocopy, crates nobody named. The same --rtlib=compiler-rt this
-// mode already chooses for C and C++ is handed to rustc's linker invocation.
-func TestSovereignExportsRustflags(t *testing.T) {
+// getrandom and zerocopy, crates nobody named.
+//
+// The path travels in the DRIVER flags, not in RUSTFLAGS. RUSTFLAGS was tried
+// first and is the wrong vehicle: a recipe may set `env: RUSTFLAGS:` and a
+// recipe's env is emitted after this preamble, overwriting it whole —
+// crates.io/wasm-pack and crates.io/spider_cli both do, and both went on
+// failing on -lgcc while recipes that set no RUSTFLAGS built fine. $BK_CC is
+// not a variable a recipe sets, and `cc` on PATH is bk's shim, which re-execs
+// it.
+func TestSovereignCarriesLibgccInTheDriver(t *testing.T) {
 	opts := WrapOptions{
 		UserScript: "make", Deps: []string{"x"},
 		Target: linuxTgt(), Host: linuxTgt(),
@@ -367,24 +374,37 @@ func TestSovereignExportsRustflags(t *testing.T) {
 	sovereign := opts
 	sovereign.LibcPkgx = true
 	got := Wrap(sovereign)
-	if !strings.Contains(got, "-C link-arg=--rtlib=compiler-rt") {
-		t.Error("sovereign mode must hand rustc compiler-rt")
-	}
-	// Appended, never replacing: a recipe may set its own RUSTFLAGS.
-	if !strings.Contains(got, `RUSTFLAGS="${RUSTFLAGS:-}`) {
-		t.Error("RUSTFLAGS must append to what the caller set")
-	}
-	// --rtlib alone was measured and found insufficient — the link still ended
-	// in "unable to find library -lgcc" — so the search path goes with it,
-	// guarded so an absent gcc bottle contributes nothing rather than a glob.
-	if !strings.Contains(got, `${BK_LIBGCC:+ -L$BK_LIBGCC}`) {
-		t.Error("RUSTFLAGS must carry the libgcc search path, guarded")
-	}
+	// Resolved from the tree, never spelled out: both the triple and the
+	// version in lib/gcc/<triple>/<version> move with the bottle.
 	if !strings.Contains(got, `BK_LIBGCC="$(bkresolve`) {
 		t.Error("the libgcc path must be resolved, not spelled out")
 	}
+	// Guarded, so an absent gcc bottle contributes nothing rather than a glob.
+	if !strings.Contains(got, `${BK_LIBGCC:+ -L"$BK_LIBGCC"}`) {
+		t.Error("the libgcc search path must be guarded")
+	}
+	// It has to be resolved BEFORE the driver flags that interpolate it, or the
+	// exports read an empty variable and the whole point is lost.
+	if strings.Index(got, `BK_LIBGCC="$(bkresolve`) > strings.Index(got, `export BK_CC=`) {
+		t.Error("BK_LIBGCC is resolved after the driver that uses it")
+	}
+	// In every driver a build can reach: $CC/$CXX for recipes that honour them,
+	// $BK_CC/$BK_CXX for the shims a recipe reaches by calling `cc` or `gcc` —
+	// which is the path rustc takes.
+	for _, v := range []string{"export CC=", "export CXX=", "export BK_CC=", "export BK_CXX="} {
+		line := got[strings.Index(got, v):]
+		line = line[:strings.Index(line, "\n")]
+		if !strings.Contains(line, `-L"$BK_LIBGCC"`) {
+			t.Errorf("%s does not carry the libgcc search path:\n%s", v, line)
+		}
+	}
+	// RUSTFLAGS is no longer the vehicle, and must not come back as one: a
+	// recipe overwrites it.
+	if strings.Contains(got, "RUSTFLAGS=") {
+		t.Error("the sovereign preamble must not set RUSTFLAGS — a recipe overwrites it")
+	}
 	// Not in the ordinary mode, where the flags stay compiler-neutral.
-	if strings.Contains(Wrap(opts), "link-arg=--rtlib") {
-		t.Error("compiler-rt leaked into the non-sovereign mode")
+	if strings.Contains(Wrap(opts), "BK_LIBGCC") {
+		t.Error("the libgcc path leaked into the non-sovereign mode")
 	}
 }

@@ -250,6 +250,10 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 			`[ -n "$BK_KHDR_PREFIX" ] && export BK_KHDR_PREFIX="$BK_KHDR_PREFIX/"`,
 			`export BK_LIBCXX_PREFIX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/v[0-9]*")"`,
 			`[ -n "$BK_LIBCXX_PREFIX" ] && export BK_LIBCXX_PREFIX="$BK_LIBCXX_PREFIX/"`,
+			// libgcc.a, which lives under lib/gcc/<triple>/<version>/ — a
+			// directory no linker searches by default, and whose middle two
+			// components both move with the bottle.
+			`export BK_LIBGCC="$(bkresolve "$PKGX_DIR/gnu.org/gcc/v[0-9]*/lib/gcc/*/[0-9]*")"`,
 		)
 		// Shared driver flags: glibc sysroot (its headers + the kernel headers it
 		// includes), glibc crt/libc, and llvm's compiler-rt builtins (no libgcc).
@@ -261,7 +265,12 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 		// -Werror probe several configure scripts run, and xz then refuses to
 		// configure at all ("CFLAGS contains something that makes -Werror
 		// complain").
-		base := `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB" --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument`
+		// ${BK_LIBGCC:+…}: rustc emits a bare `-lgcc` of its own — the unwind
+		// and compiler_builtins crates name it in `#[link]` on *-linux-gnu —
+		// which --rtlib=compiler-rt does NOT remove. It is a SEARCH PATH that is
+		// missing, so it belongs with the other driver flags rather than in
+		// RUSTFLAGS: see the note where RUSTFLAGS used to be set.
+		base := `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB"${BK_LIBGCC:+ -L"$BK_LIBGCC"} --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument`
 		// C: no unwinder (exception-free C). C++: libc++ headers + its libunwind,
 		// from the libcxx.llvm.org bottle (-stdlib=libc++ makes the driver link
 		// -lc++ itself when it links a C++ target).
@@ -315,29 +324,35 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 			`export BK_CC="clang `+glibcCC+`"`,
 			`export BK_CXX="clang++ `+glibcCXX+`"`,
 			// rustc does NOT go through $CC: it invokes `cc` itself as the
-			// linker driver, with its own arguments, so none of the flags above
-			// reach it. clang's DEFAULT runtime library is libgcc, and a tree
-			// with no distribution has none:
+			// linker driver, with its own arguments. That is survivable only
+			// because `cc` on PATH is bk's own shim, which re-execs $BK_CC — so
+			// everything above (sysroot, crt and lib search paths, the runtime
+			// choice, and now the libgcc search path) reaches rustc's link after
+			// all. Anything NOT in $BK_CC does not.
+			//
+			// rustc emits a bare `-lgcc` of its own on *-linux-gnu, which
+			// --rtlib=compiler-rt does not remove, and a tree with no
+			// distribution has no libgcc on any default search path:
 			//   ld.lld: error: unable to find library -lgcc
 			// which is every Rust recipe, not one — it surfaced on getrandom and
 			// zerocopy, build scripts of crates nobody named.
 			//
-			// The same choice this mode already makes for C and C++ (see
-			// --rtlib=compiler-rt above), handed to rustc's linker invocation.
-			// It is the BUILTINS that move; the unwinder is separate — on
-			// linux-gnu rustc's unwind crate links `gcc_s` by name
-			// (library/unwind/src/lib.rs), which is an ordinary lib/ entry of the
-			// gnu.org/gcc bottle and resolves when that bottle is in the closure.
-			// --rtlib=compiler-rt alone was NOT enough: passed through and
-			// measured, the link still ended in `unable to find library -lgcc`.
-			// So the search path for libgcc is added too, when a gnu.org/gcc
-			// bottle is installed — the same remedy proven on the cargo recipe,
-			// here once instead of per recipe. libgcc.a sits under
-			// lib/gcc/<triple>/<version>/, a directory lld does not search, and
-			// both parts move; ${VAR:+…} so an ABSENT gcc bottle contributes
-			// nothing rather than a literal glob.
-			`export BK_LIBGCC="$(bkresolve "$PKGX_DIR/gnu.org/gcc/v[0-9]*/lib/gcc/*/[0-9]*")"`,
-			`export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=--rtlib=compiler-rt${BK_LIBGCC:+ -L$BK_LIBGCC}"`,
+			// RUSTFLAGS was the first vehicle for that path and was the WRONG
+			// one: a recipe may set `env: RUSTFLAGS:`, and a recipe's env is
+			// emitted AFTER this preamble, so it overwrites the variable whole.
+			// crates.io/wasm-pack and crates.io/spider_cli both do exactly that
+			// (`-A warnings`, `-C target-cpu=x86-64 -C link-args=-pie`), and
+			// both went on failing with
+			//   ld.lld: error: unable to find library -lgcc
+			// while pqrs and typos — which set no RUSTFLAGS — built fine. Two
+			// recipes out of fourteen was enough to read the fix as general when
+			// it was not.
+			//
+			// --rtlib=compiler-rt moves the BUILTINS; the unwinder is separate,
+			// and on linux-gnu rustc's unwind crate links `gcc_s` by name
+			// (library/unwind/src/lib.rs), an ordinary lib/ entry of the
+			// gnu.org/gcc bottle that resolves when that bottle is in the
+			// closure. What was missing was only libgcc.a's DIRECTORY.
 		)
 	}
 
