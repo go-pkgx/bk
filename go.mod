@@ -11,7 +11,7 @@ require (
 	github.com/go-regexp/engine v0.1.3
 	github.com/go-versions/semver v0.1.0
 	github.com/hashicorp/hcl/v2 v2.24.0
-	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/compress v1.20.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
