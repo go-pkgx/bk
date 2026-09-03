@@ -89,10 +89,18 @@ func runBuilder(args []string, stdout, stderr io.Writer) int {
 // the stubs, the loader symlinks and PKGX_DIR must all agree on it.
 const guestPkgxDir = "/pkgx"
 
-// defaultToolchain is the build environment of the sovereign builder. It
-// mirrors go-pkgx/packages' builder/toolchain.txt; --toolchain overrides it.
-// Each entry earns its place — a toolchain nobody can explain is one nobody
-// dares trim.
+// defaultToolchain is the build environment of the sovereign builder when the
+// caller names no file. Each entry earns its place — a toolchain nobody can
+// explain is one nobody dares trim.
+//
+// It is a DEFAULT, not a mirror. The comment here used to claim it mirrored
+// go-pkgx/packages\' builder/toolchain.txt, and the two had drifted apart in
+// both directions: that file carries texinfo, freedesktop.org/pkg-config and
+// gcc/libstdcxx, which are not here; this list carries flex, perl.org and
+// gnu.org/pkg-config, which are not there. Both factory lanes pass
+// `--toolchain builder/toolchain.txt`, so the drift cost nothing there and
+// would have cost an evening to anyone running `bk builder` without the flag
+// and reading the comment.
 var defaultToolchain = []string{
 	"llvm.org",                 // clang, lld, compiler-rt — the compiler itself
 	"gnu.org/glibc",            // libc, crt objects and the dynamic loader
@@ -117,6 +125,17 @@ var defaultToolchain = []string{
 	"perl.org",         // openssl and friends drive their build with it
 	"gnu.org/help2man", // generated man pages during `make install`
 	"curl.se/ca-certs", // a scratch image has no trust store
+	// tar and gzip are not conveniences on a FROM-scratch tree, which has only
+	// what this list names. Two independent things need them: recipes that
+	// fetch in their own script (`curl -L … | tar -xz` — gcloud, groonga and
+	// mesa3d all died on `"tar": executable file not found in $PATH`), and
+	// automake's own configure probe, which stops at
+	//   checking how to create a ustar tar archive... none
+	// and exits 77 before a compiler runs. GNU tar delegates `-z` to an
+	// EXTERNAL gzip, so tar without gzip trades one missing executable for
+	// another.
+	"gnu.org/tar",
+	"gnu.org/gzip",
 }
 
 // toolchainRoots reads the package list, or returns the built-in one. Lines are
