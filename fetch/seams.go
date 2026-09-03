@@ -8,6 +8,8 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+
+	"github.com/go-pkgx/bk/useragent"
 )
 
 // osWriteFlags is how extracted regular files are opened.
@@ -19,8 +21,12 @@ const osWriteFlags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 // exercise every error-handling path; production uses the real functions
 // verbatim.
 var (
-	httpGet       = http.Get
-	httpDo        = http.DefaultClient.Do
+	// httpGet, not http.Get: Go's default User-Agent is REJECTED outright by
+	// some hosts — sourceforge answers "Go-http-client/2.0" with a 403 — and
+	// `versions` already learned that for the listing path. A download that
+	// cannot fetch what the listing just found is the same bug twice.
+	httpGet       = getWithAgent
+	httpDo        = doWithAgent
 	osCreateTemp  = os.CreateTemp
 	osRemove      = os.Remove
 	gitPlainClone = gogit.PlainClone
@@ -43,4 +49,21 @@ var (
 // defaultZipOpen opens a file inside a zip archive for reading.
 func defaultZipOpen(f *zip.File) (io.ReadCloser, error) {
 	return f.Open()
+}
+
+// getWithAgent is http.Get with bk's User-Agent.
+func getWithAgent(url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return doWithAgent(req)
+}
+
+// doWithAgent sends req with bk's User-Agent, unless the caller set one.
+func doWithAgent(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", useragent.String)
+	}
+	return http.DefaultClient.Do(req)
 }
