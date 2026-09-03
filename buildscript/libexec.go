@@ -43,8 +43,54 @@ var (
 // driver with them.
 var compilerShims = []string{"cc", "gcc", "c++", "g++"}
 
+// compilerShimsFor is compilerShims plus the TRIPLE-PREFIXED spellings, which
+// autoconf reaches for before the bare ones.
+//
+// libisl's configure looks for `x86_64-pc-linux-gnu-gcc`, finds the bare gcc
+// the gnu.org/gcc bottle puts on PATH — without any of the sovereign sysroot,
+// crt or runtime flags — and stops at
+//
+//	checking whether the C compiler works... no
+//	configure: error: C compiler cannot create executables
+//
+// Both spellings are made, and the reason is worth keeping: bk's own
+// target.Triple says `x86_64-unknown-linux-gnu`, while autoconf's config.guess
+// says `x86_64-pc-linux-gnu`, which is the one the failing build asked for.
+// Deriving the name from our constant alone would have shimmed a name nobody
+// looks up. They are symlinks; making both costs nothing and guessing wrong
+// costs a build.
+func compilerShimsFor(triple, platform, arch string) []string {
+	names := append([]string{}, compilerShims...)
+	seen := map[string]bool{}
+	for _, t := range []string{triple, configGuessTriple(platform, arch)} {
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		for _, base := range compilerShims {
+			names = append(names, t+"-"+base)
+		}
+	}
+	return names
+}
+
+// configGuessTriple is what autoconf's config.guess reports for a platform,
+// which is not always what a toolchain calls itself.
+func configGuessTriple(platform, arch string) string {
+	if platform != "linux" {
+		return ""
+	}
+	switch arch {
+	case "x86-64", "amd64", "x86_64":
+		return "x86_64-pc-linux-gnu"
+	case "aarch64", "arm64":
+		return "aarch64-unknown-linux-gnu"
+	}
+	return ""
+}
+
 // WriteLibexecFor is WriteLibexec plus the compiler shims when libcPkgx is set.
-func WriteLibexecFor(dir string, libcPkgx bool) error {
+func WriteLibexecFor(dir string, libcPkgx bool, triple, platform, arch string) error {
 	if err := WriteLibexec(dir); err != nil {
 		return err
 	}
@@ -55,7 +101,7 @@ func WriteLibexecFor(dir string, libcPkgx bool) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range compilerShims {
+	for _, name := range compilerShimsFor(triple, platform, arch) {
 		link := filepath.Join(dir, name)
 		_ = osRemove(link)
 		if err := osSymlink(self, link); err != nil {

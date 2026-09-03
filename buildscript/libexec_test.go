@@ -90,14 +90,14 @@ var errBoomLibexec = errors.New("boom")
 // get a driver with none of the sovereign flags.
 func TestWriteLibexecForCompilerShims(t *testing.T) {
 	off := t.TempDir()
-	if err := WriteLibexecFor(off, false); err != nil {
+	if err := WriteLibexecFor(off, false, "x86_64-unknown-linux-gnu", "linux", "x86-64"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(off, "cc")); !os.IsNotExist(err) {
 		t.Fatal("cc must not appear outside pkgx-libc mode")
 	}
 	on := t.TempDir()
-	if err := WriteLibexecFor(on, true); err != nil {
+	if err := WriteLibexecFor(on, true, "x86_64-unknown-linux-gnu", "linux", "x86-64"); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range append([]string{"fix-shebangs.ts"}, compilerShims...) {
@@ -107,14 +107,14 @@ func TestWriteLibexecForCompilerShims(t *testing.T) {
 		}
 	}
 	// idempotent
-	if err := WriteLibexecFor(on, true); err != nil {
+	if err := WriteLibexecFor(on, true, "x86_64-unknown-linux-gnu", "linux", "x86-64"); err != nil {
 		t.Fatal(err)
 	}
 	// error branches: the base writer's, then the compiler-shim ones
 	oldExec, oldLink := osExecutable, osSymlink
 	defer func() { osExecutable, osSymlink = oldExec, oldLink }()
 	osExecutable = func() (string, error) { return "", errors.New("boom") }
-	if err := WriteLibexecFor(t.TempDir(), true); err == nil {
+	if err := WriteLibexecFor(t.TempDir(), true, "x86_64-unknown-linux-gnu", "linux", "x86-64"); err == nil {
 		t.Fatal("want the executable-path error")
 	}
 	// and the SECOND lookup (the one the compiler shims do) failing on its own
@@ -126,7 +126,7 @@ func TestWriteLibexecForCompilerShims(t *testing.T) {
 		}
 		return "", errors.New("boom")
 	}
-	if err := WriteLibexecFor(t.TempDir(), true); err == nil {
+	if err := WriteLibexecFor(t.TempDir(), true, "x86_64-unknown-linux-gnu", "linux", "x86-64"); err == nil {
 		t.Fatal("want the compiler-shim executable-path error")
 	}
 	osExecutable = oldExec
@@ -138,7 +138,65 @@ func TestWriteLibexecForCompilerShims(t *testing.T) {
 		}
 		return oldLink(a, b)
 	}
-	if err := WriteLibexecFor(t.TempDir(), true); err == nil {
+	if err := WriteLibexecFor(t.TempDir(), true, "x86_64-unknown-linux-gnu", "linux", "x86-64"); err == nil {
 		t.Fatal("want the compiler-shim symlink error")
+	}
+}
+
+// The triple-prefixed spellings must be materialised too. autoconf looks for
+// `x86_64-pc-linux-gnu-gcc` BEFORE the bare `gcc`, and when it finds the
+// bottle's bare compiler instead of our shim it gets a driver with none of the
+// sovereign sysroot/crt/runtime flags — libisl's configure then reports
+// "C compiler cannot create executables".
+func TestCompilerShimsCoverTriplePrefixedNames(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteLibexecFor(dir, true, "x86_64-unknown-linux-gnu", "linux", "x86-64"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"cc", "gcc", "c++", "g++",
+		// bk's own notion of the triple…
+		"x86_64-unknown-linux-gnu-gcc", "x86_64-unknown-linux-gnu-g++",
+		// …and config.guess's, which is the one the failing build asked for.
+		"x86_64-pc-linux-gnu-gcc", "x86_64-pc-linux-gnu-c++",
+	} {
+		if _, err := os.Lstat(filepath.Join(dir, want)); err != nil {
+			t.Errorf("no shim for %s: %v", want, err)
+		}
+	}
+}
+
+// Both spellings are made deliberately: ours and config.guess's differ on
+// x86_64 (`unknown` vs `pc`), and shimming only the name we happen to call
+// ourselves would shim a name nobody looks up.
+func TestCompilerShimsForBothSpellings(t *testing.T) {
+	got := compilerShimsFor("x86_64-unknown-linux-gnu", "linux", "x86-64")
+	seen := map[string]bool{}
+	for _, n := range got {
+		if seen[n] {
+			t.Errorf("duplicate shim %q", n)
+		}
+		seen[n] = true
+	}
+	for _, want := range []string{"x86_64-pc-linux-gnu-gcc", "x86_64-unknown-linux-gnu-gcc"} {
+		if !seen[want] {
+			t.Errorf("missing %q in %v", want, got)
+		}
+	}
+	// aarch64: config.guess agrees with us, so there is exactly one spelling
+	// and no duplicate.
+	arm := compilerShimsFor("aarch64-unknown-linux-gnu", "linux", "aarch64")
+	n := 0
+	for _, s := range arm {
+		if s == "aarch64-unknown-linux-gnu-gcc" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("aarch64-unknown-linux-gnu-gcc appears %d times in %v", n, arm)
+	}
+	// A platform with no config.guess spelling of its own contributes none.
+	if len(compilerShimsFor("", "darwin", "aarch64")) != len(compilerShims) {
+		t.Errorf("darwin must add no prefixed shims: %v", compilerShimsFor("", "darwin", "aarch64"))
 	}
 }

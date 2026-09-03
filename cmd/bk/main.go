@@ -85,7 +85,12 @@ func main() {
 	case "python-venv-stubber.sh":
 		osExit(pythonVenvStubber(os.Args[1:], os.Stderr))
 		return
-	case "cc", "gcc", "c++", "g++":
+	}
+	// The compiler shims, including the triple-prefixed spellings autoconf
+	// reaches for first (`x86_64-pc-linux-gnu-gcc`). Matched by SUFFIX so one
+	// case covers every triple rather than a list that has to be kept level
+	// with the one in buildscript.
+	if isCompilerShim(filepath.Base(os.Args[0])) {
 		osExit(ccShim(filepath.Base(os.Args[0]), os.Args[1:], os.Stderr))
 		return
 	}
