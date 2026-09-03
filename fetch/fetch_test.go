@@ -28,7 +28,7 @@ import (
 func restoreSeams(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
-		httpGet = http.Get
+		httpGet = getWithAgent
 		gitPlainClone = gogit.PlainClone
 		osRemoveAll = os.RemoveAll
 		osMkdirAll = os.MkdirAll

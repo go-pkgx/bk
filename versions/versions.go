@@ -15,6 +15,8 @@
 package versions
 
 import (
+	"github.com/go-pkgx/bk/useragent"
+
 	"encoding/json"
 	"fmt"
 	"io"
@@ -139,7 +141,8 @@ var (
 // and the GitHub Releases API). Go's default "Go-http-client/2.0" is 403'd by
 // some hosts (sourceforge) and the GitHub REST API requires a User-Agent
 // outright, so bk always sends its own.
-const userAgent = "bk (+https://github.com/go-pkgx/bk)"
+// userAgent is shared with every other HTTP path in bk; see the package.
+const userAgent = useragent.String
 
 // ghRelease is the slice of a GitHub Releases API entry bk needs: the human
 // display `name` and the underlying git `tag_name` it points at.

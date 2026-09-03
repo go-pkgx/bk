@@ -90,7 +90,7 @@ func TestDownloadErrors(t *testing.T) {
 	if _, err := download("http://x/y.tar"); err == nil || !strings.Contains(err.Error(), "GET") {
 		t.Errorf("transport error = %v", err)
 	}
-	httpGet = http.Get
+	httpGet = getWithAgent
 
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "nope", http.StatusForbidden)
@@ -112,7 +112,7 @@ func TestHTTPGetRangeErrors(t *testing.T) {
 	if _, err := httpGetRange("http://x/y", 10); err == nil {
 		t.Error("expected the transport error")
 	}
-	httpDo = http.DefaultClient.Do
+	httpDo = doWithAgent
 }
 
 // The downloaded file has to be reopened for extraction; when that fails the
