@@ -102,3 +102,27 @@ func TestCCShimDispatch(t *testing.T) {
 		t.Fatalf("dispatch: exit %d, ran %q", got, ran)
 	}
 }
+
+// The multi-call dispatch must recognise a triple-prefixed compiler name, and
+// must NOT capture something merely ending in those letters.
+func TestIsCompilerShim(t *testing.T) {
+	for _, yes := range []string{
+		"cc", "gcc", "c++", "g++",
+		"x86_64-pc-linux-gnu-gcc", "x86_64-unknown-linux-gnu-g++",
+		"aarch64-unknown-linux-gnu-cc", "x86_64-pc-linux-gnu-c++",
+	} {
+		if !isCompilerShim(yes) {
+			t.Errorf("%q must be a compiler shim", yes)
+		}
+	}
+	for _, no := range []string{
+		"bk", "fix-shebangs.ts", "python-venv.sh",
+		"ccache", // ends in cc? no — but a near miss worth pinning
+		"protoc", // ends in "c", not "-cc"
+		"gccmakedep",
+	} {
+		if isCompilerShim(no) {
+			t.Errorf("%q must NOT be a compiler shim", no)
+		}
+	}
+}

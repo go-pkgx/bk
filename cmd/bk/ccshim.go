@@ -47,3 +47,22 @@ var execCommand = exec.Command
 
 // errorsAs is errors.As, named so the shim reads without an import alias.
 func errorsAs(err error, target any) bool { return errors.As(err, target) }
+
+// isCompilerShim reports whether a name is one of the compiler shims bk
+// materialises: the bare `cc`/`gcc`/`c++`/`g++`, or a triple-prefixed spelling
+// of one — `x86_64-pc-linux-gnu-gcc` is what autoconf looks for first, and
+// finding the bare compiler instead of the shim is how libisl's configure got
+// a gcc with none of the sovereign flags and reported
+//
+//	configure: error: C compiler cannot create executables
+//
+// Matched by suffix so this stays level with buildscript's list without
+// repeating every triple.
+func isCompilerShim(name string) bool {
+	for _, base := range []string{"cc", "gcc", "c++", "g++"} {
+		if name == base || strings.HasSuffix(name, "-"+base) {
+			return true
+		}
+	}
+	return false
+}

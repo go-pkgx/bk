@@ -160,7 +160,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	// libexec dir alongside the generated script, and prepend it to PATH via
 	// BrewkitPath so recipes that exec them (`fix-shebangs.ts bin/*`) resolve.
 	libexecDir := paths.Build + ".libexec"
-	if err := writeLibexec(libexecDir, r.LibcMode == "pkgx"); err != nil {
+	if err := writeLibexec(libexecDir, r.LibcMode == "pkgx", tgt.Triple, tgt.Platform, tgt.Arch); err != nil {
 		return res, fmt.Errorf("write libexec: %w", err)
 	}
 	script := buildscript.Wrap(buildscript.WrapOptions{
