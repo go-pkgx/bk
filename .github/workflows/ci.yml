@@ -39,6 +39,10 @@ jobs:
           - { goos: linux,   goarch: loong64 }
           - { goos: darwin,  goarch: arm64 }
           - { goos: windows, goarch: amd64 }
+          - { goos: freebsd, goarch: amd64 }
+          - { goos: freebsd, goarch: arm64 }
+          - { goos: netbsd,  goarch: amd64 }
+          - { goos: openbsd, goarch: amd64 }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -66,6 +70,32 @@ jobs:
       # -count=1: a cached PASS from another job must not stand in for a run
       # that never happened on this platform.
       - run: go test -count=1 ./...
+
+  freebsd:
+    name: test (FreeBSD, a kernel that is not Linux)
+    runs-on: ubuntu-latest
+    # The qemu lanes vary the ARCHITECTURE and hold the OS fixed. This one does
+    # the opposite: same amd64, a different kernel and a different libc. The
+    # bugs it can see are the ones neither a compiler nor a big-endian machine
+    # can — a syscall that behaves differently, a /proc that is not there, an
+    # exec or a rename whose edges are not Linux's.
+    #
+    # The toolchain never enters the VM: bk's go.mod names a Go version no BSD
+    # package set carries, and a lane that installed one would depend on what a
+    # package mirror happens to hold today. Same idiom as the qemu lanes —
+    # build here, run there — with the VM supplying only a kernel and a libc,
+    # which is the whole point.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: stable }
+      - name: cross-compile the test binaries
+        run: .github/scripts/bsd-tests.sh build freebsd
+      # Pinned by commit, not by tag: a tag can be moved onto code we never read.
+      - uses: vmactions/freebsd-vm@f0552d3b69211736abd97f02ff3d4674c56b73b1
+        with:
+          usesh: true
+          run: .github/scripts/bsd-tests.sh run
 
   emulated:
     name: test (${{ matrix.goarch }}, qemu)

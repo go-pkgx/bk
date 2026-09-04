@@ -37,8 +37,18 @@ func TestProofPropsInBuildDir(t *testing.T) {
 	r.PkgxBin = stub
 	// really run the generated (wrapped) script under bash, then create the
 	// staging dir so the pipeline's rename step still works.
+	//
+	// bash is looked UP rather than named: this proof is about whether the
+	// props reach the build dir, not about where bash lives, and /bin/bash is a
+	// Linux and macOS convention — on FreeBSD it is /usr/local/bin/bash when it
+	// is installed at all. A test that asserts something about its environment
+	// should check it rather than fail as if the code were wrong.
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash on this host: nothing to run the generated script with")
+	}
 	r.Run = func(scriptPath string, env []string) error {
-		cmd := exec.Command("/bin/bash", scriptPath)
+		cmd := exec.Command(bash, scriptPath)
 		cmd.Env = env
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
