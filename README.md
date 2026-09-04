@@ -97,6 +97,28 @@ zero-padding slack. It cannot grow `.dynstr`, so the build links binaries with a
 long `-Wl,-rpath` placeholder that the final `$ORIGIN`-relative value fits inside —
 the same budget model `patchelf --set-rpath` sidesteps by rewriting the file.
 
+## Where it is proven to work
+
+A build tool whose whole premise is *Target ≠ Host* has to be right about
+widths and byte order, because that is exactly what it is manipulating: ELF
+`DT_RUNPATH` strings rewritten in place, `.dynstr` offsets, tar and xz streams,
+OCI manifests. None of that is checked by a compiler. So CI builds eight
+targets — linux on amd64, arm64, riscv64, ppc64le, s390x and loong64, plus
+darwin/arm64 and windows/amd64, all `CGO_ENABLED=0` — and then **runs the
+suite** on five of them under `qemu-user`:
+
+```
+test (arm64, qemu)  test (riscv64, qemu)  test (ppc64le, qemu)
+test (s390x, qemu)  test (loong64, qemu)
+```
+
+`s390x` is there because it is big-endian and nothing else here is; an ELF
+header read through the host's byte order instead of `encoding/binary` is wrong
+on that machine and on no other. `-count=1`, so a cached PASS from the host
+architecture cannot stand in for a run that never happened. The same job holds
+the 100% statement-coverage gate: below it, CI prints the uncovered blocks and
+fails.
+
 ## License
 
 BSD-3-Clause. Copyright the bk authors.
