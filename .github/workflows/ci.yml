@@ -154,7 +154,7 @@ jobs:
     # s390x is here because it is BIG-ENDIAN and nothing else we run is.
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - name: qemu-user
