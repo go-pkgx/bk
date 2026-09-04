@@ -359,6 +359,30 @@ func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []
 	if len(ld) > 0 {
 		out = append(out, `export LDFLAGS="`+strings.Join(ld, " ")+` $LDFLAGS"`)
 	}
+
+	// rustc does not read LDFLAGS. It invokes the linker itself, so the
+	// -Wl,-rpath just put in LDFLAGS never reaches a Rust link.
+	//
+	// On linux that is survivable: `cc` on PATH is bk's own shim, which re-execs
+	// $BK_CC with every sovereign flag. On DARWIN there is no shim — they are
+	// materialised only in pkgx-libc mode — so a Rust package that links a pkgx
+	// dylib publishes a binary with NO LC_RPATH at all, and `@rpath/...` can
+	// never resolve:
+	//
+	//   dyld: Library not loaded: @rpath/openssl.org/v3.6.4/lib/libssl.3.dylib
+	//     Referenced from: …/.pkgx/rust-lang.org/cargo/v0.99.0/bin/cargo
+	//     Reason: no LC_RPATH's found
+	//
+	// It went unnoticed because cargo's darwin bottle had always been MIRRORED
+	// from upstream, which links its own rpath. The first time we built it
+	// ourselves, it came out unable to start — published, signed and attested.
+	//
+	// Composed with any RUSTFLAGS the recipe sets rather than replacing it: a
+	// recipe's env is emitted after this preamble and would otherwise take the
+	// variable away, which is exactly how the -lgcc fix was lost once already.
+	if tgt.Platform == "darwin" {
+		out = append(out, `export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,`+pkgxDir+`"`)
+	}
 	if tgt.Platform == "linux" {
 		// Relax the C23 hard errors that gcc-14 / clang-16 turned on by default
 		// (implicit function/int declarations, int<->pointer conversions). Many

@@ -408,3 +408,48 @@ func TestSovereignCarriesLibgccInTheDriver(t *testing.T) {
 		t.Error("the libgcc path leaked into the non-sovereign mode")
 	}
 }
+
+// TestDarwinGivesRustcTheRpath: rustc does not read LDFLAGS — it invokes the
+// linker itself — so the -Wl,-rpath bk puts there never reaches a Rust link.
+//
+// On linux that is survivable because `cc` on PATH is bk's shim. On darwin
+// there is no shim, and a Rust package linking a pkgx dylib came out with NO
+// LC_RPATH at all:
+//
+//	dyld: Library not loaded: @rpath/openssl.org/v3.6.4/lib/libssl.3.dylib
+//	  Reason: no LC_RPATH's found
+//
+// which is a binary that cannot start outside the tree that built it —
+// published, signed and attested.
+func TestDarwinGivesRustcTheRpath(t *testing.T) {
+	darwin := Wrap(WrapOptions{
+		UserScript: "make", Target: target.Target{Platform: "darwin", Arch: "aarch64"},
+		Host: target.Target{Platform: "darwin", Arch: "aarch64"},
+		Home: "/bk/home", SrcRoot: "/bk/build", PkgxDir: "/opt/pkgx",
+	})
+	if !strings.Contains(darwin, `export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,/opt/pkgx"`) {
+		t.Errorf("darwin must hand rustc the rpath:\n%s", darwin)
+	}
+	// Composed, never replacing: a recipe's env is emitted after this preamble,
+	// and taking the variable away is how the -lgcc fix was lost once already.
+	if !strings.Contains(darwin, `RUSTFLAGS="${RUSTFLAGS:-}`) {
+		t.Error("RUSTFLAGS must compose with what the recipe sets")
+	}
+	// linux keeps reaching rustc through the cc shim, so it needs nothing here;
+	// adding it there would be a second, competing channel.
+	linux := Wrap(WrapOptions{
+		UserScript: "make", Target: linuxTgt(), Host: linuxTgt(),
+		Home: "/bk/home", SrcRoot: "/bk/build", PkgxDir: "/opt/pkgx",
+	})
+	if strings.Contains(linux, "RUSTFLAGS") {
+		t.Errorf("linux must not set RUSTFLAGS — the shim already carries it:\n%s", linux)
+	}
+	// And windows gets no rpath of any kind: a PE has none.
+	win := Wrap(WrapOptions{
+		UserScript: "make", Target: target.Target{Platform: "windows", Arch: "x86-64"},
+		Host: linuxTgt(), Home: "/bk/home", SrcRoot: "/bk/build", PkgxDir: "/opt/pkgx",
+	})
+	if strings.Contains(win, "RUSTFLAGS") || strings.Contains(win, "-rpath") {
+		t.Errorf("windows must get no rpath:\n%s", win)
+	}
+}

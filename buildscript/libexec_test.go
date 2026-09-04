@@ -200,3 +200,14 @@ func TestCompilerShimsForBothSpellings(t *testing.T) {
 		t.Errorf("darwin must add no prefixed shims: %v", compilerShimsFor("", "darwin", "aarch64"))
 	}
 }
+
+// A linux architecture config.guess has no spelling for adds no prefixed shim,
+// and must not fall through to some other arch's triple.
+func TestConfigGuessTripleUnknownArch(t *testing.T) {
+	if got := configGuessTriple("linux", "riscv64"); got != "" {
+		t.Errorf("configGuessTriple(linux, riscv64) = %q, want empty", got)
+	}
+	if n := len(compilerShimsFor("riscv64-unknown-linux-gnu", "linux", "riscv64")); n != len(compilerShims)+len(compilerShims) {
+		t.Errorf("want the bare shims plus one triple's worth, got %d", n)
+	}
+}
