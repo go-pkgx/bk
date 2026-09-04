@@ -527,6 +527,13 @@ func TestCopyExecutableErrors(t *testing.T) {
 		}
 	})
 	t.Run("destination unwritable", func(t *testing.T) {
+		// root is not refused by a mode bit, so this case can only be posed to a
+		// user that permissions apply to. CI runs as an ordinary user; a VM or a
+		// container may not, and there the failure would look like a defect in
+		// copyExecutable rather than in the question being asked.
+		if os.Geteuid() == 0 {
+			t.Skip("running as root: the permission this case relies on does not apply")
+		}
 		root := t.TempDir()
 		src := filepath.Join(root, "src")
 		if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
