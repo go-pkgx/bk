@@ -433,3 +433,78 @@ func TestMalformedLoadCommandStopsTheSearch(t *testing.T) {
 		t.Error("claimed to have found a signature past a command it could not read")
 	}
 }
+
+// MachoSignatureStale must answer the question `codesign -v` answers, on
+// machines that do not have codesign and about bottles built for a platform
+// the asking machine is not — which is what makes a fleet-wide sweep possible.
+func TestMachoSignatureStale(t *testing.T) {
+	t.Run("a signature that describes the bytes", func(t *testing.T) {
+		p := writeImage(t, buildSignedMachO(t, "/opt/x/v1/lib", sigOpts{}))
+		stale, err := MachoSignatureStale(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stale {
+			t.Error("called an untouched binary stale")
+		}
+	})
+	t.Run("a signature that does not", func(t *testing.T) {
+		p := writeImage(t, buildSignedMachO(t, "/opt/x/v1/lib", sigOpts{badHashes: true}))
+		stale, err := MachoSignatureStale(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !stale {
+			t.Error("missed a signature that no longer describes the file")
+		}
+	})
+	t.Run("edited in place, unrepaired", func(t *testing.T) {
+		// The exact state every darwin bottle built before re-signing is in:
+		// the load command was rewritten and the hashes were left behind.
+		img := buildSignedMachO(t, "/opt/x/v1+brewing/lib", sigOpts{})
+		p := writeImage(t, img)
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		copy(raw[44:], "/opt/x/v1/lib\x00\x00\x00\x00\x00\x00\x00\x00")
+		if err := os.WriteFile(p, raw, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stale, err := MachoSignatureStale(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !stale {
+			t.Error("an edited, unrepaired binary read as sound")
+		}
+	})
+	t.Run("unsigned", func(t *testing.T) {
+		p := buildMachO(t, machoCmd{lcIDDylib, "/opt/x/v1/lib/libz.dylib"})
+		stale, err := MachoSignatureStale(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stale {
+			// Nothing claims anything about these bytes, so nothing disagrees.
+			t.Error("an unsigned Mach-O cannot be stale")
+		}
+	})
+	t.Run("not a Mach-O", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "script")
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := MachoSignatureStale(p); err == nil {
+			t.Error("want an error for something that is not a Mach-O")
+		}
+	})
+	t.Run("a signature we cannot read", func(t *testing.T) {
+		img := buildSignedMachO(t, "/opt/x/v1/lib", sigOpts{})
+		img.raw[img.cdOff+37] = 99 // an algorithm we cannot compute
+		p := writeImage(t, img)
+		if _, err := MachoSignatureStale(p); err == nil {
+			t.Error("want an error rather than a verdict we cannot justify")
+		}
+	})
+}
