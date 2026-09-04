@@ -426,9 +426,16 @@ func TestDarwinGivesRustcTheRpath(t *testing.T) {
 		UserScript: "make", Target: target.Target{Platform: "darwin", Arch: "aarch64"},
 		Host: target.Target{Platform: "darwin", Arch: "aarch64"},
 		Home: "/bk/home", SrcRoot: "/bk/build", PkgxDir: "/opt/pkgx",
+		Install: "/opt/pkgx/acme.org/foo/v1.2.3",
 	})
-	if !strings.Contains(darwin, `export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,/opt/pkgx"`) {
-		t.Errorf("darwin must hand rustc the rpath:\n%s", darwin)
+	// The SAME list LDFLAGS gets, relative entries included. With only the
+	// absolute one, a Rust package installs with no rpath reaching $PKGX_DIR,
+	// and fixup then correctly refuses to rewrite its install names into
+	// @rpath/… — leaving the bottle exactly as unrelocatable as before, while
+	// building, publishing and running perfectly on the machine that made it.
+	want := `export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,@loader_path/../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../.. -C link-arg=-Wl,-rpath,/opt/pkgx"`
+	if !strings.Contains(darwin, want) {
+		t.Errorf("darwin must hand rustc every rpath, not just the absolute one:\nwant %s\ngot:\n%s", want, darwin)
 	}
 	// Composed, never replacing: a recipe's env is emitted after this preamble,
 	// and taking the variable away is how the -lgcc fix was lost once already.

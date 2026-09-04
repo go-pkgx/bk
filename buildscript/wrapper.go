@@ -415,8 +415,21 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 	// Composed with any RUSTFLAGS the recipe sets rather than replacing it: a
 	// recipe's env is emitted after this preamble and would otherwise take the
 	// variable away, which is exactly how the -lgcc fix was lost once already.
+	//
+	// It takes the SAME list as LDFLAGS, relative entries included. Handing
+	// rustc only the absolute one would leave every Rust package with no rpath
+	// reaching $PKGX_DIR from where it installs — and fixup, which checks that
+	// before rewriting an install name into @rpath/…, would then correctly
+	// refuse to touch it. The bottle would build, publish and run on the
+	// runner, and be exactly as unrelocatable as before. Measured on the
+	// republished pqrs and getzola bottles, which carried `/Users/runner/.pkgx`
+	// and nothing else after LDFLAGS alone had been fixed.
 	if tgt.Platform == "darwin" {
-		out = append(out, `export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,`+pkgxDir+`"`)
+		var rf []string
+		for _, r := range darwinRpaths(pkgxDir, install) {
+			rf = append(rf, "-C link-arg="+r)
+		}
+		out = append(out, `export RUSTFLAGS="${RUSTFLAGS:-} `+strings.Join(rf, " ")+`"`)
 	}
 	if tgt.Platform == "linux" {
 		// Relax the C23 hard errors that gcc-14 / clang-16 turned on by default
