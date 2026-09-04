@@ -188,6 +188,10 @@ func ReadMachoStrings(path string) ([]string, error) {
 // grow a string (Mach-O load commands are a fixed size), so a longer
 // replacement returns ErrNoSpace; a shorter one is zero-padded. Stripping a
 // staging suffix (…+brewing) always shrinks, so fits.
+//
+// Any slice it changes is re-signed (see machosign.go): an edited Mach-O whose
+// signature still describes the old bytes is not a binary with a stale
+// signature, it is a binary that cannot run at all.
 func RewriteMachoStrings(path string, fn func(string) string) error {
 	raw, slices, err := machoInfo(path)
 	if err != nil {
@@ -195,10 +199,19 @@ func RewriteMachoStrings(path string, fn func(string) string) error {
 	}
 	changed := false
 	for _, sl := range slices {
-		ch, err := walkMachoStrings(raw[sl.off:sl.off+sl.size], sl.bo, sl.hdr, sl.ncmd, func(_ uint32, s string) string { return fn(s) })
+		slice := raw[sl.off : sl.off+sl.size]
+		ch, err := walkMachoStrings(slice, sl.bo, sl.hdr, sl.ncmd, func(_ uint32, s string) string { return fn(s) })
 		changed = changed || ch
 		if err != nil {
 			return err
+		}
+		// A rewritten slice no longer matches its own signature, and on Apple
+		// silicon the kernel kills such a binary outright — with no message, no
+		// dyld error, just exit 137. Restate the hashes over what we just wrote.
+		if ch {
+			if _, err := resignSlice(slice, sl.bo, sl.hdr, sl.ncmd); err != nil {
+				return err
+			}
 		}
 	}
 	if !changed {
