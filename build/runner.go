@@ -165,7 +165,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	}
 	script := buildscript.Wrap(buildscript.WrapOptions{
 		UserScript: user, Deps: deps, Target: tgt, Host: host,
-		Home: paths.Home, SrcRoot: paths.Build, PkgxDir: config.PkgxDir(),
+		Home: paths.Home, SrcRoot: paths.Build, PkgxDir: config.PkgxDir(), Install: paths.Install,
 		PkgxBin: r.PkgxBin, BashPath: r.BashPath, BrewkitPath: libexecDir,
 		LibcPkgx: r.LibcMode == "pkgx",
 		Glibc:    r.Glibc,
@@ -193,7 +193,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	if err := osRename(paths.BuildInstall, paths.Install); err != nil {
 		return res, fmt.Errorf("stage install: %w", err)
 	}
-	if err := r.FixUp(fixup.Options{Prefix: paths.Install, BuildInstall: paths.BuildInstall, Platform: tgt.Platform}); err != nil {
+	if err := r.FixUp(fixup.Options{Prefix: paths.Install, BuildInstall: paths.BuildInstall, Platform: tgt.Platform, PkgxDir: config.PkgxDir()}); err != nil {
 		return res, fmt.Errorf("fix-up: %w", err)
 	}
 

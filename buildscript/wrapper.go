@@ -2,6 +2,7 @@ package buildscript
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/go-pkgx/bk/target"
@@ -18,6 +19,7 @@ type WrapOptions struct {
 	Home        string        // a fresh HOME for the build
 	SrcRoot     string        // the build directory (also SRCROOT / cd target)
 	PkgxDir     string        // $PKGX_DIR — the rpath root and CMAKE_PREFIX_PATH
+	Install     string        // the final install prefix ($PKGX_DIR/project/vX.Y.Z)
 	BrewkitPath string        // dir prepended to PATH for the build shims (optional)
 	PkgxBin     string        // path to the pkgx binary (for the deps eval + $PKGX)
 	BashPath    string        // shebang interpreter (default /bin/bash)
@@ -85,7 +87,7 @@ func Wrap(o WrapOptions) string {
 	b.WriteString("if [ -n \"$CI\" ]; then export FORCE_UNSAFE_CONFIGURE=1; fi\n")
 	b.WriteString(libtoolToolVars)
 	b.WriteString("mkdir -p $HOME\n")
-	for _, f := range wrapFlags(o.Target, o.PkgxDir, o.HasBinutils, o.LibcPkgx) {
+	for _, f := range wrapFlags(o.Target, o.PkgxDir, o.Install, o.HasBinutils, o.LibcPkgx) {
 		b.WriteString(f + "\n")
 	}
 	b.WriteString("env -u GH_TOKEN -u GITHUB_TOKEN\n\n")
@@ -182,14 +184,47 @@ func glibcLoader(arch string) string {
 	return "ld-linux-x86-64.so.2"
 }
 
+// darwinRpaths returns the -rpath flags a darwin link needs: the relative ones
+// that make the bottle relocatable, then the absolute $PKGX_DIR.
+//
+// The depth comes from where the package installs — $PKGX_DIR/<project>/vX.Y.Z
+// is three levels for a two-segment project and two for a one-segment one, and
+// counting it by hand is how a wrong rpath gets shipped. A binary in bin/ or a
+// dylib in lib/ is one level below that; libexec/<sub>/ is one more, so both
+// are named. During the build the staging tree is <install>+brewing, the same
+// depth, so the relative rpath resolves there too.
+func darwinRpaths(pkgxDir, install string) []string {
+	var out []string
+	if rel, err := filepath.Rel(pkgxDir, install); err == nil && !strings.HasPrefix(rel, "..") && rel != "." {
+		depth := len(strings.Split(filepath.ToSlash(rel), "/"))
+		for _, extra := range []int{1, 2} {
+			up := strings.TrimSuffix(strings.Repeat("../", depth+extra), "/")
+			out = append(out, "-Wl,-rpath,@loader_path/"+up)
+		}
+	}
+	return append(out, "-Wl,-rpath,"+pkgxDir)
+}
+
 // wrapFlags returns the target-keyed compiler/linker FLAGS exports. A windows
 // target gets none (PEs have no rpath and mingw rejects -pie).
-func wrapFlags(tgt target.Target, pkgxDir string, hasBinutils, libcPkgx bool) []string {
+func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx bool) []string {
 	var out []string
 	var ld []string
 	switch tgt.Platform {
 	case "darwin":
-		ld = append(ld, "-Wl,-rpath,"+pkgxDir)
+		// A darwin binary records its dependencies by ABSOLUTE install name, and
+		// fixup rewrites those into @rpath/… so the bottle resolves wherever
+		// $PKGX_DIR happens to be. That only works if the binary carries an
+		// LC_RPATH that reaches $PKGX_DIR from where it is installed — and unlike
+		// ELF's RUNPATH, an LC_RPATH cannot be lengthened after the fact: the
+		// string lives in a fixed-size load command, and "@loader_path/../../../.."
+		// is LONGER than the absolute path it would replace.
+		//
+		// So the relative rpath is linked in from the start. Its depth is a fact
+		// about where this package installs, which we know here and the linker
+		// does not. The absolute one stays as well, so anything that runs out of
+		// the build tree keeps resolving the way it does today.
+		ld = append(ld, darwinRpaths(pkgxDir, install)...)
 	case "linux":
 		// Both arches get an absolute -Wl,-rpath,$PKGX_DIR so the linker emits a
 		// DT_RUNPATH *slot* fixup/rpath.go later rewrites $ORIGIN-relative. A

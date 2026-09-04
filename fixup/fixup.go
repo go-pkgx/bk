@@ -21,6 +21,7 @@ type Options struct {
 	Prefix       string   // the final install prefix (…/project/vX.Y.Z)
 	BuildInstall string   // the +brewing staging prefix that paths were baked with
 	Platform     string   // target platform: darwin | linux | windows
+	PkgxDir      string   // $PKGX_DIR: the root darwin @rpath references resolve against
 	Skips        []string // recipe build.skip entries (fix-machos, fix-patchelf, libtool-cleanup, flatten-includes)
 	// DepPaths are the install prefixes of the build's dependency closure,
 	// used to compute $ORIGIN-relative RUNPATHs (linux only).
