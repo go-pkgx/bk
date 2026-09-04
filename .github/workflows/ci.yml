@@ -56,7 +56,7 @@ jobs:
 
   darwin:
     name: test (macOS, where the signature is judged)
-    runs-on: macos-14
+    runs-on: macos-26
     # bk rewrites Mach-O load commands, and an edited Mach-O whose signature
     # still describes the old bytes is not slow or subtly wrong: the arm64
     # kernel kills it on sight, with no message and an empty stdout. Only macOS
