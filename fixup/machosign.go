@@ -1,6 +1,7 @@
 package fixup
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -65,6 +66,12 @@ var ErrBadSignature = errors.New("fixup: malformed Mach-O code signature")
 // It reports whether a signature was found and rewritten; an unsigned slice is
 // not an error, it simply has nothing to restate.
 func resignSlice(slice []byte, bo binary.ByteOrder, hdr, ncmd int) (bool, error) {
+	return walkSignature(slice, bo, hdr, ncmd, true)
+}
+
+// walkSignature finds a slice's embedded signature and either rewrites its code
+// slots (apply) or reports whether they still describe the bytes.
+func walkSignature(slice []byte, bo binary.ByteOrder, hdr, ncmd int, apply bool) (bool, error) {
 	off, size, ok := codeSignatureCmd(slice, bo, hdr, ncmd)
 	if !ok {
 		return false, nil
@@ -72,7 +79,32 @@ func resignSlice(slice []byte, bo binary.ByteOrder, hdr, ncmd int) (bool, error)
 	if off+size > len(slice) {
 		return false, ErrBadSignature
 	}
-	return resignSuperBlob(slice, slice[off:off+size])
+	return resignSuperBlob(slice, slice[off:off+size], apply)
+}
+
+// MachoSignatureStale reports whether path is a signed Mach-O whose code-slot
+// hashes no longer describe its own bytes — the state an in-place edit leaves
+// behind, and the one macOS refuses to run on Apple silicon.
+//
+// It asks the same question `codesign -v` does, without codesign: the answer is
+// needed on machines that do not have it, and about bottles built for a
+// platform the asking machine is not. An unsigned Mach-O is not stale — there
+// is nothing to disagree with — so it reports false.
+func MachoSignatureStale(path string) (bool, error) {
+	raw, slices, err := machoInfo(path)
+	if err != nil {
+		return false, err
+	}
+	for _, sl := range slices {
+		stale, err := walkSignature(raw[sl.off:sl.off+sl.size], sl.bo, sl.hdr, sl.ncmd, false)
+		if err != nil {
+			return false, err
+		}
+		if stale {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // codeSignatureCmd finds LC_CODE_SIGNATURE and returns the file offset and
@@ -100,7 +132,7 @@ func codeSignatureCmd(slice []byte, bo binary.ByteOrder, hdr, ncmd int) (off, si
 //
 // Everything in a signature blob is BIG-endian, whatever the Mach-O's own byte
 // order: it is a cross-architecture structure.
-func resignSuperBlob(slice, sig []byte) (bool, error) {
+func resignSuperBlob(slice, sig []byte, apply bool) (bool, error) {
 	be := binary.BigEndian
 	if len(sig) < 12 || be.Uint32(sig) != csMagicEmbeddedSignature {
 		// Not an embedded signature (a detached or unknown blob): leave it be
@@ -124,10 +156,18 @@ func resignSuperBlob(slice, sig []byte) (bool, error) {
 		if length < 44 || o+length > len(sig) {
 			return done, ErrBadSignature
 		}
-		if err := resignCodeDirectory(slice, sig[o:o+length]); err != nil {
+		changed, err := resignCodeDirectory(slice, sig[o:o+length], apply)
+		if err != nil {
 			return done, err
 		}
-		done = true
+		// Applying, "done" means a directory was restated; checking, it means
+		// one disagreed with the bytes — and one is enough to condemn the file.
+		if apply || changed {
+			done = true
+		}
+		if !apply && changed {
+			return true, nil
+		}
 	}
 	return done, nil
 }
@@ -137,7 +177,7 @@ func resignSuperBlob(slice, sig []byte) (bool, error) {
 // Special slots (Info.plist, requirements, entitlements…) live at NEGATIVE
 // indices, before hashOffset, and hash blobs we never touch — so they stay as
 // they are. Only the code slots, which hash the image itself, went stale.
-func resignCodeDirectory(slice, cd []byte) error {
+func resignCodeDirectory(slice, cd []byte, apply bool) (bool, error) {
 	be := binary.BigEndian
 	var (
 		version   = be.Uint32(cd[8:])
@@ -155,26 +195,27 @@ func resignCodeDirectory(slice, cd []byte) error {
 	}
 	newHash, digestSize := hasherFor(hashType)
 	if newHash == nil {
-		return errors.New("fixup: unknown code signature hash type")
+		return false, errors.New("fixup: unknown code signature hash type")
 	}
 	if hashSize <= 0 || hashSize > digestSize {
-		return ErrBadSignature
+		return false, ErrBadSignature
 	}
 	if codeLimit < 0 || codeLimit > int64(len(slice)) {
-		return ErrBadSignature
+		return false, ErrBadSignature
 	}
 	if hashOff < 0 || hashOff+nCode*hashSize > len(cd) {
-		return ErrBadSignature
+		return false, ErrBadSignature
 	}
 	// pageSize 0 means the whole image is hashed as one slot rather than paged.
 	page := int64(1) << pageShift
 	if pageShift == 0 {
 		page = codeLimit
 	}
+	stale := false
 	for i := 0; i < nCode; i++ {
 		start := int64(i) * page
 		if start > codeLimit {
-			return ErrBadSignature
+			return false, ErrBadSignature
 		}
 		end := start + page
 		if end > codeLimit {
@@ -182,9 +223,17 @@ func resignCodeDirectory(slice, cd []byte) error {
 		}
 		h := newHash()
 		h.Write(slice[start:end])
-		copy(cd[hashOff+i*hashSize:hashOff+(i+1)*hashSize], h.Sum(nil)[:hashSize])
+		sum := h.Sum(nil)[:hashSize]
+		slot := cd[hashOff+i*hashSize : hashOff+(i+1)*hashSize]
+		if apply {
+			copy(slot, sum)
+			continue
+		}
+		if !bytes.Equal(slot, sum) {
+			return true, nil
+		}
 	}
-	return nil
+	return stale, nil
 }
 
 // hasherFor maps a CS_HASHTYPE_* to its constructor and full digest length.
