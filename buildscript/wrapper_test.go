@@ -453,3 +453,44 @@ func TestDarwinGivesRustcTheRpath(t *testing.T) {
 		t.Errorf("windows must get no rpath:\n%s", win)
 	}
 }
+
+// A darwin link gets a RELATIVE rpath at the depth this package installs at,
+// before the absolute one. Unlike ELF's RUNPATH, an LC_RPATH cannot be
+// lengthened at fixup time — the string sits in a fixed-size load command, and
+// "@loader_path/../../../.." is longer than the "/Users/runner/.pkgx" it would
+// replace. So it is linked in from the start or it is never there at all.
+func TestDarwinLinksRelativeRpaths(t *testing.T) {
+	s := Wrap(WrapOptions{
+		UserScript: "make install", Target: darwinTgt(),
+		PkgxDir: "/opt/pkgx", Install: "/opt/pkgx/acme.org/foo/v1.2.3",
+	})
+	want := `export LDFLAGS="-Wl,-rpath,@loader_path/../../../.. -Wl,-rpath,@loader_path/../../../../.. -Wl,-rpath,/opt/pkgx $LDFLAGS"`
+	if !strings.Contains(s, want) {
+		t.Errorf("darwin LDFLAGS:\nwant %s\nin:\n%s", want, s)
+	}
+}
+
+// Depths are counted, not assumed: a one-segment project sits one level
+// shallower, and a hand-written `bk fixup` with no install prefix gets the
+// absolute rpath alone rather than a relative one aimed at nothing.
+func TestDarwinRpathDepths(t *testing.T) {
+	for _, tc := range []struct {
+		name, pkgxDir, install string
+		want                   []string
+	}{
+		{"two-segment project", "/opt/pkgx", "/opt/pkgx/acme.org/foo/v1.2.3",
+			[]string{"-Wl,-rpath,@loader_path/../../../..", "-Wl,-rpath,@loader_path/../../../../..", "-Wl,-rpath,/opt/pkgx"}},
+		{"one-segment project", "/opt/pkgx", "/opt/pkgx/acme.org/v1.2.3",
+			[]string{"-Wl,-rpath,@loader_path/../../..", "-Wl,-rpath,@loader_path/../../../..", "-Wl,-rpath,/opt/pkgx"}},
+		{"no install prefix", "/opt/pkgx", "", []string{"-Wl,-rpath,/opt/pkgx"}},
+		{"installed outside $PKGX_DIR", "/opt/pkgx", "/elsewhere/foo/v1", []string{"-Wl,-rpath,/opt/pkgx"}},
+		{"installed AT $PKGX_DIR", "/opt/pkgx", "/opt/pkgx", []string{"-Wl,-rpath,/opt/pkgx"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := darwinRpaths(tc.pkgxDir, tc.install)
+			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+				t.Errorf("darwinRpaths = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

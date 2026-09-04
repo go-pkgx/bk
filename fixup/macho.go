@@ -5,6 +5,7 @@ import (
 	"debug/macho"
 	"encoding/binary"
 	"errors"
+	"path/filepath"
 	"strings"
 )
 
@@ -193,6 +194,13 @@ func ReadMachoStrings(path string) ([]string, error) {
 // signature still describes the old bytes is not a binary with a stale
 // signature, it is a binary that cannot run at all.
 func RewriteMachoStrings(path string, fn func(string) string) error {
+	return rewriteMachoStringsCmd(path, func(_ uint32, s string) string { return fn(s) })
+}
+
+// rewriteMachoStringsCmd is RewriteMachoStrings with the load command in hand:
+// an rpath and an install name are both strings in the same kind of slot, and
+// what each may be rewritten to is not the same.
+func rewriteMachoStringsCmd(path string, fn func(uint32, string) string) error {
 	raw, slices, err := machoInfo(path)
 	if err != nil {
 		return err
@@ -200,7 +208,7 @@ func RewriteMachoStrings(path string, fn func(string) string) error {
 	changed := false
 	for _, sl := range slices {
 		slice := raw[sl.off : sl.off+sl.size]
-		ch, err := walkMachoStrings(slice, sl.bo, sl.hdr, sl.ncmd, func(_ uint32, s string) string { return fn(s) })
+		ch, err := walkMachoStrings(slice, sl.bo, sl.hdr, sl.ncmd, fn)
 		changed = changed || ch
 		if err != nil {
 			return err
@@ -224,15 +232,112 @@ func RewriteMachoStrings(path string, fn func(string) string) error {
 	return osWriteFile(path, raw, fi.Mode().Perm())
 }
 
+// machoRpaths returns a Mach-O's LC_RPATH entries.
+func machoRpaths(path string) ([]string, error) {
+	raw, slices, err := machoInfo(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, sl := range slices {
+		walkMachoStrings(raw[sl.off:sl.off+sl.size], sl.bo, sl.hdr, sl.ncmd, func(cmd uint32, s string) string {
+			if cmd == lcRpath {
+				out = append(out, s)
+			}
+			return s
+		})
+	}
+	return out, nil
+}
+
+// rpathReaches reports whether any of a Mach-O's rpaths resolves to dir once
+// the binary sits at exe. @loader_path is resolved against the file's own
+// directory — which, fixup running after the staging tree has been renamed
+// into place, is where it will actually be.
+func rpathReaches(exe, dir string, rpaths []string) bool {
+	want := filepath.Clean(dir)
+	for _, r := range rpaths {
+		var got string
+		switch {
+		case strings.HasPrefix(r, "@loader_path/"), strings.HasPrefix(r, "@executable_path/"):
+			_, rel, _ := strings.Cut(r, "/")
+			got = filepath.Join(filepath.Dir(exe), rel)
+		case filepath.IsAbs(r):
+			got = filepath.Clean(r)
+		default:
+			continue
+		}
+		if got == want {
+			return true
+		}
+	}
+	return false
+}
+
+// underDir reports whether p names something inside dir, and what it is called
+// there. A prefix match alone would accept "/x/pkgxdirty" for "/x/pkgxdir".
+func underDir(p, dir string) (string, bool) {
+	if dir == "" {
+		return "", false
+	}
+	dir = filepath.Clean(dir) + string(filepath.Separator)
+	if !strings.HasPrefix(p, dir) || len(p) == len(dir) {
+		return "", false
+	}
+	return filepath.ToSlash(p[len(dir):]), true
+}
+
 // rewriteMacho strips the +brewing staging prefix from a Mach-O's install name
 // and dep references (buildInstall → prefix), the darwin analogue of the .pc /
 // .cmake path rewrite. Removing +brewing shrinks the string, so it always fits.
 func rewriteMacho(exe string, opts Options) error {
-	if opts.BuildInstall == "" || !isMachO(exe) {
+	if !isMachO(exe) {
 		return nil
 	}
-	err := RewriteMachoStrings(exe, func(s string) string {
-		return strings.ReplaceAll(s, opts.BuildInstall, opts.Prefix)
+	// A darwin binary names its dependencies by ABSOLUTE install name — the
+	// LC_ID_DYLIB the dependency was built with, which is a path on the machine
+	// that built it:
+	//
+	//   Library not loaded: /Users/runner/.pkgx/libssh2.org/v1.11.1/lib/libssh2.1.dylib
+	//
+	// That is what makes a darwin bottle unusable anywhere but its build
+	// machine, and no rpath rescues it: an absolute reference never consults
+	// one. Rewriting those into @rpath/… is what makes the bottle relocatable.
+	//
+	// But ONLY if this file carries an rpath that reaches $PKGX_DIR. Turning a
+	// reference that works on the build machine into an @rpath one that
+	// resolves nowhere would trade a bottle that works in one place for a
+	// bottle that works in none — so it is measured per file, not assumed.
+	toRpath := false
+	if opts.PkgxDir != "" {
+		rpaths, err := machoRpaths(exe)
+		if err != nil {
+			return err
+		}
+		toRpath = rpathReaches(exe, opts.PkgxDir, rpaths)
+		if !toRpath {
+			opts.log("macho %s: no rpath reaching %s, leaving install names absolute", exe, opts.PkgxDir)
+		}
+	}
+	if opts.BuildInstall == "" && !toRpath {
+		return nil
+	}
+	err := rewriteMachoStringsCmd(exe, func(cmd uint32, s string) string {
+		if opts.BuildInstall != "" {
+			s = strings.ReplaceAll(s, opts.BuildInstall, opts.Prefix)
+		}
+		// An rpath is a search ROOT, not a reference: @rpath means nothing
+		// inside one, and the relative entries were linked in already.
+		if !toRpath || cmd == lcRpath {
+			return s
+		}
+		if rest, ok := underDir(s, opts.PkgxDir); ok {
+			// The version stays whole. pkgx installs each version in its own
+			// directory and the major-version symlink is not something a bottle
+			// may assume exists at load time.
+			return "@rpath/" + rest
+		}
+		return s
 	})
 	if errors.Is(err, ErrNoSpace) {
 		opts.log("skip macho for %s: %v", exe, err)

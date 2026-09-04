@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/go-pkgx/bk/config"
 	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bottle"
@@ -131,6 +132,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err := fixup.FixUp(fixup.Options{
 			Prefix:   rest[1],
 			Platform: tgt.Platform,
+			PkgxDir:  config.PkgxDir(),
 			Log:      func(s string) { fmt.Fprintln(stdout, s) },
 		})
 		if err != nil {
