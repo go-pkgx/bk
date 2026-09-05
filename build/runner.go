@@ -135,7 +135,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	}
 
 	// deps + tokens + script
-	deps := EvalDeps(recipe.Dependencies, buildDeps(recipe), tgt)
+	deps := EvalDeps(project, recipe.Dependencies, buildDeps(recipe), tgt)
 	toks := moustache.Prefix(paths.BuildInstall)
 	toks = append(toks, moustache.Version(version, "version")...)
 	toks = append(toks, moustache.Token{From: "version.tag", To: tag})
