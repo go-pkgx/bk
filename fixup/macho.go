@@ -331,10 +331,25 @@ func rewriteMacho(exe string, opts Options) error {
 		if !toRpath || cmd == lcRpath {
 			return s
 		}
-		if rest, ok := underDir(s, opts.PkgxDir); ok {
-			// The version stays whole. pkgx installs each version in its own
-			// directory and the major-version symlink is not something a bottle
-			// may assume exists at load time.
+		if _, ok := underDir(s, opts.PkgxDir); ok {
+			// Major-versioned, exactly as the ELF side does to its RUNPATH
+			// entries, and for the reason measured on the published grep bottle:
+			// it named
+			//
+			//   /Users/runner/.pkgx/pcre.org/v2/v10.47/lib/libpcre2-8.0.dylib
+			//
+			// and the machine had pcre2 v10.48. grep could not start, so curl's
+			// configure reported "'grep' utility not found in 'PATH'" — a
+			// dependency's MINOR upgrade orphaning its dependents, reported as
+			// a missing tool.
+			//
+			// pkgx installs each version in its own directory AND links the
+			// major (v1 -> v1.3.2, v3 -> v3.6.4 — measured in an installed
+			// tree), so v10 resolves to whatever 10.x is there. A package's own
+			// libraries keep their full version: they ship together and cannot
+			// disagree.
+			t := transformRpath(s, filepath.Dir(opts.Prefix))
+			rest, _ := underDir(t, opts.PkgxDir)
 			return "@rpath/" + rest
 		}
 		return s

@@ -223,7 +223,16 @@ func rewriteRunpath(exe string, opts Options) error {
 	return err
 }
 
-var versionRE = regexp.MustCompile(`v(\d+)\.(\d+\.)+\d+[a-z]?`)
+// versionRE matches a version directory name — v1.2.3, and also v10.47, which
+// the earlier `v(\d+)\.(\d+\.)+\d+` did NOT: it required three components.
+// Two-component versions are ordinary here (curl.se v8.20, pcre.org/v2 v10.47),
+// and leaving them whole is what let a dependency's minor upgrade orphan its
+// dependents. Measured on the published gnu.org/grep bottle, which named
+// pcre2 v10.47 on a machine that had v10.48: grep could not start, and curl's
+// configure reported it as "'grep' utility not found in 'PATH'".
+//
+// A leading `v` is required, so a soname (libpcre2-8.0.dylib) is not a version.
+var versionRE = regexp.MustCompile(`v(\d+)(\.\d+)+[a-z]?`)
 
 // transformRpath major-versions a full version path so bottles survive minor
 // upgrades without a re-sign; $ORIGIN paths and references into the package's

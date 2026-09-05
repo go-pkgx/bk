@@ -62,6 +62,12 @@ func TestBottleSurvivesBeingMoved(t *testing.T) {
 			}
 		}
 		run(cc, "-dynamiclib", "-install_name", dylib, "-Wl,-rpath,"+up, "-o", dylib, foo)
+		// pkgx links the major version beside the full one (v1 -> v1.2.3), and
+		// the rewritten reference relies on it: a dependency's minor upgrade
+		// must not orphan its dependents.
+		if err := os.Symlink("v1.2.3", filepath.Join(filepath.Dir(libPrefix), "v1")); err != nil {
+			t.Fatal(err)
+		}
 		run(cc, "-o", exe, mainC, dylib, "-Wl,-rpath,"+up)
 		return pkgxDir, libPrefix, exePrefix, exe
 	}
@@ -116,7 +122,7 @@ func TestBottleSurvivesBeingMoved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "@rpath/acme.org/foo/v1.2.3/lib/libfoo.dylib"
+	want := "@rpath/acme.org/foo/v1/lib/libfoo.dylib"
 	found := false
 	for _, s := range strs {
 		if s == want {
