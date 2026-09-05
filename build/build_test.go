@@ -139,7 +139,7 @@ func TestBaseToolchainAndEvalDeps(t *testing.T) {
 		t.Errorf("SpecProject should strip @5.3 for dedup")
 	}
 	// EvalDeps = base + runtime + build, deduped by project, sorted
-	got := EvalDeps(
+	got := EvalDeps("acme.org/thing",
 		map[string]any{"openssl.org": "^1.1"},
 		map[string]any{"freedesktop.org/pkg-config": "^0.29"}, // already in base → dedup
 		lin(),
@@ -290,7 +290,7 @@ func sortedStrings(ss []string) bool {
 // recipe running makeinfo died with "Perl API version v5.42.0 … does not match
 // v5.44.0". A recipe must be able to constrain a base project.
 func TestEvalDepsRecipeConstraintBeatsBase(t *testing.T) {
-	got := EvalDeps(map[string]any{"perl.org": "~5.42"}, nil, lin())
+	got := EvalDeps("acme.org/thing", map[string]any{"perl.org": "~5.42"}, nil, lin())
 	var perl []string
 	for _, s := range got {
 		if SpecProject(s) == "perl.org" {
@@ -301,13 +301,13 @@ func TestEvalDepsRecipeConstraintBeatsBase(t *testing.T) {
 		t.Fatalf("perl specs = %v, want exactly [perl.org~5.42]", perl)
 	}
 	// a BUILD dep constrains it just as well
-	got = EvalDeps(nil, map[string]any{"gnu.org/gawk": "^5.4"}, lin())
+	got = EvalDeps("acme.org/thing", nil, map[string]any{"gnu.org/gawk": "^5.4"}, lin())
 	if !contains(got, "gnu.org/gawk^5.4") || contains(got, "gnu.org/gawk@5.3") {
 		t.Errorf("a build dep must override the base's gawk pin: %v", got)
 	}
 	// …and a project the recipe says nothing about still comes from the base,
 	// with the base's own pin intact.
-	if !contains(EvalDeps(nil, nil, lin()), "gnu.org/gawk@5.3") {
+	if !contains(EvalDeps("acme.org/thing", nil, nil, lin()), "gnu.org/gawk@5.3") {
 		t.Error("the base pin must survive when the recipe is silent")
 	}
 }
@@ -322,7 +322,7 @@ func TestBaseToolchainPerlMatchesTexinfo(t *testing.T) {
 		t.Errorf("perl must be pinned to texinfo's line, got %v", base)
 	}
 	// a recipe still wins over the pin
-	if got := EvalDeps(map[string]any{"perl.org": "^5.44"}, nil, lin()); !contains(got, "perl.org^5.44") || contains(got, "perl.org~5.42") {
+	if got := EvalDeps("acme.org/thing", map[string]any{"perl.org": "^5.44"}, nil, lin()); !contains(got, "perl.org^5.44") || contains(got, "perl.org~5.42") {
 		t.Errorf("a recipe must override the base perl pin: %v", got)
 	}
 }
@@ -374,5 +374,37 @@ func TestSanitizedEnvPassesCacheAndQemu(t *testing.T) {
 		if strings.HasPrefix(got, "HOMEBREW_PREFIX=") {
 			t.Error("sanitised env leaked HOMEBREW_PREFIX")
 		}
+	}
+}
+
+// A package's own published bottle must not join the toolchain of its own
+// build. It would shadow the thing being built with an older copy — and when
+// that copy cannot start, the package can no longer be repaired at all:
+// gnu.org/grep's own configure refuses with "no working 'grep' found", so the
+// broken bottle blocked the build that would have replaced it.
+func TestOwnBottleIsNotInItsOwnToolchain(t *testing.T) {
+	got := EvalDeps("gnu.org/grep", nil, nil, lin())
+	for _, s := range got {
+		if SpecProject(s) == "gnu.org/grep" {
+			t.Fatalf("grep's own build got grep from the base toolchain: %v", got)
+		}
+	}
+	// The rest of the floor is untouched — this removes one entry, not the list.
+	if !contains(got, "gnu.org/sed") || !contains(got, "gnu.org/coreutils") {
+		t.Errorf("the base toolchain lost more than the package itself: %v", got)
+	}
+	// And another package still gets grep.
+	other := EvalDeps("acme.org/thing", nil, nil, lin())
+	if !contains(other, "gnu.org/grep") {
+		t.Errorf("grep vanished from an unrelated build: %v", other)
+	}
+}
+
+// A recipe that names itself is stating something we have no business
+// overruling: only the base toolchain is filtered.
+func TestARecipeMayStillNameItself(t *testing.T) {
+	got := EvalDeps("gnu.org/grep", nil, map[string]any{"gnu.org/grep": "^3"}, lin())
+	if !contains(got, "gnu.org/grep^3") {
+		t.Errorf("a recipe's own explicit build dep was dropped: %v", got)
 	}
 }

@@ -208,7 +208,7 @@ func BaseToolchain() []string {
 //
 // The same silent override applied to every base project (gawk, make, bison…),
 // so a recipe could never correct one.
-func EvalDeps(runtime, buildDeps map[string]any, tgt target.Target) []string {
+func EvalDeps(project string, runtime, buildDeps map[string]any, tgt target.Target) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(specs []string) {
@@ -222,7 +222,31 @@ func EvalDeps(runtime, buildDeps map[string]any, tgt target.Target) []string {
 	}
 	add(DepSpecs(runtime, tgt))
 	add(DepSpecs(buildDeps, tgt))
-	add(BaseToolchain())
+	// A package's OWN published bottle never joins the toolchain of its own
+	// build. It would shadow the thing being built with an older copy — and if
+	// that copy is broken, the package can no longer be repaired at all:
+	//
+	//   configure: error: no working 'grep' found
+	//     A working 'grep' command is needed to build GNU Grep.
+	//
+	// which is where gnu.org/grep sat on 2026-09-05, its published bottle
+	// unable to start because a dependency's MINOR upgrade had moved out from
+	// under an absolute install name. Nothing else in the factory could make
+	// the next grep, and the tools that need grep (curl's configure, autoconf's
+	// grep-based type probes) failed in ways that named neither grep nor the
+	// real cause.
+	//
+	// Only the BASE toolchain is filtered: a recipe that deliberately names
+	// itself is stating something we have no business overruling.
+	base := BaseToolchain()
+	kept := base[:0:0]
+	for _, s := range base {
+		if SpecProject(s) == project {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	add(kept)
 	sort.Strings(out)
 	return out
 }
