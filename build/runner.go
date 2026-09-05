@@ -165,7 +165,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	}
 	script := buildscript.Wrap(buildscript.WrapOptions{
 		UserScript: user, Deps: deps, Target: tgt, Host: host,
-		Home: paths.Home, SrcRoot: paths.Build, PkgxDir: config.PkgxDir(), Install: paths.Install,
+		Home: paths.Home, SrcRoot: paths.Build, PkgxDir: config.PkgxDir(), Install: paths.Install, Project: project,
 		PkgxBin: r.PkgxBin, BashPath: r.BashPath, BrewkitPath: libexecDir,
 		LibcPkgx: r.LibcMode == "pkgx",
 		Glibc:    r.Glibc,
