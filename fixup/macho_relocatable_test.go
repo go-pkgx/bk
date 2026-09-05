@@ -42,9 +42,9 @@ func TestInstallNamesBecomeRpathReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"@loader_path/../../../..",                    // an rpath is a search root, not a reference
-		"@rpath/acme.org/foo/v1.2.3/lib/libfoo.dylib", // version and all
-		"/usr/lib/libSystem.B.dylib",                  // the OS is not in $PKGX_DIR
+		"@loader_path/../../../..",                // an rpath is a search root, not a reference
+		"@rpath/acme.org/foo/v1/lib/libfoo.dylib", // major-versioned: v1 is a symlink pkgx maintains
+		"/usr/lib/libSystem.B.dylib",              // the OS is not in $PKGX_DIR
 	}
 	for i := range want {
 		if got[i] != want[i] {
@@ -200,5 +200,37 @@ func TestRpathReadErrorSurfaces(t *testing.T) {
 	}
 	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err == nil {
 		t.Fatal("want the read error, got none")
+	}
+}
+
+// A dependency's MINOR upgrade must not orphan its dependents, which is why the
+// reference is major-versioned. Measured on the published gnu.org/grep bottle:
+// it named /Users/runner/.pkgx/pcre.org/v2/v10.47/lib/libpcre2-8.0.dylib, the
+// machine had pcre2 v10.48, grep could not start — and curl's configure
+// reported it as "'grep' utility not found in 'PATH'".
+//
+// A package's OWN libraries keep their full version: they ship together and
+// cannot disagree with each other.
+func TestDependencyVersionsAreMajorOnly(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "gnu.org", "grep", "v3.12")
+	exe := filepath.Join(prefix, "bin", "grep")
+	place(t, exe,
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+		machoCmd{lcLoadDylib, filepath.Join(pkgx, "pcre.org/v2/v10.47/lib/libpcre2-8.0.dylib")},
+		machoCmd{lcIDDylib, filepath.Join(prefix, "lib/libgreputils.1.dylib")},
+	)
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMachoStrings(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[1] != "@rpath/pcre.org/v2/v10/lib/libpcre2-8.0.dylib" {
+		t.Errorf("dependency = %q, want it major-versioned", got[1])
+	}
+	if got[2] != "@rpath/gnu.org/grep/v3.12/lib/libgreputils.1.dylib" {
+		t.Errorf("own library = %q, want its full version kept", got[2])
 	}
 }
