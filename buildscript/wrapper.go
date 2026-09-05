@@ -20,6 +20,7 @@ type WrapOptions struct {
 	SrcRoot     string        // the build directory (also SRCROOT / cd target)
 	PkgxDir     string        // $PKGX_DIR — the rpath root and CMAKE_PREFIX_PATH
 	Install     string        // the final install prefix ($PKGX_DIR/project/vX.Y.Z)
+	Project     string        // the project being built, so we never preset a tool IT provides
 	BrewkitPath string        // dir prepended to PATH for the build shims (optional)
 	PkgxBin     string        // path to the pkgx binary (for the deps eval + $PKGX)
 	BashPath    string        // shebang interpreter (default /bin/bash)
@@ -85,7 +86,7 @@ func Wrap(o WrapOptions) string {
 	fmt.Fprintf(&b, "export SRCROOT=%q\n", o.SrcRoot)
 	b.WriteString(tmpdirLine(o.Host) + "\n")
 	b.WriteString("if [ -n \"$CI\" ]; then export FORCE_UNSAFE_CONFIGURE=1; fi\n")
-	b.WriteString(libtoolToolVars)
+	b.WriteString(toolVars(o.Project))
 	b.WriteString("mkdir -p $HOME\n")
 	for _, f := range wrapFlags(o.Target, o.PkgxDir, o.Install, o.HasBinutils, o.LibcPkgx) {
 		b.WriteString(f + "\n")
@@ -166,6 +167,54 @@ func (o WrapOptions) depPlus() string {
 // gnu.org/sed and gnu.org/grep bottles the build env already carries.
 const libtoolToolVars = `export SED="${SED:-sed}" GREP="${GREP:-grep}" EGREP="${EGREP:-grep -E}" FGREP="${FGREP:-grep -F}"
 `
+
+// toolVarProvider names the package each variable stands for. Presetting a
+// variable for the package that PROVIDES it is the same mistake as putting a
+// package's own bottle on the PATH of its own build: the factory hands the
+// build an answer about the very thing being built.
+var toolVarProvider = map[string]string{
+	"SED":   "gnu.org/sed",
+	"GREP":  "gnu.org/grep",
+	"EGREP": "gnu.org/grep",
+	"FGREP": "gnu.org/grep",
+}
+
+// toolVars is libtoolToolVars minus the variables the project being built
+// provides itself.
+//
+// GNU grep's configure refuses OUTRIGHT if either is set — not if it is set to
+// something bad, if it is set at all:
+//
+//	if test -n "$GREP" || test -n "$EGREP"; then
+//	  as_fn_error $? "no working 'grep' found
+//	  A working 'grep' command is needed to build GNU Grep.
+//
+// The message names a missing tool; the condition is a present variable. So
+// gnu.org/grep could not be built here at all, and the error sent three
+// separate investigations after the grep on PATH — which was fine the whole
+// time (exit 0, valid signature, "uses PCRE2 10.48"). Reproduced locally: with
+// GREP unset the same configure exits 0, and with GREP set to the absolute path
+// of a working GNU grep it still refuses.
+func toolVars(project string) string {
+	var keep []string
+	for _, v := range []string{"SED", "GREP", "EGREP", "FGREP"} {
+		if toolVarProvider[v] == project {
+			continue
+		}
+		switch v {
+		case "EGREP":
+			keep = append(keep, `EGREP="${EGREP:-grep -E}"`)
+		case "FGREP":
+			keep = append(keep, `FGREP="${FGREP:-grep -F}"`)
+		default:
+			keep = append(keep, v+`="${`+v+`:-`+strings.ToLower(v)+`}"`)
+		}
+	}
+	if len(keep) == 0 {
+		return ""
+	}
+	return "export " + strings.Join(keep, " ") + "\n"
+}
 
 // tmpdirLine sets TMPDIR (POSIX) or TMP/TEMP (windows host) under $HOME.
 func tmpdirLine(host target.Target) string {

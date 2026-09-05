@@ -501,3 +501,58 @@ func TestDarwinRpathDepths(t *testing.T) {
 		})
 	}
 }
+
+// GNU grep's configure refuses OUTRIGHT if GREP or EGREP is set — not if it is
+// set to something bad, if it is set at all:
+//
+//	if test -n "$GREP" || test -n "$EGREP"; then
+//	  as_fn_error $? "no working 'grep' found
+//
+// The message names a missing tool; the condition is a present variable. So the
+// factory could not build gnu.org/grep at all, and the error sent three
+// investigations after the grep on PATH, which was fine throughout.
+func TestToolVarsSkipWhatTheProjectProvides(t *testing.T) {
+	for _, tc := range []struct {
+		project string
+		absent  []string
+		present []string
+	}{
+		{"gnu.org/grep", []string{"GREP=", "EGREP=", "FGREP="}, []string{"SED="}},
+		{"gnu.org/sed", []string{"SED="}, []string{"GREP=", "EGREP=", "FGREP="}},
+		{"acme.org/thing", nil, []string{"SED=", "GREP=", "EGREP=", "FGREP="}},
+	} {
+		t.Run(tc.project, func(t *testing.T) {
+			got := toolVars(tc.project)
+			for _, v := range tc.absent {
+				if strings.Contains(got, v) {
+					t.Errorf("%s presets %s, which it provides itself: %q", tc.project, v, got)
+				}
+			}
+			for _, v := range tc.present {
+				if !strings.Contains(got, v) {
+					t.Errorf("%s lost %s: %q", tc.project, v, got)
+				}
+			}
+		})
+	}
+}
+
+// A project that provides EVERY tool var would otherwise emit a bare `export`.
+func TestToolVarsCanBeEmpty(t *testing.T) {
+	saved := toolVarProvider
+	defer func() { toolVarProvider = saved }()
+	toolVarProvider = map[string]string{"SED": "x", "GREP": "x", "EGREP": "x", "FGREP": "x"}
+	if got := toolVars("x"); got != "" {
+		t.Errorf("toolVars = %q, want nothing at all", got)
+	}
+}
+
+// The whole line still reaches the script for an ordinary package: libtool
+// defaults these to /bin/grep, which does not exist in a from-scratch
+// sovereign container.
+func TestToolVarsStillExported(t *testing.T) {
+	s := Wrap(WrapOptions{UserScript: "make", Target: darwinTgt(), Project: "acme.org/thing"})
+	if !strings.Contains(s, `export SED="${SED:-sed}" GREP="${GREP:-grep}" EGREP="${EGREP:-grep -E}" FGREP="${FGREP:-grep -F}"`) {
+		t.Errorf("the ordinary case lost its tool vars:\n%s", s)
+	}
+}
