@@ -234,3 +234,39 @@ func TestDependencyVersionsAreMajorOnly(t *testing.T) {
 		t.Errorf("own library = %q, want its full version kept", got[2])
 	}
 }
+
+// Once a dependency is itself built with an @rpath install name, its dependents
+// record @rpath/<project>/v<FULL version>/… — which never reached the
+// absolute-path branch, so the version stayed whole and the reference breaks on
+// the dependency's next minor release. Measured on the grep bottle rebuilt
+// after pcre2 had been: @rpath/pcre.org/v2/v10.48/lib/libpcre2-8.0.dylib.
+func TestAlreadyRpathReferencesAreMajorVersionedToo(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "gnu.org", "grep", "v3.12")
+	exe := filepath.Join(prefix, "bin", "grep")
+	place(t, exe,
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+		machoCmd{lcLoadDylib, "@rpath/pcre.org/v2/v10.48/lib/libpcre2-8.0.dylib"},
+		machoCmd{lcLoadDylib, "@rpath/gnu.org/grep/v3.12/lib/libgreputils.1.dylib"},
+		machoCmd{lcLoadDylib, "@rpath/not/under/anything.dylib"},
+	)
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMachoStrings(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0] != "@loader_path/../../../.." {
+		t.Errorf("the rpath itself was rewritten: %q", got[0])
+	}
+	if got[1] != "@rpath/pcre.org/v2/v10/lib/libpcre2-8.0.dylib" {
+		t.Errorf("dependency = %q, want it major-versioned", got[1])
+	}
+	if got[2] != "@rpath/gnu.org/grep/v3.12/lib/libgreputils.1.dylib" {
+		t.Errorf("own library = %q, want its full version kept", got[2])
+	}
+	if got[3] != "@rpath/not/under/anything.dylib" {
+		t.Errorf("a reference with no version = %q, want it untouched", got[3])
+	}
+}

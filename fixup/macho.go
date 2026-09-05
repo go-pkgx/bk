@@ -331,6 +331,21 @@ func rewriteMacho(exe string, opts Options) error {
 		if !toRpath || cmd == lcRpath {
 			return s
 		}
+		// A reference that is ALREADY @rpath/… — because the dependency was
+		// itself built with an @rpath install name — never passed through the
+		// absolute-path branch below, so its version stayed whole. Measured on
+		// the grep bottle rebuilt once pcre2 had been: it recorded
+		// @rpath/pcre.org/v2/v10.48/lib/libpcre2-8.0.dylib, which breaks again
+		// the day pcre2 reaches 10.49. The relocation was right and the version
+		// was not.
+		if rest, ok := strings.CutPrefix(s, "@rpath/"); ok && cmd != lcRpath {
+			full := filepath.Join(opts.PkgxDir, rest)
+			t := transformRpath(full, filepath.Dir(opts.Prefix))
+			if short, ok := underDir(t, opts.PkgxDir); ok {
+				return "@rpath/" + short
+			}
+			return s
+		}
 		if _, ok := underDir(s, opts.PkgxDir); ok {
 			// Major-versioned, exactly as the ELF side does to its RUNPATH
 			// entries, and for the reason measured on the published grep bottle:
