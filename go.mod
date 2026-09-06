@@ -18,7 +18,7 @@ require (
 	github.com/ulikunitz/xz v0.5.16
 	github.com/zclconf/go-cty v1.19.0
 	gopkg.in/yaml.v3 v3.0.1
-	mvdan.cc/sh/v3 v3.14.0
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (
