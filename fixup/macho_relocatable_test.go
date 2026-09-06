@@ -1,6 +1,7 @@
 package fixup
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,5 +269,55 @@ func TestAlreadyRpathReferencesAreMajorVersionedToo(t *testing.T) {
 	}
 	if got[3] != "@rpath/not/under/anything.dylib" {
 		t.Errorf("a reference with no version = %q, want it untouched", got[3])
+	}
+}
+
+// A Mach-O that references @rpath/… and has NO LC_RPATH loads nowhere, on any
+// machine. Found in the published registry — pkgx.sh 2.11.0 references
+// @rpath/tukaani.org/xz/v5.8.3/lib/liblzma.5.dylib with zero rpaths and dies
+// with "Reason: no LC_RPATH's found" — on a bottle that built, signed,
+// attested and published without a complaint.
+//
+// It happens without anyone writing it: a dependency's install name is what its
+// DEPENDENTS record, so the day a library is rebuilt with an @rpath install
+// name, everything linking it records @rpath/… too, including a package whose
+// own link put no LC_RPATH in.
+func TestDeadRpathIsRefused(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "thing", "v1.0.0")
+	exe := filepath.Join(prefix, "bin", "thing")
+	place(t, exe, machoCmd{lcLoadDylib, "@rpath/tukaani.org/xz/v5.8.3/lib/liblzma.5.dylib"})
+	err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx})
+	if !errors.Is(err, ErrDeadRpath) {
+		t.Fatalf("err = %v, want ErrDeadRpath", err)
+	}
+	if !strings.Contains(err.Error(), "liblzma") {
+		t.Errorf("the error must name the reference: %v", err)
+	}
+}
+
+// With an rpath present the same file is fine: whether that rpath RESOLVES is
+// the installer's business, but a file with none can never work.
+func TestAnRpathIsEnoughToPass(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "thing", "v1.0.0")
+	exe := filepath.Join(prefix, "bin", "thing")
+	place(t, exe,
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+		machoCmd{lcLoadDylib, "@rpath/tukaani.org/xz/v5.8.3/lib/liblzma.5.dylib"},
+	)
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatalf("a file with an rpath was refused: %v", err)
+	}
+}
+
+// And a file with no @rpath reference at all is not the case this guards.
+func TestNoRpathReferenceNeedsNoRpath(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "thing", "v1.0.0")
+	exe := filepath.Join(prefix, "bin", "thing")
+	place(t, exe, machoCmd{lcLoadDylib, "/usr/lib/libSystem.B.dylib"})
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatalf("a plain binary was refused: %v", err)
 	}
 }
