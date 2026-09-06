@@ -5,6 +5,7 @@ import (
 	"debug/macho"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -325,7 +326,10 @@ func rewriteMacho(exe string, opts Options) error {
 		}
 	}
 	if opts.BuildInstall == "" && !toRpath {
-		return nil
+		// Nothing to rewrite — but a file that already references @rpath with no
+		// LC_RPATH is dead however little we touch it, and this is the branch it
+		// arrives on.
+		return checkRpathResolvable(exe)
 	}
 	err := rewriteMachoStringsCmd(exe, func(cmd uint32, s string) string {
 		if opts.BuildInstall != "" {
@@ -378,7 +382,50 @@ func rewriteMacho(exe string, opts Options) error {
 		opts.log("skip macho for %s: %v", exe, err)
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return checkRpathResolvable(exe)
+}
+
+// ErrDeadRpath means a Mach-O references @rpath/… and carries no LC_RPATH at
+// all, so nothing can ever resolve it.
+var ErrDeadRpath = errors.New("fixup: @rpath reference with no LC_RPATH")
+
+// checkRpathResolvable refuses a binary whose @rpath references nothing can
+// satisfy.
+//
+// A dependency's install name is what its DEPENDENTS record, so the day a
+// library is rebuilt with an @rpath install name, everything linking it starts
+// recording @rpath/… too — including a package whose own link did not put an
+// LC_RPATH in. The result loads nowhere:
+//
+//	dyld: Library not loaded: @rpath/tukaani.org/xz/v5.8.3/lib/liblzma.5.dylib
+//	  Referenced from: …/pkgx.sh/v2.11.0/bin/pkgx
+//	  Reason: no LC_RPATH's found
+//
+// Found in the published registry, on a bottle that builds, signs, attests and
+// publishes without a complaint. There is nothing to guess at here — no rpath
+// and an @rpath reference is dead in every environment — so it stops the build
+// rather than becoming someone's dyld error weeks later.
+func checkRpathResolvable(exe string) error {
+	strs, err := ReadMachoStrings(exe)
+	if err != nil {
+		return err
+	}
+	rpaths, err := machoRpaths(exe)
+	if err != nil {
+		return err
+	}
+	if len(rpaths) > 0 {
+		return nil
+	}
+	for _, s := range strs {
+		if strings.HasPrefix(s, "@rpath/") {
+			return fmt.Errorf("%w: %s references %s", ErrDeadRpath, exe, s)
+		}
+	}
+	return nil
 }
 
 // cstr reads a NUL-terminated string from the front of b.

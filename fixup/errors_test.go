@@ -265,3 +265,56 @@ func TestRpathReferenceOutsidePkgxDirIsUntouched(t *testing.T) {
 		t.Errorf("string = %q, want it untouched", got[1])
 	}
 }
+
+// The dead-rpath check reads the file twice; both reads must surface their
+// error rather than let a binary through unexamined.
+func TestCheckRpathResolvableReadErrors(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "thing", "v1.0.0")
+	exe := filepath.Join(prefix, "bin", "thing")
+	place(t, exe, machoCmd{lcLoadDylib, "/usr/lib/libSystem.B.dylib"})
+	for _, nth := range []int{1, 2} {
+		defer restoreReadFile(os.ReadFile)
+		calls := 0
+		osReadFile = func(p string) ([]byte, error) {
+			calls++
+			if calls == nth {
+				return nil, errInject
+			}
+			return os.ReadFile(p)
+		}
+		if err := checkRpathResolvable(exe); !errors.Is(err, errInject) {
+			t.Errorf("read %d: err = %v, want the injected error", nth, err)
+		}
+		osReadFile = os.ReadFile
+	}
+}
+
+// And the same on the branch that reaches it after a rewrite.
+func TestRewriteMachoDeadRpathAfterRewrite(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "thing", "v1.0.0")
+	exe := filepath.Join(prefix, "bin", "thing")
+	place(t, exe, machoCmd{lcIDDylib, prefix + "+brewing/lib/libthing.dylib"},
+		machoCmd{lcLoadDylib, "@rpath/tukaani.org/xz/v5.8.3/lib/liblzma.5.dylib"})
+	err := FixUp(Options{Prefix: prefix, BuildInstall: prefix + "+brewing", Platform: "darwin", PkgxDir: pkgx})
+	if !errors.Is(err, ErrDeadRpath) {
+		t.Errorf("err = %v, want ErrDeadRpath after a rewrite too", err)
+	}
+}
+
+// A write failure during the Mach-O rewrite must reach the caller — it is the
+// difference between a bottle that was relocated and one that was not.
+func TestRewriteMachoWriteErrorSurfaces(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "thing", "v1.0.0")
+	exe := filepath.Join(prefix, "bin", "thing")
+	place(t, exe, machoCmd{lcIDDylib, prefix + "+brewing/lib/libthing.dylib"})
+	saved := osWriteFile
+	defer func() { osWriteFile = saved }()
+	osWriteFile = func(string, []byte, os.FileMode) error { return errInject }
+	err := FixUp(Options{Prefix: prefix, BuildInstall: prefix + "+brewing", Platform: "darwin", PkgxDir: pkgx})
+	if !errors.Is(err, errInject) {
+		t.Errorf("err = %v, want the write error", err)
+	}
+}
