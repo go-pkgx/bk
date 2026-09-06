@@ -1,8 +1,10 @@
 package fixup
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,16 +40,34 @@ func TestFixPCFilesReadErrors(t *testing.T) {
 	}
 }
 
-func TestRewriteFileWriteError(t *testing.T) {
+// A read-only .cmake is rewritten too, and keeps its mode. Relocation is an
+// in-place rewrite everywhere in this package, and a package may install any of
+// its files read-only.
+func TestRewriteFileOnAReadOnlyFile(t *testing.T) {
 	requireNonRoot(t)
-	// readable but not writable .cmake with content to change → WriteFile fails
 	prefix := t.TempDir()
 	cm := filepath.Join(prefix, "lib", "cmake", "F.cmake")
 	write(t, cm, "set(X \""+prefix+"\")")
-	os.Chmod(cm, 0o400)
+	if err := os.Chmod(cm, 0o444); err != nil {
+		t.Fatal(err)
+	}
 	defer os.Chmod(cm, 0o644)
-	if err := FixUp(Options{Prefix: prefix, Platform: "linux"}); err == nil {
-		t.Error("expected WriteFile permission error")
+	if err := FixUp(Options{Prefix: prefix, Platform: "linux"}); err != nil {
+		t.Fatalf("a read-only .cmake was refused: %v", err)
+	}
+	b, err := os.ReadFile(cm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), prefix) {
+		t.Errorf("the absolute prefix survived: %s", b)
+	}
+	fi, err := os.Stat(cm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o444 {
+		t.Errorf("mode = %o, want 444 restored", fi.Mode().Perm())
 	}
 }
 
@@ -98,15 +118,65 @@ func TestFlattenHeadersRenameError(t *testing.T) {
 	}
 }
 
-func TestSetRunpathOpenError(t *testing.T) {
+// A package is entitled to install its files read-only — autotools does it
+// routinely — and relocation is an in-place rewrite, so the mode has to be
+// lifted for the write and put back afterwards. tcl-lang.org ships every
+// library as -r-xr-xr-x, and the build died at the last step with
+//
+//	fix-up: open …/lib/libtcl8.6.dylib: permission denied
+//
+// having compiled and installed perfectly.
+func TestSetRunpathOnAReadOnlyFile(t *testing.T) {
 	requireNonRoot(t)
-	// a valid ELF that is not writable → OpenFile(O_RDWR) fails after parse
 	p := buildELF64LE(t, "/opt/placeholder/aaaaaaaaaaaaaaaaaaaa", "libc.so.6", 40)
-	os.Chmod(p, 0o400)
+	if err := os.Chmod(p, 0o555); err != nil {
+		t.Fatal(err)
+	}
 	defer os.Chmod(p, 0o644)
-	err := SetRunpath(p, "$ORIGIN/x")
-	if err == nil {
-		t.Error("expected OpenFile RDWR permission error")
+	if err := SetRunpath(p, "$ORIGIN/x"); err != nil {
+		t.Fatalf("a read-only ELF was refused: %v", err)
+	}
+	got, err := ReadRunpath(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "$ORIGIN/x" {
+		t.Errorf("RUNPATH = %q, want it rewritten", got)
+	}
+	// The bottle must ship the permissions the package chose, not the ones we
+	// needed for a moment.
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o555 {
+		t.Errorf("mode = %o, want 555 restored", fi.Mode().Perm())
+	}
+}
+
+// The write bit cannot always be lifted — a read-only mount, or a directory we
+// may not chmod in. That must surface, not be swallowed.
+func TestEnsureWritableChmodError(t *testing.T) {
+	p := buildELF64LE(t, "/opt/placeholder/aaaaaaaaaaaaaaaaaaaa", "libc.so.6", 40)
+	if err := os.Chmod(p, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(p, 0o644)
+	saved := osChmod
+	defer func() { osChmod = saved }()
+	osChmod = func(string, os.FileMode) error { return errInject }
+	if err := SetRunpath(p, "$ORIGIN/x"); !errors.Is(err, errInject) {
+		t.Errorf("err = %v, want the chmod error", err)
+	}
+}
+
+// And a file that is not there at all fails at the stat, before any of it.
+func TestEnsureWritableStatError(t *testing.T) {
+	if _, err := ensureWritable(filepath.Join(t.TempDir(), "absent")); err == nil {
+		t.Error("want an error for a file that does not exist")
+	}
+	if _, err := modeOf(filepath.Join(t.TempDir(), "absent")); err == nil {
+		t.Error("want an error from modeOf too")
 	}
 }
 
@@ -133,5 +203,65 @@ func TestWalkExesReadError(t *testing.T) {
 	defer os.Chmod(bin, 0o755)
 	if err := FixUp(Options{Prefix: prefix, Platform: "linux"}); err == nil {
 		t.Error("expected WalkDir error on unreadable bin")
+	}
+}
+
+// The same chmod failure at the other two in-place writers: the Mach-O rewrite
+// and the .pc/.cmake rewrite. A file we cannot make writable must stop the
+// relocation, not be skipped silently — a half-relocated bottle is the one
+// outcome nobody can check.
+func TestEnsureWritableChmodErrorAtEveryWriter(t *testing.T) {
+	t.Run("mach-o", func(t *testing.T) {
+		p := buildMachO(t, machoCmd{lcIDDylib, "/opt/x/v1+brewing/lib/libz.dylib"})
+		if err := os.Chmod(p, 0o400); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(p, 0o644)
+		saved := osChmod
+		defer func() { osChmod = saved }()
+		osChmod = func(string, os.FileMode) error { return errInject }
+		err := RewriteMachoStrings(p, func(s string) string {
+			return strings.ReplaceAll(s, "+brewing", "")
+		})
+		if !errors.Is(err, errInject) {
+			t.Errorf("err = %v, want the chmod error", err)
+		}
+	})
+	t.Run("cmake", func(t *testing.T) {
+		prefix := t.TempDir()
+		cm := filepath.Join(prefix, "lib", "cmake", "F.cmake")
+		write(t, cm, "set(X \""+prefix+"\")")
+		if err := os.Chmod(cm, 0o400); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(cm, 0o644)
+		saved := osChmod
+		defer func() { osChmod = saved }()
+		osChmod = func(string, os.FileMode) error { return errInject }
+		if err := FixUp(Options{Prefix: prefix, Platform: "linux"}); !errors.Is(err, errInject) {
+			t.Errorf("err = %v, want the chmod error", err)
+		}
+	})
+}
+
+// An @rpath reference that names nothing under $PKGX_DIR is left exactly as it
+// is: /usr/lib and the frameworks are not ours to rewrite.
+func TestRpathReferenceOutsidePkgxDirIsUntouched(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "thing", "v1.0.0")
+	exe := filepath.Join(prefix, "bin", "thing")
+	place(t, exe,
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+		machoCmd{lcLoadDylib, "@rpath/../outside/libfoo.dylib"},
+	)
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMachoStrings(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[1] != "@rpath/../outside/libfoo.dylib" {
+		t.Errorf("string = %q, want it untouched", got[1])
 	}
 }

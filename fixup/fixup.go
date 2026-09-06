@@ -169,6 +169,11 @@ func rewriteFile(path, buildInstall, prefix, repl string, log func(string, ...an
 		if err != nil {
 			return err
 		}
+		restore, err := ensureWritable(path)
+		if err != nil {
+			return err
+		}
+		defer restore()
 		return osWriteFile(path, []byte(text), info.Mode().Perm())
 	}
 	return nil
