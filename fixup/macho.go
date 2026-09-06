@@ -225,11 +225,16 @@ func rewriteMachoStringsCmd(path string, fn func(uint32, string) string) error {
 	if !changed {
 		return nil
 	}
-	fi, err := osStat(path)
+	mode, err := modeOf(path)
 	if err != nil {
 		return err
 	}
-	return osWriteFile(path, raw, fi.Mode().Perm())
+	restore, err := ensureWritable(path)
+	if err != nil {
+		return err
+	}
+	defer restore()
+	return osWriteFile(path, raw, mode)
 }
 
 // machoRpaths returns a Mach-O's LC_RPATH entries.

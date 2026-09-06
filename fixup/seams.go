@@ -16,4 +16,5 @@ var (
 	osMkdirAll  = os.MkdirAll
 	osOpenFile  = os.OpenFile
 	osReadFile  = os.ReadFile
+	osChmod     = os.Chmod
 )

@@ -88,6 +88,11 @@ func SetRunpath(path, value string) error {
 		return ErrNoRunpath
 	}
 
+	restore, err := ensureWritable(path)
+	if err != nil {
+		return err
+	}
+	defer restore()
 	fh, err := osOpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return err
