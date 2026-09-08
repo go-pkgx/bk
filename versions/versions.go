@@ -381,7 +381,7 @@ func List(spec any) ([]VersionTag, error) {
 	default:
 		return nil, fmt.Errorf("versions: unsupported version spec %T", spec)
 	}
-	return listVersions(candidates, strips, ignores)
+	return listVersions(candidates, tagOf, strips, ignores)
 }
 
 // listVersions applies strip then ignore to each candidate, parses the
@@ -389,7 +389,7 @@ func List(spec any) ([]VersionTag, error) {
 // resolved version string, and returns every distinct VersionTag sorted
 // descending. The Tag is the raw pre-strip candidate (the upstream git tag /
 // listing match), matching Resolve's version.tag semantics.
-func listVersions(candidates []string, strips, ignores []*onigmo.Regexp) ([]VersionTag, error) {
+func listVersions(candidates []string, tagOf map[string]string, strips, ignores []*onigmo.Regexp) ([]VersionTag, error) {
 	type entry struct {
 		v  *semver.Version
 		vt VersionTag
@@ -414,7 +414,11 @@ func listVersions(candidates []string, strips, ignores []*onigmo.Regexp) ([]Vers
 			continue
 		}
 		seen[ver] = true
-		entries = append(entries, entry{v: v, vt: VersionTag{Version: ver, Tag: c}})
+		tag := c
+		if t, ok := tagOf[tag]; ok {
+			tag = t
+		}
+		entries = append(entries, entry{v: v, vt: VersionTag{Version: ver, Tag: tag}})
 	}
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("versions: no candidate version matched")
