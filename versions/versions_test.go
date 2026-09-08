@@ -847,9 +847,17 @@ func TestReleaseNameIsNotTheTag(t *testing.T) {
 			{Name: "1.19.1", TagName: "rel_1_19_1"},
 		}, nil
 	}
-	v, tag, err := Resolve(map[string]any{"github": "sqlalchemy/alembic/releases"}, "*")
+	spec0 := map[string]any{"github": "sqlalchemy/alembic/releases"}
+	v, tag, err := Resolve(spec0, "*")
 	if err != nil || v != "1.19.2" || tag != "rel_1_19_2" {
 		t.Fatalf("Resolve = %q/%q %v; want 1.19.2/rel_1_19_2", v, tag, err)
+	}
+	// `bk versions` reads the SAME field a recipe interpolates. Reporting the
+	// display name here while a build uses the git tag would make the command a
+	// person reaches for to debug a 404 quietly agree with the 404.
+	lst, err := List(spec0)
+	if err != nil || len(lst) != 2 || lst[0].Tag != "rel_1_19_2" || lst[1].Tag != "rel_1_19_1" {
+		t.Fatalf("List = %+v %v; want the git tags", lst, err)
 	}
 
 	// A release whose name IS its tag contributes no mapping — the map exists
