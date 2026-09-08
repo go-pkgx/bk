@@ -29,7 +29,10 @@ func TestCCShim(t *testing.T) {
 	if code := ccShim("cc", []string{"-c", "x.c"}, &errb); code != 0 {
 		t.Fatalf("code = %d, %s", code, errb.String())
 	}
-	if gotName != "clang" || strings.Join(gotArgs, " ") != "--sysroot=/pkgx/glibc -fuse-ld=lld -c x.c" {
+	// -c compiles and never links, so the link-only flags are dropped: clang
+	// warns about them there, and a caller may ask for that warning back as an
+	// error (the Linux kernel passes -Werror=unused-command-line-argument).
+	if gotName != "clang" || strings.Join(gotArgs, " ") != "--sysroot=/pkgx/glibc -c x.c" {
 		t.Fatalf("ran %q %v", gotName, gotArgs)
 	}
 	// c++/g++ take the C++ driver
@@ -123,6 +126,54 @@ func TestIsCompilerShim(t *testing.T) {
 	} {
 		if isCompilerShim(no) {
 			t.Errorf("%q must NOT be a compiler shim", no)
+		}
+	}
+}
+
+// The link flags are dropped only where they mean nothing. A link invocation
+// still needs every one of them — without -fuse-ld=lld and --rtlib=compiler-rt
+// the sovereign toolchain links against the container's runtime instead.
+func TestCCShimKeepsLinkFlagsWhenLinking(t *testing.T) {
+	saved := execCommand
+	defer func() { execCommand = saved }()
+	var gotArgs []string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		gotArgs = args
+		return exec.Command("true")
+	}
+	t.Setenv("BK_CC", "clang --sysroot=/pkgx/glibc -L/pkgx/lib --rtlib=compiler-rt -fuse-ld=lld --unwindlib=none")
+	var errb bytes.Buffer
+	if code := ccShim("cc", []string{"a.o", "-o", "a.out"}, &errb); code != 0 {
+		t.Fatalf("code = %d, %s", code, errb.String())
+	}
+	for _, want := range []string{"-L/pkgx/lib", "--rtlib=compiler-rt", "-fuse-ld=lld", "--unwindlib=none"} {
+		if !strings.Contains(strings.Join(gotArgs, " "), want) {
+			t.Errorf("a link lost %s: %v", want, gotArgs)
+		}
+	}
+}
+
+// -S and -E stop before linking too.
+func TestCCShimCompileOnlyForms(t *testing.T) {
+	saved := execCommand
+	defer func() { execCommand = saved }()
+	var gotArgs []string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		gotArgs = args
+		return exec.Command("true")
+	}
+	t.Setenv("BK_CC", "clang --sysroot=/pkgx/glibc -L/pkgx/lib --rtlib=compiler-rt")
+	var errb bytes.Buffer
+	for _, form := range []string{"-S", "-E"} {
+		if code := ccShim("cc", []string{form, "x.c"}, &errb); code != 0 {
+			t.Fatalf("%s: code = %d", form, code)
+		}
+		got := strings.Join(gotArgs, " ")
+		if strings.Contains(got, "-L") || strings.Contains(got, "--rtlib") {
+			t.Errorf("%s kept a link flag: %v", form, gotArgs)
+		}
+		if !strings.Contains(got, "--sysroot=/pkgx/glibc") {
+			t.Errorf("%s lost the sysroot, which it needs: %v", form, gotArgs)
 		}
 	}
 }
