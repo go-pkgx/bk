@@ -256,10 +256,15 @@ func TestResolveGithubReleases(t *testing.T) {
 		}, nil
 	}
 	spec := map[string]any{"github": "curl/curl/releases", "strip": "/^curl /"}
-	// Latest wins: 8.21.0.
+	// Latest wins: 8.21.0 — and its TAG is the git tag the release points at,
+	// not its display name. This assertion used to read `tag != "8.21.0"`,
+	// which is precisely the defect: a recipe interpolating {{version.tag}}
+	// into a download URL got the human name and fetched a 404. The whole
+	// reason to prefer this listing is that release NAMES parse as semver
+	// where the tags do not; that makes the two different by construction.
 	v, tag, err := Resolve(spec, "*")
-	if err != nil || v != "8.21.0" || tag != "8.21.0" {
-		t.Fatalf("Resolve = %q/%q %v; want 8.21.0/8.21.0", v, tag, err)
+	if err != nil || v != "8.21.0" || tag != "curl-8_21_0" {
+		t.Fatalf("Resolve = %q/%q %v; want 8.21.0/curl-8_21_0", v, tag, err)
 	}
 	if gotURL != "https://api.github.com/repos/curl/curl/releases?per_page=100" {
 		t.Errorf("releases URL = %q", gotURL)
@@ -826,5 +831,59 @@ func TestListAndResolveSourceBlocks(t *testing.T) {
 	}
 	if _, _, err := Resolve([]any{map[string]any{"strip": 42}}, "*"); err == nil {
 		t.Error("Resolve: expected an error for a malformed source block")
+	}
+}
+
+// TestReleaseNameIsNotTheTag is the case that sent a real recipe to a 404:
+// alembic resolves versions from `github: sqlalchemy/alembic/releases`, whose
+// release NAME is "1.19.2" while the git tag is "rel_1_19_2", and interpolates
+// {{version.tag}} into an archive URL. Seven recipes in the pantry have that
+// exact combination.
+func TestReleaseNameIsNotTheTag(t *testing.T) {
+	saveSeams(t)
+	ghListReleases = func(string) ([]ghRelease, error) {
+		return []ghRelease{
+			{Name: "1.19.2", TagName: "rel_1_19_2"},
+			{Name: "1.19.1", TagName: "rel_1_19_1"},
+		}, nil
+	}
+	v, tag, err := Resolve(map[string]any{"github": "sqlalchemy/alembic/releases"}, "*")
+	if err != nil || v != "1.19.2" || tag != "rel_1_19_2" {
+		t.Fatalf("Resolve = %q/%q %v; want 1.19.2/rel_1_19_2", v, tag, err)
+	}
+
+	// A release whose name IS its tag contributes no mapping — the map exists
+	// only for the difference, so the common case stays exactly as before.
+	ghListReleases = func(string) ([]ghRelease, error) {
+		return []ghRelease{{Name: "v2.0.0", TagName: "v2.0.0"}}, nil
+	}
+	if v, tag, err := Resolve(map[string]any{"github": "o/r/releases"}, "*"); err != nil || v != "2.0.0" || tag != "v2.0.0" {
+		t.Fatalf("Resolve = %q/%q %v; want 2.0.0/v2.0.0", v, tag, err)
+	}
+
+	// …and the /releases/tags form, which lists tag_names as the candidates
+	// themselves, is untouched: the candidate already IS the tag.
+	ghListReleases = func(string) ([]ghRelease, error) {
+		return []ghRelease{{Name: "ICU 76.1", TagName: "v76.1.0"}}, nil
+	}
+	if v, tag, err := Resolve(map[string]any{"github": "o/r/releases/tags"}, "*"); err != nil || v != "76.1.0" || tag != "v76.1.0" {
+		t.Fatalf("releases/tags: %q/%q %v; want 76.1.0/v76.1.0", v, tag, err)
+	}
+
+	// A multi-source spec mixing a releases block with a tags block keeps each
+	// candidate's own tag: mergeTags folds the maps rather than replacing them.
+	gitLsRemoteTags = func(string) ([]string, error) { return []string{"refs/tags/v0.9.0"}, nil }
+	ghListReleases = func(string) ([]ghRelease, error) {
+		return []ghRelease{{Name: "1.19.2", TagName: "rel_1_19_2"}}, nil
+	}
+	spec := []any{
+		map[string]any{"github": "sqlalchemy/alembic/releases"},
+		map[string]any{"github": "o/r"},
+	}
+	if v, tag, err := Resolve(spec, "*"); err != nil || v != "1.19.2" || tag != "rel_1_19_2" {
+		t.Fatalf("mixed: %q/%q %v; want 1.19.2/rel_1_19_2", v, tag, err)
+	}
+	if v, tag, err := Resolve(spec, "<1"); err != nil || v != "0.9.0" || tag != "v0.9.0" {
+		t.Fatalf("mixed, tags block wins: %q/%q %v; want 0.9.0/v0.9.0", v, tag, err)
 	}
 }
