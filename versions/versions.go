@@ -176,21 +176,23 @@ func Resolve(spec any, constraint string) (string, string, error) {
 		// Same two shapes as List: literal versions, or several source blocks.
 		candidates := make([]string, 0, len(v))
 		var strips, ignores []*onigmo.Regexp
+		var tagOf map[string]string
 		for _, e := range v {
 			sub, ok := e.(map[string]any)
 			if !ok {
 				candidates = append(candidates, fmt.Sprint(e))
 				continue
 			}
-			c, s, i, err := gatherCandidates(sub)
+			c, tags, s, i, err := gatherCandidates(sub)
 			if err != nil {
 				return "", "", err
 			}
 			candidates = append(candidates, c...)
+			tagOf = mergeTags(tagOf, tags)
 			strips = append(strips, s...)
 			ignores = append(ignores, i...)
 		}
-		return selectVersion(candidates, strips, ignores, constraint)
+		return selectVersion(candidates, tagOf, strips, ignores, constraint)
 	default:
 		return "", "", fmt.Errorf("versions: unsupported version spec %T", spec)
 	}
@@ -199,11 +201,11 @@ func Resolve(spec any, constraint string) (string, string, error) {
 // resolveMap handles the github/url map form of `versions:`, listing upstream
 // tags (or matching an upstream listing) and selecting via the loose semver.
 func resolveMap(m map[string]any, constraint string) (string, string, error) {
-	candidates, strips, ignores, err := gatherCandidates(m)
+	candidates, tagOf, strips, ignores, err := gatherCandidates(m)
 	if err != nil {
 		return "", "", err
 	}
-	return selectVersion(candidates, strips, ignores, constraint)
+	return selectVersion(candidates, tagOf, strips, ignores, constraint)
 }
 
 // gatherCandidates collects EVERY raw candidate version string for the
@@ -212,14 +214,18 @@ func resolveMap(m map[string]any, constraint string) (string, string, error) {
 // It is the single source of the per-source listing logic shared by Resolve
 // (which then picks the max satisfying a constraint) and List (which returns
 // them all). Callers apply strips/ignores via selectVersion or listVersions.
-func gatherCandidates(m map[string]any) (candidates []string, strips, ignores []*onigmo.Regexp, err error) {
+// tagOf maps a candidate back to the upstream git tag it came from, and is
+// populated ONLY where the two differ: the `github: owner/repo/releases` form,
+// which lists a release's human display NAME. Everywhere else the candidate is
+// the tag, and a nil map says exactly that.
+func gatherCandidates(m map[string]any) (candidates []string, tagOf map[string]string, strips, ignores []*onigmo.Regexp, err error) {
 	strips, err = regexList(m["strip"])
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	ignores, err = regexList(m["ignore"])
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	switch {
@@ -233,11 +239,11 @@ func gatherCandidates(m map[string]any) (candidates []string, strips, ignores []
 		if mode == ghTags {
 			repoURL, err := githubRepoURL(gh)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			tags, err := gitLsRemoteTags(repoURL)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			for _, t := range tags {
 				candidates = append(candidates, strings.TrimPrefix(t, "refs/tags/"))
@@ -245,11 +251,11 @@ func gatherCandidates(m map[string]any) (candidates []string, strips, ignores []
 		} else {
 			owner, repo, err := githubOwnerRepo(gh)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			rels, err := ghListReleases(githubReleasesURL(owner, repo))
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, nil, err
 			}
 			useTag := mode == ghReleaseTags
 			for _, r := range rels {
@@ -262,17 +268,27 @@ func gatherCandidates(m map[string]any) (candidates []string, strips, ignores []
 					name = r.TagName
 				}
 				candidates = append(candidates, name)
+				// The display name is what makes this listing worth using — ICU
+				// names a release "76.1" and tags it `release-76-1` — but the
+				// name is NOT what a download URL needs. Remember the tag each
+				// candidate came from so {{version.tag}} means what it says.
+				if !useTag && r.TagName != "" && r.TagName != name {
+					if tagOf == nil {
+						tagOf = map[string]string{}
+					}
+					tagOf[name] = r.TagName
+				}
 			}
 		}
 	case m["gitlab"] != nil:
 		gl, _ := m["gitlab"].(string)
 		repoURL, err := gitlabRepoURL(gl)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		tags, err := gitLsRemoteTags(repoURL)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		for _, t := range tags {
 			candidates = append(candidates, strings.TrimPrefix(t, "refs/tags/"))
@@ -281,13 +297,13 @@ func gatherCandidates(m map[string]any) (candidates []string, strips, ignores []
 		pkg, _ := m["npm"].(string)
 		body, err := httpGet(npmRegistryURL(pkg))
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		var doc struct {
 			Versions map[string]json.RawMessage `json:"versions"`
 		}
 		if err := json.Unmarshal([]byte(body), &doc); err != nil {
-			return nil, nil, nil, fmt.Errorf("versions: npm %s: %w", pkg, err)
+			return nil, nil, nil, nil, fmt.Errorf("versions: npm %s: %w", pkg, err)
 		}
 		for v := range doc.Versions {
 			candidates = append(candidates, v)
@@ -296,21 +312,21 @@ func gatherCandidates(m map[string]any) (candidates []string, strips, ignores []
 		u, _ := m["url"].(string)
 		matchRaw, _ := m["match"].(string)
 		if u == "" || matchRaw == "" {
-			return nil, nil, nil, fmt.Errorf("versions: url spec needs both url and match")
+			return nil, nil, nil, nil, fmt.Errorf("versions: url spec needs both url and match")
 		}
 		re, err := compileDelim(matchRaw)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		body, err := httpGet(u)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		candidates = re.FindAllString(body, -1)
 	default:
-		return nil, nil, nil, fmt.Errorf("versions: spec has neither github nor url")
+		return nil, nil, nil, nil, fmt.Errorf("versions: spec has neither github nor url")
 	}
-	return candidates, strips, ignores, nil
+	return candidates, tagOf, strips, ignores, nil
 }
 
 // VersionTag pairs a resolved version string (post-strip, v-normalised, as
@@ -331,12 +347,13 @@ type VersionTag struct {
 func List(spec any) ([]VersionTag, error) {
 	var (
 		candidates      []string
+		tagOf           map[string]string
 		strips, ignores []*onigmo.Regexp
 	)
 	switch v := spec.(type) {
 	case map[string]any:
 		var err error
-		candidates, strips, ignores, err = gatherCandidates(v)
+		candidates, tagOf, strips, ignores, err = gatherCandidates(v)
 		if err != nil {
 			return nil, err
 		}
@@ -352,11 +369,12 @@ func List(spec any) ([]VersionTag, error) {
 				candidates = append(candidates, fmt.Sprint(e))
 				continue
 			}
-			c, s, i, err := gatherCandidates(sub)
+			c, tags, s, i, err := gatherCandidates(sub)
 			if err != nil {
 				return nil, err
 			}
 			candidates = append(candidates, c...)
+			tagOf = mergeTags(tagOf, tags)
 			strips = append(strips, s...)
 			ignores = append(ignores, i...)
 		}
@@ -443,7 +461,7 @@ func npmRegistryURL(pkg string) string {
 	return "https://registry.npmjs.org/" + pkg
 }
 
-func selectVersion(candidates []string, strips, ignores []*onigmo.Regexp, constraint string) (string, string, error) {
+func selectVersion(candidates []string, tagOf map[string]string, strips, ignores []*onigmo.Regexp, constraint string) (string, string, error) {
 	var rng *semver.Range
 	if constraint != "" && constraint != "*" {
 		r, err := semver.ParseRange(constraint)
@@ -478,7 +496,26 @@ func selectVersion(candidates []string, strips, ignores []*onigmo.Regexp, constr
 	if best == nil {
 		return "", "", fmt.Errorf("versions: no candidate version matched")
 	}
+	if t, ok := tagOf[bestTag]; ok {
+		bestTag = t
+	}
 	return dropVPrefix(bestStr), bestTag, nil
+}
+
+// mergeTags folds one source block's candidate→tag map into the accumulated
+// one. A multi-source `versions:` list can mix a releases block with a tags
+// block, and only the former contributes entries.
+func mergeTags(into, from map[string]string) map[string]string {
+	if len(from) == 0 {
+		return into
+	}
+	if into == nil {
+		into = map[string]string{}
+	}
+	for k, v := range from {
+		into[k] = v
+	}
+	return into
 }
 
 // dropVPrefix strips a leading "v" before a digit ("v5.8.3" -> "5.8.3"), matching
