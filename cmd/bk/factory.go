@@ -33,6 +33,23 @@ const defaultEpoch = 1700000000
 // API, so that artifact is the only way to read the real error afterwards.
 const failTailLines = 30
 
+// failErrorLines is how many error-looking lines are kept from ANYWHERE in the
+// output, alongside the tail.
+//
+// A tail is the right shape for a build that stops at its error. It is the
+// wrong one for `make --jobs N`: the failing command reports, and then every
+// other job in flight drains after it, so by the time make gives up the error
+// has scrolled far past 30 lines. A kernel build failed for three and a half
+// hours and left this in failures-detail.txt:
+//
+//	AR      fs/btrfs/built-in.a
+//	AR      fs/built-in.a
+//	make[1]: *** [.../Makefile:2065: .] Error 2
+//
+// — the top-level "descend into every subdir" rule, naming no cause at all. The
+// only way to learn what actually broke was to run the whole thing again.
+const failErrorLines = 20
+
 // Seams: everything the factory does that touches the network, a pantry
 // checkout or a real compiler, so runFactory is unit-testable end to end.
 var (
@@ -689,6 +706,29 @@ type tailWriter struct {
 	max   int
 	part  []byte
 	lines []string
+	// errs are the FIRST lines that look like a compiler or make error, kept
+	// wherever they appear. First rather than last: under parallelism the first
+	// failure is the cause and the ones after it are often its consequences.
+	errs []string
+}
+
+// errorLine reports whether a line looks like the thing a reader is looking
+// for. Deliberately a small set of shapes rather than anything containing
+// "error": a build prints "-Werror", "error_handling.c" and "0 errors" without
+// having failed, and a tail full of those is no better than no tail.
+func errorLine(s string) bool {
+	switch {
+	case strings.Contains(s, "error:"), // clang/gcc, and cmake's "CMake Error:"
+		strings.Contains(s, "Error:"),
+		strings.Contains(s, "undefined reference"),
+		strings.Contains(s, "No rule to make target"),
+		strings.Contains(s, "cannot find -l"),
+		strings.Contains(s, "bad interpreter"):
+		return true
+	}
+	// `make[2]: *** [path:line: target] Error 2` — the *** is what distinguishes
+	// make's own failure line from a target called something with "error" in it.
+	return strings.Contains(s, "***") && strings.Contains(s, "Error ")
 }
 
 func (t *tailWriter) Write(p []byte) (int, error) {
@@ -710,15 +750,39 @@ func (t *tailWriter) push(line string) {
 	if len(t.lines) > t.max {
 		t.lines = t.lines[len(t.lines)-t.max:]
 	}
+	if len(t.errs) < failErrorLines && errorLine(line) {
+		t.errs = append(t.errs, line)
+	}
 }
 
-// tail is the remembered output, trailing partial line included.
+// tail is the remembered output, trailing partial line included — preceded by
+// the first error-looking lines when they are not already in it.
+//
+// Both, not one: the errors say what broke and the tail says where the build
+// had got to, and a reader who has neither has to run the build again.
 func (t *tailWriter) tail() string {
 	lines := t.lines
 	if len(t.part) > 0 {
 		lines = append(append([]string{}, lines...), string(t.part))
 	}
-	return strings.Join(lines, "\n")
+	body := strings.Join(lines, "\n")
+	if len(t.errs) == 0 {
+		return body
+	}
+	// Nothing is gained by repeating errors the tail already shows, which is the
+	// common case: a build that stopped at its own error.
+	kept := make([]string, 0, len(t.errs))
+	for _, e := range t.errs {
+		if !strings.Contains(body, e) {
+			kept = append(kept, e)
+		}
+	}
+	if len(kept) == 0 {
+		return body
+	}
+	return "--- first errors, from earlier in the output ---\n" +
+		strings.Join(kept, "\n") +
+		"\n--- last " + strconv.Itoa(len(lines)) + " lines ---\n" + body
 }
 
 // setCodec maps the --compress flag onto the extension bottlepkg writes with.
