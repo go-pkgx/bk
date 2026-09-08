@@ -14,6 +14,7 @@ import (
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
+	"fmt"
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/overrides"
@@ -1336,5 +1337,91 @@ func TestFactoryJobsFlag(t *testing.T) {
 	}
 	if *jobs2 != 2 {
 		t.Fatalf("JOBS default = %d, want 2", *jobs2)
+	}
+}
+
+// TestTailKeepsTheFirstErrors is the kernel case: `make --jobs N` reports the
+// failing command and then every other job in flight drains after it, so by the
+// time make gives up the error is far past the tail. Three and a half hours of
+// build left "AR fs/built-in.a" and a top-level make rule naming no cause.
+func TestTailKeepsTheFirstErrors(t *testing.T) {
+	tw := &tailWriter{w: io.Discard, max: 3}
+	fmt.Fprintln(tw, "  CC      drivers/foo.o")
+	fmt.Fprintln(tw, "drivers/foo.c:42:7: error: use of undeclared identifier 'x'")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(tw, "  CC      fs/btrfs/file%d.o\n", i)
+	}
+	fmt.Fprintln(tw, "  AR      fs/built-in.a")
+	got := tw.tail()
+
+	if !strings.Contains(got, "use of undeclared identifier") {
+		t.Errorf("the cause is missing:\n%s", got)
+	}
+	if !strings.Contains(got, "AR      fs/built-in.a") {
+		t.Errorf("the tail is missing:\n%s", got)
+	}
+	if !strings.Contains(got, "first errors") {
+		t.Errorf("no heading to say where those lines came from:\n%s", got)
+	}
+}
+
+// A build that stops AT its error already shows it in the tail; repeating it
+// above would make every ordinary failure report read twice.
+func TestTailDoesNotRepeatAnErrorItAlreadyShows(t *testing.T) {
+	tw := &tailWriter{w: io.Discard, max: 5}
+	fmt.Fprintln(tw, "configuring")
+	fmt.Fprintln(tw, "conf.c:1:1: error: broken")
+	got := tw.tail()
+	if strings.Contains(got, "first errors") {
+		t.Errorf("heading added for an error the tail already carries:\n%s", got)
+	}
+	if strings.Count(got, "conf.c:1:1") != 1 {
+		t.Errorf("error repeated:\n%s", got)
+	}
+}
+
+func TestErrorLine(t *testing.T) {
+	for _, s := range []string{
+		"foo.c:1:2: error: bad",
+		"CMake Error: no",
+		"ld: undefined reference to `x'",
+		"make: *** No rule to make target 'z'",
+		"clang: error: cannot find -lfoo",
+		"./gen.sh: /bin/bash: bad interpreter: No such file or directory",
+		"make[1]: *** [Makefile:2065: .] Error 2",
+	} {
+		if !errorLine(s) {
+			t.Errorf("errorLine(%q) = false", s)
+		}
+	}
+	// A build says these constantly without having failed. Matching them would
+	// fill the kept lines with noise before the real error ever appeared.
+	for _, s := range []string{
+		"  CC      lib/error_handling.o",
+		"cc -Werror -c foo.c",
+		"0 errors, 3 warnings",
+		"checking for error_at_line... yes",
+		"make[2]: Leaving directory '/x'",
+	} {
+		if errorLine(s) {
+			t.Errorf("errorLine(%q) = true", s)
+		}
+	}
+}
+
+// The kept set is bounded and holds the FIRST errors: under parallelism the
+// first failure is the cause and what follows is often its consequence.
+func TestTailErrorsAreBoundedAndFirst(t *testing.T) {
+	tw := &tailWriter{w: io.Discard, max: 1}
+	for i := 0; i < failErrorLines+10; i++ {
+		fmt.Fprintf(tw, "a.c:%d:1: error: number %d\n", i, i)
+	}
+	fmt.Fprintln(tw, "done")
+	got := tw.tail()
+	if strings.Count(got, "error: number") != failErrorLines {
+		t.Errorf("kept %d error lines, want %d", strings.Count(got, "error: number"), failErrorLines)
+	}
+	if !strings.Contains(got, "number 0") || strings.Contains(got, "number 25") {
+		t.Errorf("kept the wrong end of the errors:\n%s", got)
 	}
 }
