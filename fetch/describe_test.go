@@ -24,7 +24,7 @@ func TestFetchSaysWhatTheServerActuallySent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := Fetch(srv.URL+"/zlib-1.3.2.tar.gz", t.TempDir(), 1)
+	_, err := Fetch(srv.URL+"/zlib-1.3.2.tar.gz", t.TempDir(), 1)
 
 	if err == nil {
 		t.Fatal("want an error")
@@ -54,7 +54,7 @@ func TestFetchStillWorksOnARealArchive(t *testing.T) {
 	defer srv.Close()
 	dest := t.TempDir()
 
-	if err := Fetch(srv.URL+"/pkg-1.0.tar.gz", dest, 1); err != nil {
+	if _, err := Fetch(srv.URL+"/pkg-1.0.tar.gz", dest, 1); err != nil {
 		t.Fatalf("a valid archive must still extract: %v", err)
 	}
 	b, err := os.ReadFile(dest + "/README")

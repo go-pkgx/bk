@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/bluekeyes/go-gitdiff v0.9.0
-	github.com/go-attest/sbom v0.1.0
+	github.com/go-attest/sbom v0.2.0
 	github.com/go-attest/sign v0.1.0
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/go-pkgx/bottle v0.18.0

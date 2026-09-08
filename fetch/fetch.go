@@ -13,6 +13,8 @@ import (
 	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -41,25 +43,38 @@ const (
 // stripComponents leading path components from every entry (like
 // `tar --strip-components=N`). The archive format is detected from the
 // URL's extension: .tar.gz/.tgz, .tar.xz, .tar.bz2/.tbz2, .tar, .zip.
-func Fetch(url, destDir string, stripComponents int) error {
+//
+// It returns the SHA-256 of the bytes that arrived, in lowercase hex. The
+// factory signs and attests the bottle it produces; until this existed nothing
+// recorded what the bottle was made FROM, so a source tarball that changed
+// upstream — 57% of this pantry is built from tarballs GitHub generates on
+// request rather than stores — produced a different bottle, correctly signed,
+// whose provenance named a URL and not the bytes that came back from it. The
+// digest is returned even when extraction then fails: what arrived is worth
+// knowing precisely when it was not what was expected.
+func Fetch(url, destDir string, stripComponents int) (string, error) {
 	kind := detect(url)
 	if kind == "" {
-		return fmt.Errorf("fetch: unknown archive extension in %q", url)
+		return "", fmt.Errorf("fetch: unknown archive extension in %q", url)
 	}
 	// Download to a temp file FIRST, resumably: a truncated stream cannot be
 	// recovered once the extractor has begun consuming it.
 	path, err := download(url)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer osRemove(path)
+	digest, err := sha256File(path)
+	if err != nil {
+		return "", fmt.Errorf("fetch: digest %s: %w", url, err)
+	}
 	body, err := osOpen(path)
 	if err != nil {
-		return fmt.Errorf("fetch: open %s: %w", path, err)
+		return digest, fmt.Errorf("fetch: open %s: %w", path, err)
 	}
 	defer body.Close()
 	if err := osMkdirAll(destDir, 0o755); err != nil {
-		return fmt.Errorf("fetch: create %s: %w", destDir, err)
+		return digest, fmt.Errorf("fetch: create %s: %w", destDir, err)
 	}
 	// A mirror that answers 200 with an error page fails HERE, in the
 	// decompressor, with a message that blames the archive. Read the head once
@@ -69,31 +84,31 @@ func Fetch(url, destDir string, stripComponents int) error {
 	case kindTarGz:
 		gz, err := gzip.NewReader(body)
 		if err != nil {
-			return fmt.Errorf("fetch: read gzip from %s: %w — %s", url, err, describeBody(head))
+			return digest, fmt.Errorf("fetch: read gzip from %s: %w — %s", url, err, describeBody(head))
 		}
 		defer gz.Close()
-		return extractTar(tar.NewReader(gz), destDir, stripComponents)
+		return digest, extractTar(tar.NewReader(gz), destDir, stripComponents)
 	case kindTarXz:
 		xr, err := xz.NewReader(body)
 		if err != nil {
-			return fmt.Errorf("fetch: read xz from %s: %w — %s", url, err, describeBody(head))
+			return digest, fmt.Errorf("fetch: read xz from %s: %w — %s", url, err, describeBody(head))
 		}
-		return extractTar(tar.NewReader(xr), destDir, stripComponents)
+		return digest, extractTar(tar.NewReader(xr), destDir, stripComponents)
 	case kindTarBz2:
 		// compress/bzip2 has no eager constructor: NewReader always succeeds and
 		// the corruption surfaces mid-extract, out of extractTar, with neither
 		// the URL nor a hint. pcre.org 8.45 failed a whole factory run as
 		// "fetch: bzip2 data invalid: bad magic value" and nothing else.
 		err := extractTar(tar.NewReader(bzip2.NewReader(body)), destDir, stripComponents)
-		return wrapExtract(err, "bzip2", url, head)
+		return digest, wrapExtract(err, "bzip2", url, head)
 	case kindTar:
-		return wrapExtract(extractTar(tar.NewReader(body), destDir, stripComponents), "tar", url, head)
+		return digest, wrapExtract(extractTar(tar.NewReader(body), destDir, stripComponents), "tar", url, head)
 	default: // kindZip
 		data, err := io.ReadAll(body)
 		if err != nil {
-			return fmt.Errorf("fetch: read body of %s: %w", url, err)
+			return digest, fmt.Errorf("fetch: read body of %s: %w", url, err)
 		}
-		return wrapExtract(extractZip(data, destDir, stripComponents), "zip", url, head)
+		return digest, wrapExtract(extractZip(data, destDir, stripComponents), "zip", url, head)
 	}
 }
 
@@ -123,7 +138,11 @@ func ExtractTarGzFile(src, destDir string, strip int) error {
 // clone — NO `git` binary dependency. `git clone --branch <ref>` accepts either
 // a tag or a branch, so try the ref as a tag first, then as a branch (cleaning
 // the destination between attempts, since PlainClone needs an empty target).
-func FetchGit(repoURL, ref, destDir string) error {
+// FetchGit shallow-clones repoURL at ref into destDir and returns the commit
+// hash it landed on. A tag is a moving target — it can be deleted and re-cut at
+// different content, and nothing in a clone says it was — so the commit is the
+// only thing about a git source worth attesting.
+func FetchGit(repoURL, ref, destDir string) (string, error) {
 	// pkgx marks a git distributable with a "git+" URL prefix (e.g.
 	// git+https://github.com/o/r); strip it to the plain transport scheme that
 	// go-git (and git) actually speak.
@@ -134,15 +153,15 @@ func FetchGit(repoURL, ref, destDir string) error {
 		plumbing.NewBranchReferenceName(ref),
 	} {
 		_ = osRemoveAll(destDir)
-		_, err := gitPlainClone(destDir, false, &gogit.CloneOptions{
+		repo, err := gitPlainClone(destDir, false, &gogit.CloneOptions{
 			URL: repoURL, ReferenceName: rn, Depth: 1, SingleBranch: true, Tags: gogit.NoTags,
 		})
 		if err == nil {
-			return nil
+			return headCommit(repo), nil
 		}
 		lastErr = err
 	}
-	return fmt.Errorf("fetch: git clone %s@%s: %w", repoURL, ref, lastErr)
+	return "", fmt.Errorf("fetch: git clone %s@%s: %w", repoURL, ref, lastErr)
 }
 
 // detect maps a URL to an archive kind by extension, ignoring any query
@@ -304,4 +323,39 @@ func extractZip(data []byte, destDir string, strip int) error {
 		}
 	}
 	return nil
+}
+
+// sha256File is the SHA-256 of a downloaded file, in lowercase hex.
+//
+// It reads the finished file in its own pass rather than hashing the download
+// stream, because those are not the same bytes: download() resumes a truncated
+// transfer with a Range request, so what passes through it can include a prefix
+// that was already written and is not repeated. Hashing what is on disk when
+// the download is declared complete cannot be wrong that way, and a second read
+// of a local temp file costs a fraction of the transfer that produced it.
+func sha256File(path string) (string, error) {
+	f, err := osOpenHash(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := ioCopyHash(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// headCommit is the commit a fresh clone landed on, or "" when it cannot be
+// read. A missing commit weakens the attestation; failing the build over it
+// would be worse, because the source is already correctly checked out.
+func headCommit(repo *gogit.Repository) string {
+	if repo == nil {
+		return ""
+	}
+	ref, err := repo.Head()
+	if err != nil {
+		return ""
+	}
+	return ref.Hash().String()
 }

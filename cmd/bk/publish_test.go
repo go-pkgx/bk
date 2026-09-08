@@ -25,6 +25,8 @@ import (
 	"github.com/go-pkgx/bottle"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/ulikunitz/xz"
+
+	"github.com/go-pkgx/bk/build"
 )
 
 // miniOCI is a tiny in-memory OCI registry — just enough of the distribution
@@ -230,7 +232,7 @@ func TestPublishRuntimeErrors(t *testing.T) {
 
 func TestBuildReferrers(t *testing.T) {
 	tarball := []byte("x")
-	refs, err := buildReferrers("sqlite.org", "3.46.0", "linux", "x86-64", tarball, time.Unix(0, 0).UTC(), nil)
+	refs, err := buildReferrers("sqlite.org", "3.46.0", "linux", "x86-64", tarball, build.SourceRef{}, time.Unix(0, 0).UTC(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +252,7 @@ func TestBuildReferrers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sref, err := buildReferrers("sqlite.org", "3.46.0", "linux", "x86-64", tarball, time.Unix(0, 0).UTC(), kp)
+	sref, err := buildReferrers("sqlite.org", "3.46.0", "linux", "x86-64", tarball, build.SourceRef{}, time.Unix(0, 0).UTC(), kp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +267,7 @@ func TestBuildReferrers(t *testing.T) {
 	// provenance seam error
 	pj := provJSON
 	provJSON = func(provenance.Statement) ([]byte, error) { return nil, errBoom }
-	if _, err := buildReferrers("p", "1", "linux", "x86-64", tarball, time.Unix(0, 0).UTC(), nil); err == nil {
+	if _, err := buildReferrers("p", "1", "linux", "x86-64", tarball, build.SourceRef{}, time.Unix(0, 0).UTC(), nil); err == nil {
 		t.Error("expected provenance error")
 	}
 	provJSON = pj
@@ -273,7 +275,7 @@ func TestBuildReferrers(t *testing.T) {
 	// simple-signing seam error
 	ss := simpleSigning
 	simpleSigning = func(string, string) ([]byte, error) { return nil, errBoom }
-	if _, err := buildReferrers("p", "1", "linux", "x86-64", tarball, time.Unix(0, 0).UTC(), kp); err == nil {
+	if _, err := buildReferrers("p", "1", "linux", "x86-64", tarball, build.SourceRef{}, time.Unix(0, 0).UTC(), kp); err == nil {
 		t.Error("expected simple-signing error")
 	}
 	simpleSigning = ss
@@ -622,5 +624,43 @@ func TestPublishBottleReadsTheCodecFromTheFile(t *testing.T) {
 		if gotExt != ext {
 			t.Errorf("file %s published as %q", ext, gotExt)
 		}
+	}
+}
+
+// TestBuildReferrersRecordsTheSource is the point of the whole change: the
+// attestation must name the bytes the bottle was made FROM, not just the bottle.
+// Before this, a source tarball that changed upstream produced a different
+// bottle, correctly signed, whose provenance named a URL and nothing else.
+func TestBuildReferrersRecordsTheSource(t *testing.T) {
+	const digest = "cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333"
+	src := build.SourceRef{URI: "https://example.com/pkg-1.2.3.tar.gz", SHA256: digest}
+	refs, err := buildReferrers("p", "1", "linux", "x86-64", []byte("x"), src, time.Unix(0, 0).UTC(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov := string(refs[1].Blob)
+	if !strings.Contains(prov, "resolvedDependencies") || !strings.Contains(prov, src.URI) || !strings.Contains(prov, digest) {
+		t.Errorf("provenance does not record the source: %s", prov)
+	}
+
+	// A git source is recorded by its commit, under SLSA's gitCommit algorithm.
+	gitRefs, err := buildReferrers("p", "1", "linux", "x86-64", []byte("x"),
+		build.SourceRef{URI: "git+https://example.com/r", Commit: "deadbeef"}, time.Unix(0, 0).UTC(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gitRefs[1].Blob), "gitCommit") || !strings.Contains(string(gitRefs[1].Blob), "deadbeef") {
+		t.Errorf("git provenance: %s", gitRefs[1].Blob)
+	}
+
+	// And an EMPTY source records nothing rather than a decorative material:
+	// "this URL was involved" is what the recipe already says and what no
+	// verifier can check. `bk publish` on a bottle it did not build is that case.
+	empty, err := buildReferrers("p", "1", "linux", "x86-64", []byte("x"), build.SourceRef{}, time.Unix(0, 0).UTC(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(empty[1].Blob), "resolvedDependencies") {
+		t.Errorf("empty source produced a material: %s", empty[1].Blob)
 	}
 }

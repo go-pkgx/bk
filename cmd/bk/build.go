@@ -157,6 +157,11 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "built %s %s → %s\n", project, res.Version, res.Install)
+	// Say what it was built FROM, on the same screen as what came out. A digest
+	// nobody ever sees is a digest nobody compares.
+	if d := res.Source.SHA256 + res.Source.Commit; d != "" {
+		fmt.Fprintf(stdout, "source: %s (%s)\n", res.Source.URI, d)
+	}
 	if res.BottlePath != "" {
 		fmt.Fprintln(stdout, "bottle:", res.BottlePath)
 	}

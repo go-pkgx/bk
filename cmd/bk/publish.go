@@ -17,7 +17,9 @@ import (
 
 	"github.com/go-attest/sbom"
 	"github.com/go-attest/sbom/provenance"
+
 	"github.com/go-attest/sign"
+	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bottle"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/ulikunitz/xz"
@@ -198,6 +200,10 @@ type publishOptions struct {
 	Glibc    string // glibc this bottle was built against ("" = system glibc)
 	Key      *sign.Keypair
 	Time     time.Time // attestation timestamp; zero = buildTime()
+	// Source is what the build was made from — the candidate URL that answered
+	// and the digest of what came back. Empty for `bk publish` on a bottle this
+	// process did not build, and for the few recipes with no distributable.
+	Source build.SourceRef
 }
 
 // publishBottle pushes a built bottle with its SBOM, SLSA provenance and (given
@@ -231,7 +237,7 @@ func publishBottle(o publishOptions) (string, ocispec.Descriptor, error) {
 	if when.IsZero() {
 		when = buildTime()
 	}
-	refs, err := buildReferrers(o.Project, o.Version, o.OS, o.Arch, tarball, when, o.Key)
+	refs, err := buildReferrers(o.Project, o.Version, o.OS, o.Arch, tarball, o.Source, when, o.Key)
 	if err != nil {
 		return "", ocispec.Descriptor{}, err
 	}
@@ -273,7 +279,7 @@ func flavoredTag(project, version, glibc string) string {
 // buildReferrers builds the CycloneDX SBOM and in-toto SLSA provenance
 // attestations for a bottle (subject = the bottle itself; the tarball digest
 // binds them).
-func buildReferrers(project, version, osn, arch string, tarball []byte, now time.Time, kp *sign.Keypair) ([]bottle.Referrer, error) {
+func buildReferrers(project, version, osn, arch string, tarball []byte, src build.SourceRef, now time.Time, kp *sign.Keypair) ([]bottle.Referrer, error) {
 	sum := sha256.Sum256(tarball)
 	dg := hex.EncodeToString(sum[:])
 	purl := fmt.Sprintf("pkg:pkgx/%s@%s", project, version)
@@ -289,6 +295,7 @@ func buildReferrers(project, version, osn, arch string, tarball []byte, now time
 		BuilderID:  builderID,
 		StartedOn:  now,
 		FinishedOn: now,
+		Materials:  materialsOf(src),
 	}
 	pr, err := provJSON(stmt)
 	if err != nil {
@@ -334,4 +341,19 @@ func splitPlatform(p string) (osn, arch string, ok bool) {
 		return "", "", false
 	}
 	return p[:i], p[i+1:], true
+}
+
+// materialsOf renders the build's source as SLSA resolvedDependencies.
+//
+// A material with no digest of any kind would say only "this URL was involved",
+// which the recipe already says and which no verifier can check — so an empty
+// SourceRef produces no material at all rather than a decorative one. That is
+// also what `bk publish` emits for a bottle this process did not build: it does
+// not know what the source was, and inventing a URI from the recipe would
+// attest a guess.
+func materialsOf(src build.SourceRef) []provenance.Material {
+	if src.SHA256 == "" && src.Commit == "" {
+		return nil
+	}
+	return []provenance.Material{{URI: src.URI, SHA256: src.SHA256, GitCommit: src.Commit}}
 }

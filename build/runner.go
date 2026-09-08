@@ -24,12 +24,14 @@ type Runner struct {
 	// also returns the raw upstream git tag the version was resolved from, for
 	// the {{version.tag}} moustache used in GitHub release download URLs.
 	ResolveVersion func(spec any, constraint string) (version, tag string, err error)
-	Fetch          func(url, dest string, strip int) error
-	FetchGit       func(repo, ref, dest string) error
-	Touch          func(dir string) error
-	Run            func(scriptPath string, env []string) error
-	FixUp          func(fixup.Options) error
-	WriteBottle    func(installDir, project, version, osn, arch, outDir string) (string, error)
+	// Fetch and FetchGit report WHAT they got, not merely that they got it: an
+	// archive's SHA-256, a clone's commit. See SourceRef.
+	Fetch       func(url, dest string, strip int) (sha256 string, err error)
+	FetchGit    func(repo, ref, dest string) (commit string, err error)
+	Touch       func(dir string) error
+	Run         func(scriptPath string, env []string) error
+	FixUp       func(fixup.Options) error
+	WriteBottle func(installDir, project, version, osn, arch, outDir string) (string, error)
 	// ResolveDep, when set, resolves each dependency to a version so the build
 	// gets {{deps.<project>.prefix}}/{{deps.<project>.version}} tokens.
 	ResolveDep  func(project, constraint string) (string, error)
@@ -50,12 +52,29 @@ type Runner struct {
 	Glibc string
 }
 
+// SourceRef identifies the bytes a build was actually made from: which of the
+// recipe's candidate URLs answered, and the digest of what came back.
+//
+// A recipe names a URL. A URL is not a source: the list form falls through to a
+// mirror when the first host is down, a git tag can be re-cut, and more than
+// half of this pantry fetches a tarball GitHub generates on request rather than
+// one it stores. Recording the URL alone attests where we knocked, not what we
+// were handed.
+type SourceRef struct {
+	URI    string // the candidate that actually answered
+	SHA256 string // lowercase hex, for an archive
+	Commit string // for a git source
+}
+
 // Result reports what a build produced.
 type Result struct {
 	Version    string
 	Install    string
 	ScriptPath string
 	BottlePath string
+	// Source is empty for a recipe with no distributable (a few build entirely
+	// from their dependencies).
+	Source SourceRef
 }
 
 // Build runs the pipeline for project@constraint built for tgt (running on host)
@@ -100,12 +119,22 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		// killing an otherwise-buildable recipe. Only fail if every candidate does.
 		var fetchErr error
 		for i, src := range srcs {
+			var got string
 			if src.git {
-				fetchErr = r.FetchGit(src.url, src.ref, paths.Build)
+				got, fetchErr = r.FetchGit(src.url, src.ref, paths.Build)
 			} else {
-				fetchErr = r.Fetch(src.url, paths.Build, src.strip)
+				got, fetchErr = r.Fetch(src.url, paths.Build, src.strip)
 			}
 			if fetchErr == nil {
+				// Which candidate answered is half the record. A build that fell
+				// through to a mirror and one that did not are different builds,
+				// and only this says which happened.
+				res.Source = SourceRef{URI: src.url}
+				if src.git {
+					res.Source.Commit = got
+				} else {
+					res.Source.SHA256 = got
+				}
 				break
 			}
 			if i < len(srcs)-1 {
