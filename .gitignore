@@ -1,2 +1,3 @@
-bsd.test
 bsd-tests.list
+bsd.test
+cov.out
