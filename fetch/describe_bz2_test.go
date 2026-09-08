@@ -15,7 +15,7 @@ import (
 // come straight out of the tar reader.
 func TestFetchBz2ErrorPageSaysWhatArrived(t *testing.T) {
 	s := serve(t, []byte("<!DOCTYPE html><html><body>404 Not Found</body></html>"))
-	err := Fetch(s.URL+"/pcre-8.45.tar.bz2", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pcre-8.45.tar.bz2", t.TempDir(), 0)
 	if err == nil {
 		t.Fatal("expected the HTML page to fail the fetch")
 	}
@@ -31,7 +31,7 @@ func TestFetchBz2ErrorPageSaysWhatArrived(t *testing.T) {
 // constructor to reject the stream.
 func TestFetchTarErrorPageSaysWhatArrived(t *testing.T) {
 	s := serve(t, []byte("Not Found\n"))
-	err := Fetch(s.URL+"/x.tar", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/x.tar", t.TempDir(), 0)
 	if err == nil {
 		t.Fatal("expected failure")
 	}
@@ -43,7 +43,7 @@ func TestFetchTarErrorPageSaysWhatArrived(t *testing.T) {
 // TestFetchZipErrorPageSaysWhatArrived: and zip.
 func TestFetchZipErrorPageSaysWhatArrived(t *testing.T) {
 	s := serve(t, []byte("<html>gone</html>"))
-	err := Fetch(s.URL+"/x.zip", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/x.zip", t.TempDir(), 0)
 	if err == nil {
 		t.Fatal("expected failure")
 	}
@@ -60,7 +60,7 @@ func TestExtractFailureOnARealArchiveIsNotBlamedOnTheServer(t *testing.T) {
 	// must stay out of it.
 	body := append([]byte("BZh9"), []byte{0x31, 0x41, 0x59, 0x26, 0x53, 0x59, 0xde, 0xad, 0xbe, 0xef, 0x7f, 0x91, 0xa3, 0xc5}...)
 	s := serve(t, body)
-	err := Fetch(s.URL+"/x.tar.bz2", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/x.tar.bz2", t.TempDir(), 0)
 	if err == nil {
 		t.Fatal("expected failure")
 	}

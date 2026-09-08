@@ -20,6 +20,7 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-pkgx/bottle"
 	"github.com/ulikunitz/xz"
 )
@@ -33,9 +34,11 @@ func restoreSeams(t *testing.T) {
 		osRemoveAll = os.RemoveAll
 		osMkdirAll = os.MkdirAll
 		osOpen = os.Open
+		osOpenHash = os.Open
 		osSymlink = os.Symlink
 		osOpenFile = os.OpenFile
 		ioCopy = io.Copy
+		ioCopyHash = io.Copy
 		zipOpen = defaultZipOpen
 		osChtimes = os.Chtimes
 	})
@@ -207,7 +210,7 @@ func checkSampleTree(t *testing.T, dir string) {
 func TestFetchTarGz(t *testing.T) {
 	s := serve(t, gzWrap(t, sampleTar(t)))
 	dir := t.TempDir()
-	if err := Fetch(s.URL+"/pkg.tar.gz", dir, 0); err != nil {
+	if _, err := Fetch(s.URL+"/pkg.tar.gz", dir, 0); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	checkSampleTree(t, dir)
@@ -216,7 +219,7 @@ func TestFetchTarGz(t *testing.T) {
 func TestFetchTgzWithQueryString(t *testing.T) {
 	s := serve(t, gzWrap(t, sampleTar(t)))
 	dir := t.TempDir()
-	if err := Fetch(s.URL+"/pkg.tgz?token=abc#frag", dir, 0); err != nil {
+	if _, err := Fetch(s.URL+"/pkg.tgz?token=abc#frag", dir, 0); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	checkSampleTree(t, dir)
@@ -225,7 +228,7 @@ func TestFetchTgzWithQueryString(t *testing.T) {
 func TestFetchTarXz(t *testing.T) {
 	s := serve(t, xzWrap(t, sampleTar(t)))
 	dir := t.TempDir()
-	if err := Fetch(s.URL+"/pkg.tar.xz", dir, 0); err != nil {
+	if _, err := Fetch(s.URL+"/pkg.tar.xz", dir, 0); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	checkSampleTree(t, dir)
@@ -234,7 +237,7 @@ func TestFetchTarXz(t *testing.T) {
 func TestFetchTarPlain(t *testing.T) {
 	s := serve(t, sampleTar(t))
 	dir := t.TempDir()
-	if err := Fetch(s.URL+"/pkg.tar", dir, 0); err != nil {
+	if _, err := Fetch(s.URL+"/pkg.tar", dir, 0); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	checkSampleTree(t, dir)
@@ -244,7 +247,7 @@ func TestFetchTarBz2(t *testing.T) {
 	for _, ext := range []string{".tar.bz2", ".tbz2"} {
 		s := serve(t, bz2Tar(t))
 		dir := t.TempDir()
-		if err := Fetch(s.URL+"/pkg"+ext, dir, 0); err != nil {
+		if _, err := Fetch(s.URL+"/pkg"+ext, dir, 0); err != nil {
 			t.Fatalf("Fetch(%s): %v", ext, err)
 		}
 		got, err := os.ReadFile(filepath.Join(dir, "bz", "hello.txt"))
@@ -262,7 +265,7 @@ func TestFetchStripComponents(t *testing.T) {
 	}))
 	s := serve(t, data)
 	dir := t.TempDir()
-	if err := Fetch(s.URL+"/pkg-1.0.tar.gz", dir, 1); err != nil {
+	if _, err := Fetch(s.URL+"/pkg-1.0.tar.gz", dir, 1); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "src", "main.c")); err != nil || string(got) != "x\n" {
@@ -283,7 +286,7 @@ func TestFetchZip(t *testing.T) {
 	})
 	s := serve(t, data)
 	dir := t.TempDir()
-	if err := Fetch(s.URL+"/pkg.zip", dir, 1); err != nil {
+	if _, err := Fetch(s.URL+"/pkg.zip", dir, 1); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "readme.txt")); err != nil || string(got) != "zip body\n" {
@@ -307,14 +310,14 @@ func TestFetchZip(t *testing.T) {
 }
 
 func TestFetchUnknownExtension(t *testing.T) {
-	err := Fetch("http://example.invalid/pkg.rar", t.TempDir(), 0)
+	_, err := Fetch("http://example.invalid/pkg.rar", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "unknown archive extension") {
 		t.Fatalf("err = %v; want unknown archive extension", err)
 	}
 }
 
 func TestFetchHTTPGetError(t *testing.T) {
-	err := Fetch("http://127.0.0.1:1/pkg.tar", t.TempDir(), 0)
+	_, err := Fetch("http://127.0.0.1:1/pkg.tar", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "fetch: GET") {
 		t.Fatalf("err = %v; want GET error", err)
 	}
@@ -323,7 +326,7 @@ func TestFetchHTTPGetError(t *testing.T) {
 func TestFetchHTTPStatusNotOK(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(http.NotFound))
 	t.Cleanup(s.Close)
-	err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("err = %v; want 404", err)
 	}
@@ -335,7 +338,7 @@ func TestFetchDestDirCreateError(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := Fetch(s.URL+"/pkg.tar", filepath.Join(blocker, "dest"), 0)
+	_, err := Fetch(s.URL+"/pkg.tar", filepath.Join(blocker, "dest"), 0)
 	if err == nil || !strings.Contains(err.Error(), "fetch: create") {
 		t.Fatalf("err = %v; want create error", err)
 	}
@@ -343,7 +346,7 @@ func TestFetchDestDirCreateError(t *testing.T) {
 
 func TestFetchBadGzip(t *testing.T) {
 	s := serve(t, []byte("not gzip"))
-	err := Fetch(s.URL+"/pkg.tar.gz", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.tar.gz", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "read gzip") {
 		t.Fatalf("err = %v; want read gzip error", err)
 	}
@@ -351,7 +354,7 @@ func TestFetchBadGzip(t *testing.T) {
 
 func TestFetchBadXz(t *testing.T) {
 	s := serve(t, []byte("not xz at all"))
-	err := Fetch(s.URL+"/pkg.tar.xz", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.tar.xz", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "read xz") {
 		t.Fatalf("err = %v; want read xz error", err)
 	}
@@ -359,7 +362,7 @@ func TestFetchBadXz(t *testing.T) {
 
 func TestFetchBadZip(t *testing.T) {
 	s := serve(t, []byte("not a zip"))
-	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "read zip") {
 		t.Fatalf("err = %v; want read zip error", err)
 	}
@@ -367,7 +370,7 @@ func TestFetchBadZip(t *testing.T) {
 
 func TestFetchMalformedTar(t *testing.T) {
 	s := serve(t, bytes.Repeat([]byte{'x'}, 1024))
-	err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
 	// Tar extraction delegates to bottle.Extract, which surfaces the underlying
 	// archive/tar error directly ("invalid tar header").
 	if err == nil || !strings.Contains(err.Error(), "tar header") {
@@ -381,7 +384,7 @@ func TestFetchZipBodyReadError(t *testing.T) {
 		_, _ = w.Write([]byte("short"))
 	}))
 	t.Cleanup(s.Close)
-	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 	// A server that keeps sending less than it announced is now reported as what
 	// it is, with the byte counts, once the resume attempts are exhausted —
 	// instead of an "unexpected EOF" from whichever decoder happened to be
@@ -419,7 +422,7 @@ func TestFetchResumesATruncatedBody(t *testing.T) {
 	t.Cleanup(s.Close)
 
 	dest := t.TempDir()
-	if err := Fetch(s.URL+"/pkg.tar.gz", dest, 1); err != nil {
+	if _, err := Fetch(s.URL+"/pkg.tar.gz", dest, 1); err != nil {
 		t.Fatalf("a resumable truncation must not fail the fetch: %v", err)
 	}
 	if served < 2 {
@@ -437,7 +440,7 @@ func TestFetchTarPathTraversal(t *testing.T) {
 	})
 	s := serve(t, data)
 	dir := t.TempDir()
-	err := Fetch(s.URL+"/pkg.tar", dir, 0)
+	_, err := Fetch(s.URL+"/pkg.tar", dir, 0)
 	if !errors.Is(err, bottle.ErrInsecurePath) {
 		t.Fatalf("err = %v; want bottle.ErrInsecurePath", err)
 	}
@@ -451,7 +454,7 @@ func TestFetchTarAbsolutePath(t *testing.T) {
 		{name: "/abs.txt", typ: tar.TypeReg, mode: 0o644, body: "evil"},
 	})
 	s := serve(t, data)
-	err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.tar", t.TempDir(), 0)
 	if !errors.Is(err, bottle.ErrInsecurePath) {
 		t.Fatalf("err = %v; want bottle.ErrInsecurePath", err)
 	}
@@ -465,7 +468,7 @@ func TestFetchZipAbsolutePath(t *testing.T) {
 		{name: "/abs.txt", mode: 0o644, body: "evil"},
 	})
 	s := serve(t, data)
-	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "absolute path") {
 		t.Fatalf("err = %v; want absolute path", err)
 	}
@@ -476,7 +479,7 @@ func TestFetchZipPathTraversal(t *testing.T) {
 		{name: "../evil.txt", mode: 0o644, body: "evil"},
 	})
 	s := serve(t, data)
-	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "path traversal") {
 		t.Fatalf("err = %v; want path traversal", err)
 	}
@@ -511,7 +514,7 @@ func TestFetchZipMkdirErrors(t *testing.T) {
 			restoreSeams(t)
 			osMkdirAll = failMkdirOn("boomdir")
 			s := serve(t, buildZip(t, tc.entries))
-			err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+			_, err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 			if err == nil || !strings.Contains(err.Error(), "mkdir boom") {
 				t.Fatalf("err = %v; want mkdir boom", err)
 			}
@@ -524,7 +527,7 @@ func TestFetchZipSymlinkError(t *testing.T) {
 	osSymlink = func(_, _ string) error { return errors.New("symlink boom") }
 	data := buildZip(t, []zipEntry{{name: "l", mode: 0o777, symlink: true, body: "x"}})
 	s := serve(t, data)
-	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "symlink boom") {
 		t.Fatalf("err = %v; want symlink boom", err)
 	}
@@ -535,7 +538,7 @@ func TestFetchZipOpenFileError(t *testing.T) {
 	osOpenFile = func(string, int, fs.FileMode) (*os.File, error) { return nil, errors.New("open boom") }
 	data := buildZip(t, []zipEntry{{name: "f", mode: 0o644, body: "x"}})
 	s := serve(t, data)
-	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "open boom") {
 		t.Fatalf("err = %v; want open boom", err)
 	}
@@ -546,7 +549,7 @@ func TestFetchZipSymlinkCopyError(t *testing.T) {
 	ioCopy = func(io.Writer, io.Reader) (int64, error) { return 0, errors.New("copy boom") }
 	data := buildZip(t, []zipEntry{{name: "l", mode: 0o777, symlink: true, body: "x"}})
 	s := serve(t, data)
-	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "copy boom") {
 		t.Fatalf("err = %v; want copy boom", err)
 	}
@@ -565,7 +568,7 @@ func TestFetchZipEntryOpenErrors(t *testing.T) {
 			restoreSeams(t)
 			zipOpen = func(*zip.File) (io.ReadCloser, error) { return nil, errors.New("zip open boom") }
 			s := serve(t, buildZip(t, tc.entries))
-			err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+			_, err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 			if err == nil || !strings.Contains(err.Error(), "zip open boom") {
 				t.Fatalf("err = %v; want zip open boom", err)
 			}
@@ -580,7 +583,7 @@ func TestFetchTarZeroModeFallbacks(t *testing.T) {
 	})
 	s := serve(t, data)
 	dir := t.TempDir()
-	if err := Fetch(s.URL+"/pkg.tar", dir, 0); err != nil {
+	if _, err := Fetch(s.URL+"/pkg.tar", dir, 0); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	fi, err := os.Stat(filepath.Join(dir, "d"))
@@ -600,7 +603,7 @@ func TestFetchZipZeroModeFallback(t *testing.T) {
 	data := buildZip(t, []zipEntry{{name: "f", mode: 0, body: "x"}})
 	s := serve(t, data)
 	dir := t.TempDir()
-	if err := Fetch(s.URL+"/pkg.zip", dir, 0); err != nil {
+	if _, err := Fetch(s.URL+"/pkg.zip", dir, 0); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	fi, err := os.Stat(filepath.Join(dir, "f"))
@@ -616,7 +619,7 @@ func TestFetchZipRegCopyError(t *testing.T) {
 	ioCopy = func(io.Writer, io.Reader) (int64, error) { return 0, errors.New("copy boom") }
 	data := buildZip(t, []zipEntry{{name: "f", mode: 0o644, body: "x"}})
 	s := serve(t, data)
-	err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
+	_, err := Fetch(s.URL+"/pkg.zip", t.TempDir(), 0)
 	if err == nil || !strings.Contains(err.Error(), "copy boom") {
 		t.Fatalf("err = %v; want copy boom", err)
 	}
@@ -653,7 +656,7 @@ func TestFetchGit(t *testing.T) {
 		}
 		return nil, nil // succeed on the first (tag) attempt
 	}
-	if err := FetchGit("git+https://example.com/r.git", "v1.2.3", "/tmp/dest"); err != nil {
+	if _, err := FetchGit("git+https://example.com/r.git", "v1.2.3", "/tmp/dest"); err != nil {
 		t.Fatalf("FetchGit: %v", err)
 	}
 	if len(refs) != 1 || refs[0] != "refs/tags/v1.2.3" || dests[0] != "/tmp/dest" {
@@ -672,7 +675,7 @@ func TestFetchGitBranchFallback(t *testing.T) {
 		}
 		return nil, nil // the ref is a branch, not a tag → second attempt wins
 	}
-	if err := FetchGit("https://x/r.git", "main", "/tmp/dest"); err != nil {
+	if _, err := FetchGit("https://x/r.git", "main", "/tmp/dest"); err != nil {
 		t.Fatalf("branch fallback: %v", err)
 	}
 	if len(refs) != 2 || refs[0] != "refs/tags/main" || refs[1] != "refs/heads/main" {
@@ -686,7 +689,7 @@ func TestFetchGitError(t *testing.T) {
 	gitPlainClone = func(string, bool, *gogit.CloneOptions) (*gogit.Repository, error) {
 		return nil, errors.New("clone failed")
 	}
-	err := FetchGit("https://x/r.git", "v1", "/tmp/dest")
+	_, err := FetchGit("https://x/r.git", "v1", "/tmp/dest")
 	if err == nil || !strings.Contains(err.Error(), "clone failed") {
 		t.Fatalf("err = %v; want clone failed", err)
 	}
@@ -753,7 +756,7 @@ func TestExtractRestoresModTimes(t *testing.T) {
 			{name: "doc/xmlwf.xml", typ: tar.TypeReg, mode: 0o644, body: "<xml/>\n", mod: src},
 		})))
 		dir := t.TempDir()
-		if err := Fetch(s.URL+"/pkg.tar.gz", dir, 0); err != nil {
+		if _, err := Fetch(s.URL+"/pkg.tar.gz", dir, 0); err != nil {
 			t.Fatal(err)
 		}
 		assertNewer(t, filepath.Join(dir, "doc/xmlwf.1"), filepath.Join(dir, "doc/xmlwf.xml"), gen)
@@ -765,7 +768,7 @@ func TestExtractRestoresModTimes(t *testing.T) {
 			{name: "doc/xmlwf.xml", mode: 0o644, body: "<xml/>\n", mod: src},
 		}))
 		dir := t.TempDir()
-		if err := Fetch(s.URL+"/pkg.zip", dir, 0); err != nil {
+		if _, err := Fetch(s.URL+"/pkg.zip", dir, 0); err != nil {
 			t.Fatal(err)
 		}
 		assertNewer(t, filepath.Join(dir, "doc/xmlwf.1"), filepath.Join(dir, "doc/xmlwf.xml"), gen)
@@ -778,7 +781,7 @@ func TestExtractRestoresModTimes(t *testing.T) {
 			{name: "x.txt", typ: tar.TypeReg, mode: 0o644, body: "x\n"},
 		})))
 		dir := t.TempDir()
-		if err := Fetch(s.URL+"/pkg.tar.gz", dir, 0); err != nil {
+		if _, err := Fetch(s.URL+"/pkg.tar.gz", dir, 0); err != nil {
 			t.Fatal(err)
 		}
 		fi, err := os.Stat(filepath.Join(dir, "x.txt"))
@@ -822,7 +825,7 @@ func TestExtractRestoresModTimes(t *testing.T) {
 			"/pkg.zip": buildZip(t, []zipEntry{{name: "x", mode: 0o644, body: "x", mod: gen}}),
 		} {
 			s := serve(t, data)
-			if err := Fetch(s.URL+name, t.TempDir(), 0); err == nil {
+			if _, err := Fetch(s.URL+name, t.TempDir(), 0); err == nil {
 				t.Errorf("%s: want a set-mtime error", name)
 			}
 		}
@@ -847,5 +850,54 @@ func assertNewer(t *testing.T, a, b string, want time.Time) {
 	}
 	if !fa.ModTime().UTC().Equal(want) {
 		t.Fatalf("mtime = %v, want the archived %v", fa.ModTime().UTC(), want)
+	}
+}
+
+// TestFetchGitReportsTheCommit covers what a git material is attested by. A tag
+// can be deleted and re-cut at different content and the URL reads the same
+// afterwards, so the commit is the only fixed point — and a repository whose
+// HEAD cannot be read (a fresh init, no commits) must weaken the attestation
+// rather than fail a build whose source is correctly checked out.
+func TestFetchGitReportsTheCommit(t *testing.T) {
+	restoreSeams(t)
+	osRemoveAll = func(string) error { return nil }
+
+	empty, err := gogit.PlainInit(t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	gitPlainClone = func(string, bool, *gogit.CloneOptions) (*gogit.Repository, error) { return empty, nil }
+	if got, err := FetchGit("https://x/r.git", "v1", "/tmp/dest"); err != nil || got != "" {
+		t.Errorf("empty repo: commit = %q, err = %v; want no commit and no failure", got, err)
+	}
+
+	dir := t.TempDir()
+	repo, err := gogit.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := wt.Add("a.txt"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	want, err := wt.Commit("one", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "t", Email: "t@example.com", When: time.Unix(0, 0)},
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	gitPlainClone = func(string, bool, *gogit.CloneOptions) (*gogit.Repository, error) { return repo, nil }
+	got, err := FetchGit("https://x/r.git", "v1", "/tmp/dest")
+	if err != nil {
+		t.Fatalf("FetchGit: %v", err)
+	}
+	if got != want.String() {
+		t.Errorf("commit = %q, want %q", got, want)
 	}
 }

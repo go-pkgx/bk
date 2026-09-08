@@ -40,6 +40,13 @@ var (
 	// A SEPARATE seam for the download body: a test that injects a copy failure
 	// for the extractor must not also break the download, which retries.
 	ioCopyBody = io.Copy
+	// And a third, for the source digest: a test that makes hashing fail must
+	// not also break the extractor it is meant to leave alone.
+	ioCopyHash = io.Copy
+	// Same reasoning for the handle: the downloaded file is opened twice, once
+	// to digest it and once to extract it, and those are different failures.
+	// One seam for both would make a test of either a test of neither.
+	osOpenHash = os.Open
 	zipOpen    = defaultZipOpen
 	// sleepFn paces the retry backoff; a test sets it to a no-op so the suite
 	// does not actually wait out three seconds of it.

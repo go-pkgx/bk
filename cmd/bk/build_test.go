@@ -35,8 +35,8 @@ func stubFactory(project string) func(string) *build.Runner {
 		return &build.Runner{
 			PickVersion:    func(string, string) (string, error) { return "1.0.0", nil },
 			ResolveVersion: func(any, string) (string, string, error) { return "1.0.0", "v1.0.0", nil },
-			Fetch:          func(string, string, int) error { return nil },
-			FetchGit:       func(string, string, string) error { return nil },
+			Fetch:          func(string, string, int) (string, error) { return "b0b0feed", nil },
+			FetchGit:       func(string, string, string) (string, error) { return "", nil },
 			Touch:          func(string) error { return nil },
 			Run: func(string, []string) error {
 				return os.MkdirAll(config.Compute(project, "1.0.0", target.Host()).BuildInstall, 0o755)
@@ -67,6 +67,11 @@ func TestBuildCommand(t *testing.T) {
 	}
 	if !strings.Contains(out, "built test.org/x 1.0.0") || !strings.Contains(out, "bottle:") {
 		t.Errorf("build output = %q", out)
+	}
+	// What it was built FROM, on the same screen as what came out: a digest
+	// nobody ever sees is a digest nobody compares.
+	if !strings.Contains(out, "source: https://x/v1.0.0.tgz (b0b0feed)") {
+		t.Errorf("build output does not name the source: %q", out)
 	}
 }
 

@@ -41,8 +41,8 @@ func okRunner(project string, tgt target.Target) *Runner {
 	return &Runner{
 		PickVersion:    func(string, string) (string, error) { return "1.2.3", nil },
 		ResolveVersion: func(any, string) (string, string, error) { return "1.2.3", "v1.2.3", nil },
-		Fetch:          func(string, string, int) error { return nil },
-		FetchGit:       func(string, string, string) error { return nil },
+		Fetch:          func(string, string, int) (string, error) { return "", nil },
+		FetchGit:       func(string, string, string) (string, error) { return "", nil },
 		Touch:          func(string) error { return nil },
 		Run: func(string, []string) error {
 			p := config.Compute(project, "1.2.3", tgt)
@@ -92,9 +92,9 @@ func TestBuildVersionTagExpands(t *testing.T) {
 		r := okRunner("acme.org/tool", tgt)
 		r.ResolveVersion = func(any, string) (string, string, error) { return "1.2.3", tag, nil }
 		var fetched string
-		r.Fetch = func(url, dest string, _ int) error {
+		r.Fetch = func(url, dest string, _ int) (string, error) {
 			fetched = url
-			return os.MkdirAll(dest, 0o755)
+			return "", os.MkdirAll(dest, 0o755)
 		}
 		rec := okRecipe()
 		rec.Distributable = distURL
@@ -138,21 +138,26 @@ func TestBuildGitAndNoDistributable(t *testing.T) {
 	rec.Distributable = map[string]any{"url": "https://git/repo", "ref": "v{{version.raw}}"}
 	r := okRunner("g/p", tgt)
 	gitCalled := false
-	r.FetchGit = func(_, ref, _ string) error {
+	r.FetchGit = func(_, ref, _ string) (string, error) {
 		gitCalled = true
 		if ref != "v1.2.3" {
 			t.Errorf("git ref = %q", ref)
 		}
-		return nil
+		return "cafe1234", nil
 	}
-	if _, err := r.Build(rec, "g/p", "*", tgt, tgt, ""); err != nil || !gitCalled {
+	res, err := r.Build(rec, "g/p", "*", tgt, tgt, "")
+	if err != nil || !gitCalled {
 		t.Errorf("git build: %v called=%v", err, gitCalled)
+	}
+	// A git source is recorded by its commit; there is no archive to hash.
+	if res.Source.Commit != "cafe1234" || res.Source.SHA256 != "" || res.Source.URI != "https://git/repo" {
+		t.Errorf("git source = %+v", res.Source)
 	}
 	// nil distributable → fetch skipped entirely
 	rec2 := okRecipe()
 	rec2.Distributable = nil
 	r2 := okRunner("n/p", tgt)
-	r2.Fetch = func(string, string, int) error { t.Fatal("fetch must not run"); return nil }
+	r2.Fetch = func(string, string, int) (string, error) { t.Fatal("fetch must not run"); return "", nil }
 	if _, err := r2.Build(rec2, "n/p", "*", tgt, tgt, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +185,7 @@ func TestBuildErrorBranches(t *testing.T) {
 				return os.MkdirAll(p, m)
 			}
 		},
-		"fetch":        func(r *Runner) { r.Fetch = func(string, string, int) error { return errBoom } },
+		"fetch":        func(r *Runner) { r.Fetch = func(string, string, int) (string, error) { return "", errBoom } },
 		"touch":        func(r *Runner) { r.Touch = func(string) error { return errBoom } },
 		"writefile":    func(r *Runner) { osWriteFile = func(string, []byte, os.FileMode) error { return errBoom } },
 		"writelibexec": func(r *Runner) { writeLibexec = func(string, bool, string, string, string) error { return errBoom } },
@@ -316,18 +321,25 @@ func TestBuildFetchMirrorFallback(t *testing.T) {
 		rec := okRecipe()
 		rec.Distributable = dist
 		var tried []string
-		r.Fetch = func(url, _ string, _ int) error {
+		r.Fetch = func(url, _ string, _ int) (string, error) {
 			tried = append(tried, url)
 			if strings.Contains(url, "primary") {
-				return errBoom
+				return "", errBoom
 			}
-			return nil
+			return "d16e57", nil
 		}
-		if _, err := r.Build(rec, project, "*", tgt, tgt, ""); err != nil {
+		res, err := r.Build(rec, project, "*", tgt, tgt, "")
+		if err != nil {
 			t.Fatalf("fallback build should succeed: %v", err)
 		}
 		if len(tried) != 2 || !strings.Contains(tried[0], "primary") || !strings.Contains(tried[1], "mirror") {
 			t.Errorf("tried order = %v", tried)
+		}
+		// The candidate that ANSWERED is what gets recorded, not the first one
+		// the recipe names: a build that fell through to a mirror and one that
+		// did not are different builds, and only this says which happened.
+		if !strings.Contains(res.Source.URI, "mirror") || res.Source.SHA256 != "d16e57" {
+			t.Errorf("source = %+v, want the mirror that answered", res.Source)
 		}
 	})
 
@@ -337,7 +349,7 @@ func TestBuildFetchMirrorFallback(t *testing.T) {
 		r := okRunner(project, tgt)
 		rec := okRecipe()
 		rec.Distributable = dist
-		r.Fetch = func(string, string, int) error { return errBoom }
+		r.Fetch = func(string, string, int) (string, error) { return "", errBoom }
 		if _, err := r.Build(rec, project, "*", tgt, tgt, ""); err == nil {
 			t.Error("expected fetch error when all mirrors fail")
 		}
