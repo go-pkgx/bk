@@ -207,7 +207,7 @@ func rewriteRunpath(exe string, opts Options) error {
 			case strings.HasPrefix(p, "$ORIGIN"):
 				add(p)
 			case p != "" && strings.HasPrefix(p, projectDir):
-				add(originRel(p, exeDir))
+				add(originRel(unstage(p, opts), exeDir))
 			}
 		}
 	}
@@ -250,6 +250,32 @@ func transformRpath(input, projectDir string) string {
 		return input
 	}
 	return versionRE.ReplaceAllString(input, "v$1")
+}
+
+// unstage maps a path under the +brewing staging prefix onto the final one.
+//
+// The build's own RUNPATH names the prefix it was configured with, and that is
+// the STAGING directory: an autotools package built with
+// --prefix=…/v1.22.0+brewing bakes …/v1.22.0+brewing/lib into every binary.
+// The entry starts with the project dir, so it was kept and made
+// $ORIGIN-relative verbatim — preserving a directory that ceases to exist the
+// moment the build is renamed into place:
+//
+//	$ORIGIN/../../v1.22.0+brewing/lib:$ORIGIN/../lib
+//
+// Measured on published bottles: openucx.org has it in 11 of its 13 ELFs and
+// sqlite.org in both of its. Neither is broken, because the entry that follows
+// resolves — but a dead entry costs a slot in a budget the in-place rewriter
+// has to fit, and it puts a build directory's name in an artefact we sign.
+//
+// Every other consumer of a staged path already gets this treatment: .pc files,
+// .cmake files, staged scripts and Mach-O install names all have the staging
+// prefix rewritten. The ELF RUNPATH was the one that did not.
+func unstage(p string, opts Options) string {
+	if opts.BuildInstall == "" || !strings.HasPrefix(p, opts.BuildInstall) {
+		return p
+	}
+	return opts.Prefix + strings.TrimPrefix(p, opts.BuildInstall)
 }
 
 // originRel makes an absolute path $ORIGIN-relative to exeDir; $ORIGIN paths
