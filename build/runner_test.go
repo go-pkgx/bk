@@ -601,3 +601,123 @@ func TestHelpers(t *testing.T) {
 		t.Error("str helper")
 	}
 }
+
+// TestVerifyDeclaredChecksum covers the one thing this check exists for: bytes
+// that are not the bytes the upstream says it published.
+func TestVerifyDeclaredChecksum(t *testing.T) {
+	tgt := target.Host()
+	const digest = "b6a5f44b7eb69e3fa35dbf15524405b44837a481d43d81daddde3ff21fcbb8e9"
+	dist := map[string]any{"url": "https://x/v{{version.raw}}.tgz", "sha": "${{url}}.sha256"}
+
+	newRunner := func(project string, got string) (*Runner, *[]string) {
+		r := okRunner(project, tgt)
+		asked := &[]string{}
+		r.Fetch = func(string, string, int) (string, error) { return got, nil }
+		r.FetchSHA = func(shaURL, archive string) (string, error) {
+			*asked = append(*asked, shaURL+" for "+archive)
+			return digest, nil
+		}
+		return r, asked
+	}
+
+	t.Run("match", func(t *testing.T) {
+		tenv(t)
+		r, asked := newRunner("m/p", digest)
+		rec := okRecipe()
+		rec.Distributable = dist
+		if _, err := r.Build(rec, "m/p", "*", tgt, tgt, ""); err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		// `${{url}}` resolves against THIS entry's url, and the archive name is
+		// handed over so a multi-file SHA256SUMS can be matched on it.
+		if len(*asked) != 1 || (*asked)[0] != "https://x/v1.2.3.tgz.sha256 for https://x/v1.2.3.tgz" {
+			t.Errorf("asked = %v", *asked)
+		}
+	})
+
+	t.Run("mismatch fails the build", func(t *testing.T) {
+		tenv(t)
+		r, _ := newRunner("x/p", "0000000000000000000000000000000000000000000000000000000000000000")
+		rec := okRecipe()
+		rec.Distributable = dist
+		_, err := r.Build(rec, "x/p", "*", tgt, tgt, "")
+		if !errors.Is(err, ErrChecksumMismatch) {
+			t.Fatalf("err = %v; want ErrChecksumMismatch", err)
+		}
+		// The message must carry BOTH digests: "checksum mismatch" alone sends
+		// the reader back to re-download by hand to learn what arrived.
+		if !strings.Contains(err.Error(), digest) || !strings.Contains(err.Error(), "0000000000") {
+			t.Errorf("message hides one side: %v", err)
+		}
+	})
+
+	// A mismatch must NOT fall through to the next mirror. A build that quietly
+	// succeeded from a second host after the first served unexpected bytes is a
+	// build that hid the one event this check exists to surface.
+	t.Run("mismatch does not try the next mirror", func(t *testing.T) {
+		tenv(t)
+		r := okRunner("f/p", tgt)
+		var tried []string
+		r.Fetch = func(url string, _ string, _ int) (string, error) {
+			tried = append(tried, url)
+			return "0000000000000000000000000000000000000000000000000000000000000000", nil
+		}
+		r.FetchSHA = func(string, string) (string, error) { return digest, nil }
+		rec := okRecipe()
+		rec.Distributable = []any{
+			map[string]any{"url": "https://primary/v{{version.raw}}.tgz", "sha": "${{url}}.sha256"},
+			map[string]any{"url": "https://mirror/v{{version.raw}}.tgz"},
+		}
+		if _, err := r.Build(rec, "f/p", "*", tgt, tgt, ""); !errors.Is(err, ErrChecksumMismatch) {
+			t.Fatalf("err = %v", err)
+		}
+		if len(tried) != 1 {
+			t.Errorf("tried %v; the mirror must not be reached after a mismatch", tried)
+		}
+	})
+
+	// "The checksum file was unavailable, so we built anyway" is the reasoning
+	// that leaves a verification permanently disarmed.
+	t.Run("unfetchable checksum fails too", func(t *testing.T) {
+		tenv(t)
+		r, _ := newRunner("u/p", digest)
+		r.FetchSHA = func(string, string) (string, error) { return "", errBoom }
+		rec := okRecipe()
+		rec.Distributable = dist
+		if _, err := r.Build(rec, "u/p", "*", tgt, tgt, ""); !errors.Is(err, errBoom) {
+			t.Fatalf("err = %v; want the fetch-sha failure", err)
+		}
+	})
+
+	t.Run("skipped where it cannot apply", func(t *testing.T) {
+		for _, c := range []struct {
+			name string
+			prep func(*Runner, *pantry.Recipe)
+		}{
+			// 1857 of 1858 recipes declare no sha; failing them would ship nothing.
+			{"no sha declared", func(r *Runner, rec *pantry.Recipe) {
+				rec.Distributable = map[string]any{"url": "https://x/v{{version.raw}}.tgz"}
+			}},
+			// A checkout has a commit, not a hash of bytes.
+			{"git source", func(r *Runner, rec *pantry.Recipe) {
+				rec.Distributable = map[string]any{"url": "https://git/r", "ref": "v{{version.raw}}", "sha": "${{url}}.sha256"}
+			}},
+			// No verifier wired: a caller that does not want the network.
+			{"no FetchSHA", func(r *Runner, rec *pantry.Recipe) {
+				rec.Distributable = dist
+				r.FetchSHA = nil
+			}},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				tenv(t)
+				r, _ := newRunner("s/p", "0000000000000000000000000000000000000000000000000000000000000000")
+				r.FetchGit = func(string, string, string) (string, error) { return "cafe", nil }
+				rec := okRecipe()
+				c.prep(r, rec)
+				if _, err := r.Build(rec, "s/p", "*", tgt, tgt, ""); err != nil {
+					t.Errorf("build: %v", err)
+				}
+			})
+		}
+	})
+}

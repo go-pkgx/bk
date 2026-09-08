@@ -80,6 +80,7 @@ func realBuildRunner(pkgxBin string) *build.Runner {
 		ResolveVersion: versions.Resolve,
 		Fetch:          fetch.Fetch,
 		FetchGit:       fetch.FetchGit,
+		FetchSHA:       fetch.DeclaredSHA256,
 		Touch:          build.TouchAutotools,
 		Run:            runBash,
 		FixUp:          fixup.FixUp,

@@ -1,10 +1,12 @@
 package build
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/go-pkgx/bk/buildscript"
 	"github.com/go-pkgx/bk/config"
@@ -26,8 +28,12 @@ type Runner struct {
 	ResolveVersion func(spec any, constraint string) (version, tag string, err error)
 	// Fetch and FetchGit report WHAT they got, not merely that they got it: an
 	// archive's SHA-256, a clone's commit. See SourceRef.
-	Fetch       func(url, dest string, strip int) (sha256 string, err error)
-	FetchGit    func(repo, ref, dest string) (commit string, err error)
+	Fetch    func(url, dest string, strip int) (sha256 string, err error)
+	FetchGit func(repo, ref, dest string) (commit string, err error)
+	// FetchSHA reads the checksum a recipe's `sha:` URL declares for an archive.
+	// Nil disables verification — what a test that does not care about it wants;
+	// the real runner always sets it.
+	FetchSHA    func(shaURL, archiveName string) (string, error)
 	Touch       func(dir string) error
 	Run         func(scriptPath string, env []string) error
 	FixUp       func(fixup.Options) error
@@ -134,6 +140,13 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 					res.Source.Commit = got
 				} else {
 					res.Source.SHA256 = got
+				}
+				if err := r.verifyChecksum(src, got); err != nil {
+					// NOT a fetch failure, so NOT a reason to try the next mirror.
+					// A build that quietly succeeded from a second host after the
+					// first served bytes nobody expected is a build that hid the
+					// one event this check exists to surface.
+					return res, err
 				}
 				break
 			}
@@ -264,6 +277,13 @@ type source struct {
 	strip int
 	git   bool
 	ref   string
+	// sha is the URL of a file holding the expected checksum, which is how the
+	// pantry format already spells this: `sha: ${{url}}.sha256`, pointing at
+	// what the upstream publishes NEXT to the tarball. A digest written into
+	// the recipe would have to be re-written for every version; this one moves
+	// with the URL, which is why openssl.org — the only recipe that had one —
+	// spells it this way.
+	sha string
 }
 
 // oneSource derives a single fetch source from a scalar (string) or map-form
@@ -277,6 +297,12 @@ func oneSource(dist any, toks []moustache.Token) (source, error) {
 		s := source{url: moustache.Apply(str(d["url"]), toks)}
 		if ref, ok := d["ref"].(string); ok && ref != "" {
 			s.git, s.ref = true, moustache.Apply(ref, toks)
+		}
+		// `${{url}}` in a sha refers to this entry's own url, so the token is
+		// added here rather than by the caller: a list-form distributable has a
+		// different url per entry, and openssl.org is exactly that shape.
+		if sha := str(d["sha"]); sha != "" {
+			s.sha = moustache.Apply(sha, append(toks, moustache.Token{From: "url", To: s.url}))
 		}
 		switch sc := d["strip-components"].(type) {
 		case int:
@@ -326,6 +352,36 @@ func sourcesOf(dist any, version, tag string) ([]source, error) {
 		return nil, err
 	}
 	return []source{s}, nil
+}
+
+// ErrChecksumMismatch is returned when a downloaded archive does not match the
+// digest its recipe's `sha:` URL declares.
+var ErrChecksumMismatch = errors.New("build: source checksum mismatch")
+
+// verifyChecksum compares what arrived against what the upstream declares.
+//
+// It is silent about a source with no `sha:` — 1857 of 1858 recipes are that
+// case today and failing them would ship nothing — and about a git checkout,
+// which has a commit rather than a hash of bytes.
+//
+// A checksum file that cannot be FETCHED is a different matter from one that
+// disagrees, and is treated as a build failure too: "the upstream's checksum
+// was unavailable, so we built anyway" is exactly the reasoning that leaves a
+// verification permanently disarmed.
+func (r *Runner) verifyChecksum(src source, got string) error {
+	if src.sha == "" || src.git || r.FetchSHA == nil {
+		return nil
+	}
+	want, err := r.FetchSHA(src.sha, src.url)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(want, got) {
+		return fmt.Errorf("%w: %s\n  declared by %s: %s\n  actually arrived: %s",
+			ErrChecksumMismatch, src.url, src.sha, want, got)
+	}
+	logf("source checksum verified against %s", src.sha)
+	return nil
 }
 
 func str(v any) string {
