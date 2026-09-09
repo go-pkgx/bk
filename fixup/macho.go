@@ -329,7 +329,7 @@ func rewriteMacho(exe string, opts Options) error {
 		// Nothing to rewrite — but a file that already references @rpath with no
 		// LC_RPATH is dead however little we touch it, and this is the branch it
 		// arrives on.
-		return checkRpathResolvable(exe)
+		return checkRpathResolvable(exe, opts)
 	}
 	err := rewriteMachoStringsCmd(exe, func(cmd uint32, s string) string {
 		if opts.BuildInstall != "" {
@@ -385,12 +385,17 @@ func rewriteMacho(exe string, opts Options) error {
 	if err != nil {
 		return err
 	}
-	return checkRpathResolvable(exe)
+	return checkRpathResolvable(exe, opts)
 }
 
 // ErrDeadRpath means a Mach-O references @rpath/… and carries no LC_RPATH at
 // all, so nothing can ever resolve it.
 var ErrDeadRpath = errors.New("fixup: @rpath reference with no LC_RPATH")
+
+// ErrBuilderOnlyRpath means a Mach-O reaches a SIBLING package only through an
+// absolute LC_RPATH — the build machine's own pkgx directory. It runs there and
+// nowhere else.
+var ErrBuilderOnlyRpath = errors.New("fixup: sibling package reachable only through an absolute rpath")
 
 // checkRpathResolvable refuses a binary whose @rpath references nothing can
 // satisfy.
@@ -408,7 +413,7 @@ var ErrDeadRpath = errors.New("fixup: @rpath reference with no LC_RPATH")
 // publishes without a complaint. There is nothing to guess at here — no rpath
 // and an @rpath reference is dead in every environment — so it stops the build
 // rather than becoming someone's dyld error weeks later.
-func checkRpathResolvable(exe string) error {
+func checkRpathResolvable(exe string, opts Options) error {
 	strs, err := ReadMachoStrings(exe)
 	if err != nil {
 		return err
@@ -417,15 +422,64 @@ func checkRpathResolvable(exe string) error {
 	if err != nil {
 		return err
 	}
-	if len(rpaths) > 0 {
-		return nil
-	}
 	for _, s := range strs {
-		if strings.HasPrefix(s, "@rpath/") {
+		if !strings.HasPrefix(s, "@rpath/") {
+			continue
+		}
+		if len(rpaths) == 0 {
 			return fmt.Errorf("%w: %s references %s", ErrDeadRpath, exe, s)
+		}
+		if siblingRef(s) && opts.PkgxDir != "" && !relRpathReaches(exe, opts.PkgxDir, rpaths) {
+			return fmt.Errorf("%w: %s references %s but its only rpaths are %s",
+				ErrBuilderOnlyRpath, exe, s, strings.Join(rpaths, ", "))
 		}
 	}
 	return nil
+}
+
+// siblingRef reports whether an @rpath reference names ANOTHER package rather
+// than this one's own libraries.
+//
+// The two shapes differ by a version directory: a package's own library is
+// @rpath/libLLVM.dylib or @rpath/lib/foo.dylib, reached from @loader_path/../lib;
+// a sibling is @rpath/zlib.net/v1.3.1/lib/libz.1.3.1.dylib, reachable only from
+// the pkgx root. Only the second needs an rpath that climbs out of the package.
+func siblingRef(s string) bool {
+	for _, seg := range strings.Split(strings.TrimPrefix(s, "@rpath/"), "/") {
+		if len(seg) > 1 && seg[0] == 'v' && seg[1] >= '0' && seg[1] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// relRpathReaches is rpathReaches restricted to RELATIVE entries.
+//
+// An absolute rpath is not relocatability. It names the directory the build
+// machine happened to use, and llvm.org's darwin bottle is what that produces:
+// 118 of its 118 Mach-O files that reference a sibling carry
+// "/Users/runner/.pkgx" and "@loader_path/../lib", so every one of them loads
+// on the CI runner and on nothing else —
+//
+//	dyld: Library not loaded: @rpath/zlib.net/v1.3.1/lib/libz.1.3.1.dylib
+//	  tried: '/Users/runner/.pkgx/zlib.net/…' (no such file)
+//
+// — while it built, signed, attested and published without a complaint.
+//
+// Measured before this was made an error rather than a warning: of six sampled
+// darwin bottles only llvm.org is in that state. zlib.net, sqlite.org and
+// gnome.org/libxml2 carry the absolute entry too but keep relative ones that
+// reach, so they leak a build path rather than break; openssl.org and curl.se
+// carry neither. Refusing the build therefore stops exactly the packages that
+// were already shipping something unusable.
+func relRpathReaches(exe, dir string, rpaths []string) bool {
+	var rel []string
+	for _, r := range rpaths {
+		if strings.HasPrefix(r, "@loader_path/") || strings.HasPrefix(r, "@executable_path/") {
+			rel = append(rel, r)
+		}
+	}
+	return rpathReaches(exe, dir, rel)
 }
 
 // cstr reads a NUL-terminated string from the front of b.
