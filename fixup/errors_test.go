@@ -283,7 +283,7 @@ func TestCheckRpathResolvableReadErrors(t *testing.T) {
 			}
 			return os.ReadFile(p)
 		}
-		if err := checkRpathResolvable(exe); !errors.Is(err, errInject) {
+		if err := checkRpathResolvable(exe, Options{}); !errors.Is(err, errInject) {
 			t.Errorf("read %d: err = %v, want the injected error", nth, err)
 		}
 		osReadFile = os.ReadFile

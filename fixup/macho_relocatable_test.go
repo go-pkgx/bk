@@ -321,3 +321,82 @@ func TestNoRpathReferenceNeedsNoRpath(t *testing.T) {
 		t.Fatalf("a plain binary was refused: %v", err)
 	}
 }
+
+// TestAnAbsoluteRpathIsNotRelocatability is the llvm.org case. Its darwin
+// bottle has, on every one of the 118 Mach-O files that reference a sibling
+// package, exactly two rpaths: "@loader_path/../lib" — its own lib directory,
+// which cannot reach a sibling — and "/Users/runner/.pkgx", the CI runner's
+// home. It loads on the runner and nowhere else:
+//
+//	dyld: Library not loaded: @rpath/zlib.net/v1.3.1/lib/libz.1.3.1.dylib
+//	  tried: '/Users/runner/.pkgx/zlib.net/…' (no such file)
+//
+// and it built, signed, attested and published without a complaint, because the
+// old guard asked only whether an LC_RPATH existed.
+func TestAnAbsoluteRpathIsNotRelocatability(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "llvm.org", "v22.1.8")
+	exe := filepath.Join(prefix, "bin", "clang")
+	place(t, exe,
+		machoCmd{lcRpath, pkgx},                  // the builder's own directory
+		machoCmd{lcRpath, "@loader_path/../lib"}, // its own lib, not a sibling's
+		machoCmd{lcLoadDylib, "@rpath/zlib.net/v1.3.1/lib/libz.1.3.1.dylib"},
+	)
+	err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx})
+	if !errors.Is(err, ErrBuilderOnlyRpath) {
+		t.Fatalf("err = %v; want ErrBuilderOnlyRpath", err)
+	}
+	// The message has to name the reference AND what the file actually carries,
+	// or the reader's next step is to run otool themselves.
+	if !strings.Contains(err.Error(), "libz.1.3.1.dylib") || !strings.Contains(err.Error(), "@loader_path/../lib") {
+		t.Errorf("message hides half the problem: %v", err)
+	}
+}
+
+// The same file with a relative rpath that DOES reach the pkgx root is fine,
+// absolute entry and all: that one is a leak, not a break, and zlib.net,
+// sqlite.org and gnome.org/libxml2 are all in that state today.
+func TestAnAbsoluteRpathBesideAReachingOneIsAccepted(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "tool", "v1.0.0")
+	exe := filepath.Join(prefix, "bin", "tool")
+	place(t, exe,
+		machoCmd{lcRpath, pkgx},
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+		machoCmd{lcLoadDylib, "@rpath/zlib.net/v1.3.1/lib/libz.1.3.1.dylib"},
+	)
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatalf("a reaching relative rpath must be enough: %v", err)
+	}
+}
+
+// A reference to the package's OWN library needs no rpath out of the package,
+// and must not be mistaken for a sibling: the version directory is what tells
+// them apart.
+func TestOwnLibraryReferenceNeedsNoEscapingRpath(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "llvm.org", "v22.1.8")
+	exe := filepath.Join(prefix, "bin", "clang")
+	place(t, exe,
+		machoCmd{lcRpath, "@loader_path/../lib"},
+		machoCmd{lcLoadDylib, "@rpath/libLLVM.dylib"},
+	)
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatalf("own-library reference must be accepted: %v", err)
+	}
+}
+
+func TestSiblingRef(t *testing.T) {
+	for s, want := range map[string]bool{
+		"@rpath/zlib.net/v1.3.1/lib/libz.1.3.1.dylib": true,
+		"@rpath/gnu.org/gcc/v14/lib/libgcc_s.1.dylib": true,
+		"@rpath/libLLVM.dylib":                        false,
+		"@rpath/lib/libfoo.dylib":                     false,
+		// A directory that merely starts with v is not a version.
+		"@rpath/vendor/libfoo.dylib": false,
+	} {
+		if got := siblingRef(s); got != want {
+			t.Errorf("siblingRef(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
