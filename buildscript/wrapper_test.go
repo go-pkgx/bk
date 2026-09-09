@@ -433,7 +433,7 @@ func TestDarwinGivesRustcTheRpath(t *testing.T) {
 	// and fixup then correctly refuses to rewrite its install names into
 	// @rpath/… — leaving the bottle exactly as unrelocatable as before, while
 	// building, publishing and running perfectly on the machine that made it.
-	want := `export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,@loader_path/../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../.. -C link-arg=-Wl,-rpath,/opt/pkgx"`
+	want := `export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,@loader_path/../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../../../../.. -C link-arg=-Wl,-rpath,/opt/pkgx"`
 	if !strings.Contains(darwin, want) {
 		t.Errorf("darwin must hand rustc every rpath, not just the absolute one:\nwant %s\ngot:\n%s", want, darwin)
 	}
@@ -471,7 +471,7 @@ func TestDarwinLinksRelativeRpaths(t *testing.T) {
 		UserScript: "make install", Target: darwinTgt(),
 		PkgxDir: "/opt/pkgx", Install: "/opt/pkgx/acme.org/foo/v1.2.3",
 	})
-	want := `export LDFLAGS="-Wl,-rpath,@loader_path/../../../.. -Wl,-rpath,@loader_path/../../../../.. -Wl,-rpath,/opt/pkgx $LDFLAGS"`
+	want := `export LDFLAGS="-Wl,-rpath,@loader_path/../../../.. -Wl,-rpath,@loader_path/../../../../.. -Wl,-rpath,@loader_path/../../../../../.. -Wl,-rpath,@loader_path/../../../../../../.. -Wl,-rpath,@loader_path/../../../../../../../.. -Wl,-rpath,/opt/pkgx $LDFLAGS"`
 	if !strings.Contains(s, want) {
 		t.Errorf("darwin LDFLAGS:\nwant %s\nin:\n%s", want, s)
 	}
@@ -485,10 +485,26 @@ func TestDarwinRpathDepths(t *testing.T) {
 		name, pkgxDir, install string
 		want                   []string
 	}{
+		// Five depths, not two: bin/ and lib/ are the first two, and the rest are
+		// for a loadable module nested under lib/ — libX11 puts input methods at
+		// lib/X11/locale/common/, four levels down, and with only two depths its
+		// ONLY rpath reaching a sibling package was the absolute one.
 		{"two-segment project", "/opt/pkgx", "/opt/pkgx/acme.org/foo/v1.2.3",
-			[]string{"-Wl,-rpath,@loader_path/../../../..", "-Wl,-rpath,@loader_path/../../../../..", "-Wl,-rpath,/opt/pkgx"}},
+			[]string{
+				"-Wl,-rpath,@loader_path/../../../..",
+				"-Wl,-rpath,@loader_path/../../../../..",
+				"-Wl,-rpath,@loader_path/../../../../../..",
+				"-Wl,-rpath,@loader_path/../../../../../../..",
+				"-Wl,-rpath,@loader_path/../../../../../../../..",
+				"-Wl,-rpath,/opt/pkgx"}},
 		{"one-segment project", "/opt/pkgx", "/opt/pkgx/acme.org/v1.2.3",
-			[]string{"-Wl,-rpath,@loader_path/../../..", "-Wl,-rpath,@loader_path/../../../..", "-Wl,-rpath,/opt/pkgx"}},
+			[]string{
+				"-Wl,-rpath,@loader_path/../../..",
+				"-Wl,-rpath,@loader_path/../../../..",
+				"-Wl,-rpath,@loader_path/../../../../..",
+				"-Wl,-rpath,@loader_path/../../../../../..",
+				"-Wl,-rpath,@loader_path/../../../../../../..",
+				"-Wl,-rpath,/opt/pkgx"}},
 		{"no install prefix", "/opt/pkgx", "", []string{"-Wl,-rpath,/opt/pkgx"}},
 		{"installed outside $PKGX_DIR", "/opt/pkgx", "/elsewhere/foo/v1", []string{"-Wl,-rpath,/opt/pkgx"}},
 		{"installed AT $PKGX_DIR", "/opt/pkgx", "/opt/pkgx", []string{"-Wl,-rpath,/opt/pkgx"}},

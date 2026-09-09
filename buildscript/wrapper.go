@@ -246,13 +246,32 @@ func darwinRpaths(pkgxDir, install string) []string {
 	var out []string
 	if rel, err := filepath.Rel(pkgxDir, install); err == nil && !strings.HasPrefix(rel, "..") && rel != "." {
 		depth := len(strings.Split(filepath.ToSlash(rel), "/"))
-		for _, extra := range []int{1, 2} {
+		for _, extra := range rpathExtraDepths {
 			up := strings.TrimSuffix(strings.Repeat("../", depth+extra), "/")
 			out = append(out, "-Wl,-rpath,@loader_path/"+up)
 		}
 	}
 	return append(out, "-Wl,-rpath,"+pkgxDir)
 }
+
+// rpathExtraDepths is how far below the prefix a Mach-O may sit and still get a
+// relative rpath that reaches $PKGX_DIR.
+//
+// 1 and 2 cover bin/ and lib/ — where almost everything lives — and they were
+// enough until a guard started refusing bottles that could only run on the
+// machine that built them. libX11 then failed on
+//
+//	lib/X11/locale/common/ximcp.2
+//
+// a loadable input-method module four levels under the prefix, whose only rpath
+// reaching a sibling package was the absolute one. The guard was right: that
+// module resolved on the build machine and nowhere else, and had been shipping
+// that way.
+//
+// An LC_RPATH cannot be lengthened after the fact, so the entry has to be
+// linked in from the start or never exist. Four spare entries in every binary
+// is a handful of bytes against a module tree that silently does not work.
+var rpathExtraDepths = []int{1, 2, 3, 4, 5}
 
 // wrapFlags returns the target-keyed compiler/linker FLAGS exports. A windows
 // target gets none (PEs have no rpath and mingw rejects -pie).
