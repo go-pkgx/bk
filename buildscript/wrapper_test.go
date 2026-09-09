@@ -80,7 +80,7 @@ func TestWrapDarwinWithBinutils(t *testing.T) {
 		t.Error("darwin host should not add default llvm.org")
 	}
 	for _, w := range []string{
-		`export LDFLAGS="-Wl,-rpath,/opt/pkgx $LDFLAGS"`,
+		`export LDFLAGS="-Wl,-rpath,/opt/pkgx -Wl,-headerpad_max_install_names $LDFLAGS"`,
 		"export MACOSX_DEPLOYMENT_TARGET=11.0",
 		"export AR=/usr/bin/ar",
 		"export RANLIB=/usr/bin/ranlib",
@@ -470,7 +470,7 @@ func TestDarwinGivesRustcTheRpath(t *testing.T) {
 	// and fixup then correctly refuses to rewrite its install names into
 	// @rpath/… — leaving the bottle exactly as unrelocatable as before, while
 	// building, publishing and running perfectly on the machine that made it.
-	want := `export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,@loader_path/../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../../../../.. -C link-arg=-Wl,-rpath,/opt/pkgx"`
+	want := `export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,@loader_path/../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../../../.. -C link-arg=-Wl,-rpath,@loader_path/../../../../../../../.. -C link-arg=-Wl,-rpath,/opt/pkgx -C link-arg=-Wl,-headerpad_max_install_names"`
 	if !strings.Contains(darwin, want) {
 		t.Errorf("darwin must hand rustc every rpath, not just the absolute one:\nwant %s\ngot:\n%s", want, darwin)
 	}
@@ -508,7 +508,7 @@ func TestDarwinLinksRelativeRpaths(t *testing.T) {
 		UserScript: "make install", Target: darwinTgt(),
 		PkgxDir: "/opt/pkgx", Install: "/opt/pkgx/acme.org/foo/v1.2.3",
 	})
-	want := `export LDFLAGS="-Wl,-rpath,@loader_path/../../../.. -Wl,-rpath,@loader_path/../../../../.. -Wl,-rpath,@loader_path/../../../../../.. -Wl,-rpath,@loader_path/../../../../../../.. -Wl,-rpath,@loader_path/../../../../../../../.. -Wl,-rpath,/opt/pkgx $LDFLAGS"`
+	want := `export LDFLAGS="-Wl,-rpath,@loader_path/../../../.. -Wl,-rpath,@loader_path/../../../../.. -Wl,-rpath,@loader_path/../../../../../.. -Wl,-rpath,@loader_path/../../../../../../.. -Wl,-rpath,@loader_path/../../../../../../../.. -Wl,-rpath,/opt/pkgx -Wl,-headerpad_max_install_names $LDFLAGS"`
 	if !strings.Contains(s, want) {
 		t.Errorf("darwin LDFLAGS:\nwant %s\nin:\n%s", want, s)
 	}
