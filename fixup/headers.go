@@ -20,6 +20,21 @@ var systemHeaders = func() map[string]bool {
 		"wordexp.h",
 		// common C++ / platform headers that cause trouble
 		"memory.h", "version.h", "module.h",
+		// Extension headers: neither C-standard nor POSIX, which is why the two
+		// lists above missed them, and shadowing one is just as fatal.
+		//
+		// xlocale.h cost a day. libX11 ships Xlocale.h, this flatten put it at
+		// the include root, CPATH puts that root ahead of the SDK, and macOS
+		// filesystems are case-insensitive — so libc++'s `#include <xlocale.h>`
+		// opened X11's header, which declares no locale_t and no LC_*_MASK.
+		// Every darwin C++ translation unit reaching <locale> then failed, and
+		// <locale> is reached by <functional> and <vector>: llvm.org stopped
+		// building on darwin entirely, with an error inside Apple's own headers
+		// that pointed nowhere near here.
+		//
+		// The comparison below has always been case-insensitive. Only the list
+		// was short.
+		"xlocale.h",
 	} {
 		m[h] = true
 	}
