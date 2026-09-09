@@ -152,7 +152,12 @@ func walkMachoStrings(raw []byte, bo binary.ByteOrder, hdr, ncmd int, visit func
 				old := cstr(raw[start:end])
 				if nw := visit(cmd, old); nw != old {
 					if len(nw) >= end-start {
-						return changed, ErrNoSpace
+						extra, err := growMachoCmd(raw, bo, hdr, ncmd, off, strOff+len(nw)+1)
+						if err != nil {
+							return changed, err
+						}
+						size += extra
+						end = off + size
 					}
 					for j := start; j < end; j++ {
 						raw[j] = 0
@@ -165,6 +170,97 @@ func walkMachoStrings(raw []byte, bo binary.ByteOrder, hdr, ncmd int, visit func
 		off += size
 	}
 	return changed, nil
+}
+
+// growMachoCmd lengthens one load command in place so a longer string fits,
+// and reports by how much.
+//
+// A Mach-O's load commands live in a contiguous run between the header and the
+// first section's file data, and the linker leaves slack there — 8284 bytes in
+// our published zstd dylib, 5604 in its `zstd` binary, 2072 in upstream pkgx's
+// copy of the same library. So a command CAN be made longer: raise its
+// cmdsize, slide every command after it down, raise the header's sizeofcmds.
+// Nothing else moves — no section, no segment, no offset recorded anywhere
+// else in the file — because the run only grows into space that was already
+// reserved for it.
+//
+// This is what makes an install name fixable at all. An install name is not
+// invented: it is derived from where the file already is, and the correct value
+// (@rpath/facebook.com/zstd/v1.5.7/lib/libzstd.1.5.7.dylib) is LONGER than the
+// wrong one CMake writes by default (@rpath/libzstd.1.dylib). Refusing to grow
+// meant refusing to fix it, silently — see #125, where a bare install name
+// aborted every consumer of the zstd bottle at dyld time.
+//
+// It is NOT a way around the LC_RPATH rule. An rpath must still be linked in at
+// build time, because its VALUE — how deep the package installs — is not
+// recoverable from the binary; the constraint there was never the byte count.
+func growMachoCmd(raw []byte, bo binary.ByteOrder, hdr, ncmd, off, want int) (int, error) {
+	// 32-bit slices are not grown: their segment/section structs have a
+	// different shape and no darwin target we build for is 32-bit. Refusing is
+	// the same answer as before this function existed. (hdr is the header SIZE:
+	// 32 for a 64-bit Mach-O, 28 for a 32-bit one.)
+	if hdr != 32 {
+		return 0, ErrNoSpace
+	}
+	size := int(bo.Uint32(raw[off+4:]))
+	grown := (want + 7) &^ 7
+	if grown <= size {
+		return 0, nil
+	}
+	extra := grown - size
+	sizeofcmds := int(bo.Uint32(raw[20:]))
+	end := hdr + sizeofcmds
+	limit, ok := machoCmdLimit(raw, bo, hdr, ncmd)
+	if !ok || end+extra > limit || end+extra > len(raw) {
+		return 0, ErrNoSpace
+	}
+	copy(raw[off+size+extra:end+extra], raw[off+size:end])
+	for j := off + size; j < off+size+extra; j++ {
+		raw[j] = 0
+	}
+	bo.PutUint32(raw[off+4:], uint32(grown))
+	bo.PutUint32(raw[20:], uint32(sizeofcmds+extra))
+	return extra, nil
+}
+
+// machoCmdLimit returns the file offset the load commands must not reach: the
+// lowest file offset of any section that has one. A zero offset means a
+// zero-fill section (__bss and friends), which occupies no file bytes and
+// bounds nothing.
+func machoCmdLimit(raw []byte, bo binary.ByteOrder, hdr, ncmd int) (int, bool) {
+	const (
+		lcSegment64 = 0x19
+		segHdr      = 72 // segment_command_64 up to the first section
+		sectSize    = 80 // section_64
+		sectOffset  = 48 // section_64.offset
+	)
+	limit, found := 0, false
+	off := hdr
+	for i := 0; i < ncmd && off+8 <= len(raw); i++ {
+		cmd := bo.Uint32(raw[off:])
+		size := int(bo.Uint32(raw[off+4:]))
+		if size < 8 || off+size > len(raw) {
+			return 0, false
+		}
+		if cmd == lcSegment64 && size >= segHdr {
+			nsects := int(bo.Uint32(raw[off+64:]))
+			for j := 0; j < nsects; j++ {
+				so := off + segHdr + j*sectSize
+				if so+sectSize > off+size {
+					return 0, false
+				}
+				fo := int(bo.Uint32(raw[so+sectOffset:]))
+				if fo == 0 {
+					continue
+				}
+				if !found || fo < limit {
+					limit, found = fo, true
+				}
+			}
+		}
+		off += size
+	}
+	return limit, found
 }
 
 // ReadMachoStrings returns the install name, dylib references and rpaths of a
@@ -335,6 +431,11 @@ func rewriteMacho(exe string, opts Options) error {
 		if opts.BuildInstall != "" {
 			s = strings.ReplaceAll(s, opts.BuildInstall, opts.Prefix)
 		}
+		if cmd == lcIDDylib && toRpath {
+			if q, ok := qualifyID(exe, s, opts); ok {
+				return q
+			}
+		}
 		// An rpath is a search ROOT, not a reference: @rpath means nothing
 		// inside one, and the relative entries were linked in already.
 		if !toRpath || cmd == lcRpath {
@@ -386,6 +487,48 @@ func rewriteMacho(exe string, opts Options) error {
 		return err
 	}
 	return checkRpathResolvable(exe, opts)
+}
+
+// qualifyID gives a BARE @rpath install name the directory the file is actually
+// in, and reports whether it changed anything.
+//
+// CMake's default on darwin (MACOSX_RPATH) writes the install name as
+// @rpath/<soname> — no directory at all. Every branch below leaves that alone,
+// because it already starts with @rpath and "libzstd.1.dylib" joined onto
+// $PKGX_DIR is, technically, under $PKGX_DIR. It is also nowhere: a consumer's
+// rpath points at $PKGX_DIR, not at zstd's lib dir, so dyld aborts:
+//
+//	dyld: Library not loaded: @rpath/libzstd.1.dylib
+//	  Referenced from: …/build/bin/llvm-min-tblgen
+//	  Reason: tried: '/Users/runner/.pkgx/libzstd.1.dylib' (no such file), …
+//
+// That is #125: our published facebook.com/zstd bottle carries the bare form
+// where upstream pkgx's bottle for the SAME version carries
+// @rpath/facebook.com/zstd/v1.5.7/lib/libzstd.1.5.7.dylib, and llvm.org could
+// not build on either darwin arch because of it.
+//
+// The LEAF is kept, not replaced with the file's own name: it is the soname the
+// build chose, and the symlink carrying it ships in the same directory — so a
+// consumer keeps binding to libzstd.1.dylib rather than to libzstd.1.5.7.dylib.
+// Kept only if that file is really there; a soname with no symlink beside it
+// would be a reference we invented, so the file's own name is used instead.
+// Only a bare name is touched: one that already names a directory was either
+// written correctly or is handled by the absolute branch.
+func qualifyID(exe, id string, opts Options) (string, bool) {
+	rest, ok := strings.CutPrefix(id, "@rpath/")
+	if !ok || strings.Contains(rest, "/") || rest == "" || opts.PkgxDir == "" {
+		return "", false
+	}
+	self := unstage(exe, opts)
+	dir := filepath.Dir(self)
+	if _, err := osStat(filepath.Join(dir, rest)); err != nil {
+		rest = filepath.Base(self)
+	}
+	rel, ok := underDir(filepath.Join(dir, rest), opts.PkgxDir)
+	if !ok {
+		return "", false
+	}
+	return "@rpath/" + rel, true
 }
 
 // ErrDeadRpath means a Mach-O references @rpath/… and carries no LC_RPATH at

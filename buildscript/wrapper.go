@@ -293,6 +293,19 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 		// does not. The absolute one stays as well, so anything that runs out of
 		// the build tree keeps resolving the way it does today.
 		ld = append(ld, darwinRpaths(pkgxDir, install)...)
+		// Slack between the load commands and the first section, so fixup can
+		// LENGTHEN an install name rather than skip it.
+		//
+		// CMake's default on darwin writes @rpath/<soname> — a bare name that
+		// resolves nowhere, since a consumer's rpath reaches $PKGX_DIR and not
+		// the library's own lib dir. The correct name,
+		// @rpath/facebook.com/zstd/v1.5.7/lib/libzstd.1.dylib, is longer than
+		// the wrong one, and a Mach-O load command can only grow into slack the
+		// linker left. It usually leaves plenty — 8284 bytes in our zstd dylib,
+		// 5604 in its `zstd` binary — but "usually" is not a property to build
+		// a fixup on. This makes it a guarantee, and it is what Homebrew links
+		// every formula with, for the same reason.
+		ld = append(ld, "-Wl,-headerpad_max_install_names")
 	case "linux":
 		// Both arches get an absolute -Wl,-rpath,$PKGX_DIR so the linker emits a
 		// DT_RUNPATH *slot* fixup/rpath.go later rewrites $ORIGIN-relative. A
@@ -536,6 +549,10 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 		for _, r := range darwinRpaths(pkgxDir, install) {
 			rf = append(rf, "-C link-arg="+r)
 		}
+		// The install-name slack, for the same reason as LDFLAGS: a Rust cdylib
+		// gets its install name from the same linker, and leaving it out here
+		// would be an asymmetry with no reason behind it.
+		rf = append(rf, "-C link-arg=-Wl,-headerpad_max_install_names")
 		out = append(out, `export RUSTFLAGS="${RUSTFLAGS:-} `+strings.Join(rf, " ")+`"`)
 	}
 	if tgt.Platform == "linux" {
