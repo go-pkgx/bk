@@ -426,6 +426,45 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 			// sovereign driver.
 			`export BK_CC="clang `+glibcCC+`"`,
 			`export BK_CXX="clang++ `+glibcCXX+`"`,
+			// The driver for a build that is FREESTANDING by construction: the
+			// pinned pkgx clang and nothing else. A kernel supplies its own
+			// headers and its own runtime, and glibc's headers are not merely
+			// unnecessary there — they are wrong.
+			//
+			// arch/arm64/include/asm/neon-intrinsics.h redefines __INT64_TYPE__ to
+			// `long long` so that THE COMPILER's stdint.h derives an int64_t
+			// compatible with the kernel's s64. glibc's stdint.h derives nothing:
+			// its bits/types.h fixes __int64_t at `long`. So arch/arm64/lib/xor-neon.c
+			// — the one file in the tree that includes <arm_neon.h>, which includes
+			// <stdint.h> — died with
+			//   bits/stdint-intn.h:27: error: typedef redefinition with different
+			//     types ('__int64_t' (aka 'long') vs 's64' (aka 'long long'))
+			// and the include trace went arm_neon.h -> glibc/include/stdint.h
+			// DIRECTLY: clang's own stdint.h was never opened.
+			//
+			// The kernel already asks for the right thing and cannot get it. It
+			// passes `-nostdinc -isystem $(CC -print-file-name=include)`, and
+			// neither half reaches the -isystem above, measured:
+			//   clang -E -v -nostdinc -isystem FAKELIBC        -> FAKELIBC only
+			//     (-nostdinc drops the standard and builtin dirs, never an
+			//      explicit -isystem)
+			//   clang -isystem FAKELIBC -E -v -nostdinc -isystem $RESOURCE_DIR
+			//                                                  -> FAKELIBC, then
+			//      $RESOURCE_DIR — the driver's entry is PREPENDED and outranks
+			//      what the caller adds, whatever the caller adds.
+			// Same shape as #111: the caller cannot filter what the driver
+			// prepends, so the escape has to be offered here.
+			//
+			// -ffreestanding is NOT that escape and was tried: it sets
+			// __STDC_HOSTED__ to 0, which is the condition inside clang's stdint.h
+			// — a file that is never reached. The flag moved nothing; the same
+			// error came back with `KCFLAGS=-ffreestanding` on the make line.
+			//
+			// A recipe must pass this on the make COMMAND LINE (`make CC=...`):
+			// kbuild assigns CC in the makefile, which beats the environment, so a
+			// kernel otherwise compiles through the `gcc` shim and back into the
+			// hosted driver.
+			`export BK_CC_FREESTANDING="clang"`,
 			// rustc does NOT go through $CC: it invokes `cc` itself as the
 			// linker driver, with its own arguments. That is survivable only
 			// because `cc` on PATH is bk's own shim, which re-execs $BK_CC — so
