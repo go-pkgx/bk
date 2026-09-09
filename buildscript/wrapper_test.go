@@ -185,6 +185,43 @@ func TestWrapLibcPkgxLinuxX86(t *testing.T) {
 	}
 }
 
+// The freestanding driver is the escape hatch a kernel needs: the pinned pkgx
+// clang carrying NO libc include directory. What matters is not the string but
+// the property — a build that supplies its own headers must be able to get
+// glibc's off its search path, and -nostdinc cannot remove an -isystem the
+// driver prepends. Asserted as "no -isystem anywhere in the value" so that a
+// later flag added to the hosted driver cannot leak in unnoticed.
+func TestWrapLibcPkgxFreestandingDriver(t *testing.T) {
+	s := Wrap(WrapOptions{
+		UserScript: "make\n", Target: linuxArm64Tgt(), Host: linuxArm64Tgt(),
+		PkgxDir: "/opt/pkgx", LibcPkgx: true,
+	})
+	const want = `export BK_CC_FREESTANDING="clang"`
+	if !strings.Contains(s, want) {
+		t.Fatalf("missing %q in:\n%s", want, s)
+	}
+	for _, line := range strings.Split(s, "\n") {
+		if !strings.HasPrefix(line, "export BK_CC_FREESTANDING=") {
+			continue
+		}
+		if strings.Contains(line, "-isystem") || strings.Contains(line, "--sysroot") {
+			t.Errorf("freestanding driver carries a libc path: %s", line)
+		}
+	}
+}
+
+// Outside pkgx-libc mode nothing injects a libc include directory, so there is
+// nothing to escape and no variable to offer.
+func TestWrapFreestandingDriverOnlyInLibcPkgx(t *testing.T) {
+	s := Wrap(WrapOptions{
+		UserScript: "make\n", Target: linuxArm64Tgt(), Host: linuxArm64Tgt(),
+		PkgxDir: "/opt/pkgx",
+	})
+	if strings.Contains(s, "BK_CC_FREESTANDING") {
+		t.Errorf("freestanding driver exported outside pkgx-libc mode:\n%s", s)
+	}
+}
+
 func TestWrapLibcPkgxArm64Loader(t *testing.T) {
 	s := Wrap(WrapOptions{
 		UserScript: "make\n", Target: linuxArm64Tgt(), Host: linuxArm64Tgt(),
