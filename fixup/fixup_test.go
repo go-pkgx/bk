@@ -217,3 +217,33 @@ func anyContains(ss []string, sub string) bool {
 	}
 	return false
 }
+
+// TestFlattenHeadersSkipsXlocale is libX11, exactly as published: a single
+// include/X11 subdir holding, among others, Xlocale.h. Flattening put that at
+// the include root; CPATH puts the root ahead of the SDK; macOS filesystems are
+// case-insensitive — so libc++'s `#include <xlocale.h>` opened X11's header,
+// which declares no locale_t and no LC_*_MASK, and every darwin C++ unit
+// reaching <locale> failed. The guard was always case-insensitive; the list
+// simply did not have xlocale.h, because it is neither C-standard nor POSIX.
+func TestFlattenHeadersSkipsXlocale(t *testing.T) {
+	prefix := t.TempDir()
+	for _, h := range []string{"Xlib.h", "Xutil.h", "Xlocale.h", "cursorfont.h"} {
+		write(t, filepath.Join(prefix, "include", "X11", h), "h")
+	}
+	var logs []string
+	if err := FixUp(Options{Prefix: prefix, Platform: "linux", Log: func(s string) { logs = append(logs, s) }}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "include", "Xlib.h")); !os.IsNotExist(err) {
+		t.Error("X11 must not be flattened while it carries Xlocale.h")
+	}
+	// The real directory has to survive, or <X11/Xlib.h> — the spelling every
+	// upstream actually uses — stops resolving.
+	fi, err := os.Lstat(filepath.Join(prefix, "include", "X11"))
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		t.Error("include/X11 must stay a real directory")
+	}
+	if !anyContains(logs, "Xlocale.h") {
+		t.Errorf("the log must name the header that blocked it: %v", logs)
+	}
+}
