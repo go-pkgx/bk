@@ -901,3 +901,52 @@ func TestFetchGitReportsTheCommit(t *testing.T) {
 		t.Errorf("commit = %q, want %q", got, want)
 	}
 }
+
+// The mirror hook fires at the one moment the bytes exist on disk with their
+// digest known — the caller of Fetch sees only the digest, and the temp file is
+// gone the moment Fetch returns.
+func TestFetchPopulatesTheMirror(t *testing.T) {
+	s := serve(t, gzWrap(t, sampleTar(t)))
+	defer s.Close()
+
+	var gotPath, gotDigest, gotURL string
+	var existed bool
+	Mirror = func(path, sha, url string) {
+		gotPath, gotDigest, gotURL = path, sha, url
+		_, err := os.Stat(path)
+		existed = err == nil
+	}
+	defer func() { Mirror = nil }()
+
+	dir := t.TempDir()
+	digest, err := Fetch(s.URL+"/x.tar.gz", dir, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDigest != digest {
+		t.Errorf("mirror saw digest %q, Fetch returned %q", gotDigest, digest)
+	}
+	if gotURL != s.URL+"/x.tar.gz" {
+		t.Errorf("mirror saw url %q", gotURL)
+	}
+	if !existed {
+		t.Error("the archive was not on disk when the mirror was called, which is the only thing the hook is for")
+	}
+	// And it is gone afterwards, which is why the hook cannot be moved later.
+	if _, err := os.Stat(gotPath); err == nil {
+		t.Error("Fetch left the archive behind")
+	}
+}
+
+// With no mirror configured — the default — Fetch behaves exactly as before.
+// The hook is an addition, not a dependency.
+func TestFetchWithNoMirrorConfigured(t *testing.T) {
+	Mirror = nil
+	s := serve(t, gzWrap(t, sampleTar(t)))
+	defer s.Close()
+	dir := t.TempDir()
+	if _, err := Fetch(s.URL+"/pkg.tar.gz", dir, 0); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	checkSampleTree(t, dir)
+}

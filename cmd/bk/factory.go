@@ -106,12 +106,22 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	pkgx := fs.String("pkgx", "pkgx", "path to the pkgx binary used for the deps env")
 	failures := fs.String("failures", "failures.txt", "write the list of failed builds here")
 	failuresDetail := fs.String("failures-detail", "failures-detail.txt", "write each failure's error tail here")
+	sourceMirror := fs.String("source-mirror", envOr("SOURCE_MIRROR", ""), "keep every source archive a build downloads in this registry, addressed by its sha256 (e.g. oci://ghcr.io/go-pkgx). 57% of this pantry builds from tarballs GitHub GENERATES on request rather than stores, so for those it is the first stored artefact they have ever had")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *platform == "" {
 		fmt.Fprintln(stderr, "usage: bk factory --platform os/arch [--recipes \"p1 p2\"] [--pantry dir] [--to oci://…]")
 		return 2
+	}
+	// Before any work: an operator who asked for a source mirror and cannot have
+	// one is entitled to know now, not after a hundred archives have gone
+	// unrecorded.
+	if *sourceMirror != "" {
+		if err := installSourceMirror(*sourceMirror, stderr); err != nil {
+			fmt.Fprintln(stderr, "factory:", err)
+			return 1
+		}
 	}
 	osn, arch, ok := splitPlatform(*platform)
 	if !ok {

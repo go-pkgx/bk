@@ -68,6 +68,16 @@ func Fetch(url, destDir string, stripComponents int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch: digest %s: %w", url, err)
 	}
+	// The one moment the bytes exist on disk with their digest known. A source
+	// mirror is populated HERE or not at all: the caller sees only the digest,
+	// and the temp file is gone the moment this function returns.
+	//
+	// Best-effort by construction. A build that already holds the bytes it
+	// needs must not fail because a registry was unreachable; the mirror is for
+	// the NEXT rebuild, not this one. Mirror reports its own trouble.
+	if Mirror != nil {
+		Mirror(path, digest, url)
+	}
 	body, err := osOpen(path)
 	if err != nil {
 		return digest, fmt.Errorf("fetch: open %s: %w", path, err)
@@ -111,6 +121,21 @@ func Fetch(url, destDir string, stripComponents int) (string, error) {
 		return digest, wrapExtract(extractZip(data, destDir, stripComponents), "zip", url, head)
 	}
 }
+
+// Mirror, when set, is handed every archive Fetch downloads: its path on disk,
+// its sha256 in lowercase hex, and the URL it came from.
+//
+// It exists because 57% of this pantry is built from tarballs GitHub GENERATES
+// on request rather than stores — of 165 such URLs probed, not one advertises a
+// Content-Length, because the object does not exist until someone asks. For
+// those sources a mirror is not a copy of anything: it is the first stored
+// artefact they have ever had, and this is the only place in the build where
+// the bytes and their digest are both in hand.
+//
+// It returns nothing on purpose. A build holding the bytes it needs must not
+// fail because a registry was unreachable — the mirror serves the NEXT rebuild.
+// An implementation that wants its failures seen logs them itself.
+var Mirror func(archivePath, sha256hex, url string)
 
 // ExtractTarGzFile extracts the local gzip-compressed tar at src into destDir,
 // stripping strip leading path components (like `tar --strip-components=N`). It
