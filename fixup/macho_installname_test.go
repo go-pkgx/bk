@@ -321,9 +321,67 @@ func TestMachoCmdLimitRefusesMalformedCommands(t *testing.T) {
 }
 
 // A dylib installed outside $PKGX_DIR has no qualified name to be given: there
-// is no directory to name it relative to.
+// is no directory to name it relative to. With no $PKGX_DIR at all there is not
+// even a question to answer — unreachable through FixUp, which only calls this
+// once an rpath has been shown to reach $PKGX_DIR, so it is asserted directly.
 func TestQualifyIDOutsidePkgxDir(t *testing.T) {
 	if _, ok := qualifyID("/elsewhere/lib/libfoo.dylib", "@rpath/libfoo.dylib", Options{PkgxDir: "/opt/pkgx"}); ok {
 		t.Error("qualified an install name for a file that is not under $PKGX_DIR")
+	}
+	if _, ok := qualifyID("/opt/pkgx/a/v1/lib/libfoo.dylib", "@rpath/libfoo.dylib", Options{}); ok {
+		t.Error("qualified an install name with no $PKGX_DIR to name it against")
+	}
+}
+
+// A hand-written Makefile leaves a plain soname with no prefix at all —
+// sourceware.org/bzip2 ships libbz2.1.0.8.dylib whose install name is the bare
+// string "libbz2.dylib". It resolves in the pkgx layout exactly as well as the
+// @rpath/ spelling does, which is to say not at all, and bzip2's own binary
+// hides it by linking the static archive: only a package that links libbz2
+// finds out.
+func TestPlainRelativeInstallNameGainsItsDirectory(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "sourceware.org", "bzip2", "v1.0.8")
+	lib := filepath.Join(prefix, "lib", "libbz2.1.0.8.dylib")
+	placePad(t, lib, 256,
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+		machoCmd{lcIDDylib, "libbz2.dylib"},
+	)
+	if err := os.Symlink("libbz2.1.0.8.dylib", filepath.Join(prefix, "lib", "libbz2.dylib")); err != nil {
+		t.Fatal(err)
+	}
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMachoStrings(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "@rpath/sourceware.org/bzip2/v1.0.8/lib/libbz2.dylib"
+	if got[1] != want {
+		t.Errorf("install name = %q, want %q", got[1], want)
+	}
+}
+
+// @loader_path and @executable_path install names are already anchored to
+// something real. Rewriting one would move a reference that works.
+func TestLoaderPathInstallNameIsLeftAlone(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "foo", "v1.2.3")
+	lib := filepath.Join(prefix, "lib", "libfoo.dylib")
+	const id = "@loader_path/../lib/libfoo.dylib"
+	placePad(t, lib, 256,
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+		machoCmd{lcIDDylib, id},
+	)
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMachoStrings(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[1] != id {
+		t.Errorf("install name = %q, want it unchanged", got[1])
 	}
 }
