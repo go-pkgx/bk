@@ -512,11 +512,28 @@ func rewriteMacho(exe string, opts Options) error {
 // consumer keeps binding to libzstd.1.dylib rather than to libzstd.1.5.7.dylib.
 // Kept only if that file is really there; a soname with no symlink beside it
 // would be a reference we invented, so the file's own name is used instead.
-// Only a bare name is touched: one that already names a directory was either
-// written correctly or is handled by the absolute branch.
+// Only a name with no directory is touched: one that names a directory was
+// either written correctly or is handled by the absolute branch, and an
+// @loader_path/@executable_path one is already anchored to something real.
 func qualifyID(exe, id string, opts Options) (string, bool) {
-	rest, ok := strings.CutPrefix(id, "@rpath/")
-	if !ok || strings.Contains(rest, "/") || rest == "" || opts.PkgxDir == "" {
+	if opts.PkgxDir == "" {
+		return "", false
+	}
+	// Two spellings of the same defect. @rpath/<soname> is CMake's; a plain
+	// <soname> with no prefix at all is what a hand-written Makefile leaves —
+	// sourceware.org/bzip2 ships libbz2.1.0.8.dylib whose install name is the
+	// bare string "libbz2.dylib". Neither resolves in the pkgx layout, and
+	// bzip2's own binary hides it by linking the static archive: only a package
+	// that links libbz2 ever finds out.
+	rest := id
+	if r, ok := strings.CutPrefix(id, "@rpath/"); ok {
+		rest = r
+	} else if strings.HasPrefix(id, "@") || strings.HasPrefix(id, "/") {
+		// @loader_path/@executable_path are already anchored to something real,
+		// and an absolute name is the branch above this one.
+		return "", false
+	}
+	if rest == "" || strings.Contains(rest, "/") {
 		return "", false
 	}
 	self := unstage(exe, opts)
