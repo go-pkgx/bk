@@ -334,6 +334,25 @@ func rewriteMachoStringsCmd(path string, fn func(uint32, string) string) error {
 	return osWriteFile(path, raw, mode)
 }
 
+// machoID returns a Mach-O's LC_ID_DYLIB, or "" for a file that has none
+// (an executable, a loadable bundle, or anything unreadable).
+func machoID(path string) string {
+	raw, slices, err := machoInfo(path)
+	if err != nil {
+		return ""
+	}
+	id := ""
+	for _, sl := range slices {
+		walkMachoStrings(raw[sl.off:sl.off+sl.size], sl.bo, sl.hdr, sl.ncmd, func(cmd uint32, s string) string {
+			if cmd == lcIDDylib && id == "" {
+				id = s
+			}
+			return s
+		})
+	}
+	return id
+}
+
 // machoRpaths returns a Mach-O's LC_RPATH entries.
 func machoRpaths(path string) ([]string, error) {
 	raw, slices, err := machoInfo(path)
@@ -421,7 +440,19 @@ func rewriteMacho(exe string, opts Options) error {
 			opts.log("macho %s: no rpath reaching %s, leaving install names absolute", exe, opts.PkgxDir)
 		}
 	}
-	if opts.BuildInstall == "" && !toRpath {
+	// An install name says where THIS file is; whether it resolves depends on
+	// the CONSUMER's rpath, not on this file's. So it is fixed even for a
+	// library that needs no rpath of its own — sourceware.org/bzip2's
+	// libbz2.1.0.8.dylib links nothing but libSystem, therefore never gets a
+	// $PKGX_DIR-reaching rpath, therefore kept its unresolvable "libbz2.dylib"
+	// id through a rebuild that was meant to repair exactly that. Qualifying it
+	// is never worse than leaving it: a consumer without a $PKGX_DIR rpath
+	// fails on either spelling.
+	fixableID := false
+	if _, ok := qualifyID(exe, machoID(exe), opts); ok {
+		fixableID = true
+	}
+	if opts.BuildInstall == "" && !toRpath && !fixableID {
 		// Nothing to rewrite — but a file that already references @rpath with no
 		// LC_RPATH is dead however little we touch it, and this is the branch it
 		// arrives on.
@@ -431,7 +462,7 @@ func rewriteMacho(exe string, opts Options) error {
 		if opts.BuildInstall != "" {
 			s = strings.ReplaceAll(s, opts.BuildInstall, opts.Prefix)
 		}
-		if cmd == lcIDDylib && toRpath {
+		if cmd == lcIDDylib {
 			if q, ok := qualifyID(exe, s, opts); ok {
 				return q
 			}
@@ -574,7 +605,7 @@ var ErrBuilderOnlyRpath = errors.New("fixup: sibling package reachable only thro
 // and an @rpath reference is dead in every environment — so it stops the build
 // rather than becoming someone's dyld error weeks later.
 func checkRpathResolvable(exe string, opts Options) error {
-	strs, err := ReadMachoStrings(exe)
+	strs, err := readMachoRefs(exe)
 	if err != nil {
 		return err
 	}
@@ -595,6 +626,32 @@ func checkRpathResolvable(exe string, opts Options) error {
 		}
 	}
 	return nil
+}
+
+// readMachoRefs returns the strings that are REFERENCES — what this file asks
+// dyld to find — and not its own name.
+//
+// LC_ID_DYLIB is not a reference. It is what this dylib calls itself, recorded
+// by whoever links against it; dyld never resolves it against this file's own
+// rpaths. Counting it made a self-contained library fail its own guard the
+// moment its id was qualified: libbz2 links nothing but libSystem, needs no
+// rpath, and would have been reported as "@rpath reference with no LC_RPATH"
+// against itself.
+func readMachoRefs(path string) ([]string, error) {
+	raw, slices, err := machoInfo(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, sl := range slices {
+		walkMachoStrings(raw[sl.off:sl.off+sl.size], sl.bo, sl.hdr, sl.ncmd, func(cmd uint32, s string) string {
+			if cmd != lcIDDylib && cmd != lcRpath {
+				out = append(out, s)
+			}
+			return s
+		})
+	}
+	return out, nil
 }
 
 // siblingRef reports whether an @rpath reference names ANOTHER package rather
