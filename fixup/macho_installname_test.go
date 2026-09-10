@@ -385,3 +385,78 @@ func TestLoaderPathInstallNameIsLeftAlone(t *testing.T) {
 		t.Errorf("install name = %q, want it unchanged", got[1])
 	}
 }
+
+// A library that links nothing outside its own package never gets a
+// $PKGX_DIR-reaching rpath, because it needs none. Gating the install-name fix
+// on that rpath therefore skipped exactly the files whose id was least likely
+// to be repaired any other way: sourceware.org/bzip2's libbz2.1.0.8.dylib links
+// only libSystem, and came back from a repair rebuild still carrying
+// "libbz2.dylib".
+//
+// An install name says where THIS file is. Whether it resolves is the
+// CONSUMER's rpath's business, and qualifying it is never worse than leaving it
+// — a consumer without a $PKGX_DIR rpath fails on either spelling.
+func TestInstallNameIsFixedWithoutAnRpathOfItsOwn(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "sourceware.org", "bzip2", "v1.0.8")
+	lib := filepath.Join(prefix, "lib", "libbz2.1.0.8.dylib")
+	placePad(t, lib, 256,
+		machoCmd{lcIDDylib, "libbz2.dylib"},
+		machoCmd{lcLoadDylib, "/usr/lib/libSystem.B.dylib"},
+	)
+	if err := os.Symlink("libbz2.1.0.8.dylib", filepath.Join(prefix, "lib", "libbz2.dylib")); err != nil {
+		t.Fatal(err)
+	}
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMachoStrings(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "@rpath/sourceware.org/bzip2/v1.0.8/lib/libbz2.dylib"
+	if got[0] != want {
+		t.Errorf("install name = %q, want %q", got[0], want)
+	}
+	// The OS reference is not ours to touch, rpath or no rpath.
+	if got[1] != "/usr/lib/libSystem.B.dylib" {
+		t.Errorf("system reference = %q, want it untouched", got[1])
+	}
+}
+
+// The rest of the relocation still needs a reachable rpath. A file with an
+// absolute reference into $PKGX_DIR and no way back to it keeps that
+// reference — @rpath would resolve nowhere, which is worse than a path that at
+// least works in one place.
+func TestReferencesStillNeedAnRpathEvenWhenTheIDIsFixed(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "foo", "v1.2.3")
+	lib := filepath.Join(prefix, "lib", "libfoo.dylib")
+	dep := filepath.Join(pkgx, "other.org/bar/v2.0.0/lib/libbar.dylib")
+	placePad(t, lib, 256,
+		machoCmd{lcIDDylib, "libfoo.dylib"},
+		machoCmd{lcLoadDylib, dep},
+	)
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMachoStrings(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0] != "@rpath/acme.org/foo/v1.2.3/lib/libfoo.dylib" {
+		t.Errorf("install name = %q, want it qualified", got[0])
+	}
+	if got[1] != dep {
+		t.Errorf("dependency = %q, want it left absolute for lack of an rpath", got[1])
+	}
+}
+
+// machoID answers "" for anything it cannot read, so the caller's question —
+// "is there an install name to fix here?" — has a usable answer for an
+// executable, a bundle, or a file that is not Mach-O at all.
+func TestMachoIDOfSomethingUnreadable(t *testing.T) {
+	if got := machoID(filepath.Join(t.TempDir(), "absent")); got != "" {
+		t.Errorf("machoID of a missing file = %q, want empty", got)
+	}
+}
