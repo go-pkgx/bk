@@ -305,7 +305,23 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 		// 5604 in its `zstd` binary — but "usually" is not a property to build
 		// a fixup on. This makes it a guarantee, and it is what Homebrew links
 		// every formula with, for the same reason.
-		ld = append(ld, "-Wl,-headerpad_max_install_names")
+		// -Wno-unused-command-line-argument travels WITH it, and is not
+		// decoration. A linker flag handed to a COMPILE-ONLY invocation is
+		// `'linker' input unused`, which under the -Werror that many configure
+		// probes use is a hard error:
+		//
+		//   clang: error: -Wl,-headerpad_max_install_names: 'linker' input
+		//     unused [-Werror,-Wunused-command-line-argument]
+		//
+		// A probe that fails does not stop the build — it turns a feature OFF,
+		// silently, and the failure surfaces a thousand lines later as an
+		// undeclared symbol. That is exactly why the linux driver carries the
+		// same suppression (the xz case: "CFLAGS contains something that makes
+		// -Werror complain"), and adding a linker flag to the darwin side
+		// without it reopened the hole. Measured: the suppression works in
+		// either order relative to -Werror, because -Werror promotes warnings
+		// that are ENABLED and -Wno- disables this one outright.
+		ld = append(ld, "-Wl,-headerpad_max_install_names", "-Wno-unused-command-line-argument")
 	case "linux":
 		// Both arches get an absolute -Wl,-rpath,$PKGX_DIR so the linker emits a
 		// DT_RUNPATH *slot* fixup/rpath.go later rewrites $ORIGIN-relative. A

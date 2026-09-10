@@ -80,7 +80,7 @@ func TestWrapDarwinWithBinutils(t *testing.T) {
 		t.Error("darwin host should not add default llvm.org")
 	}
 	for _, w := range []string{
-		`export LDFLAGS="-Wl,-rpath,/opt/pkgx -Wl,-headerpad_max_install_names $LDFLAGS"`,
+		`export LDFLAGS="-Wl,-rpath,/opt/pkgx -Wl,-headerpad_max_install_names -Wno-unused-command-line-argument $LDFLAGS"`,
 		"export MACOSX_DEPLOYMENT_TARGET=11.0",
 		"export AR=/usr/bin/ar",
 		"export RANLIB=/usr/bin/ranlib",
@@ -508,7 +508,7 @@ func TestDarwinLinksRelativeRpaths(t *testing.T) {
 		UserScript: "make install", Target: darwinTgt(),
 		PkgxDir: "/opt/pkgx", Install: "/opt/pkgx/acme.org/foo/v1.2.3",
 	})
-	want := `export LDFLAGS="-Wl,-rpath,@loader_path/../../../.. -Wl,-rpath,@loader_path/../../../../.. -Wl,-rpath,@loader_path/../../../../../.. -Wl,-rpath,@loader_path/../../../../../../.. -Wl,-rpath,@loader_path/../../../../../../../.. -Wl,-rpath,/opt/pkgx -Wl,-headerpad_max_install_names $LDFLAGS"`
+	want := `export LDFLAGS="-Wl,-rpath,@loader_path/../../../.. -Wl,-rpath,@loader_path/../../../../.. -Wl,-rpath,@loader_path/../../../../../.. -Wl,-rpath,@loader_path/../../../../../../.. -Wl,-rpath,@loader_path/../../../../../../../.. -Wl,-rpath,/opt/pkgx -Wl,-headerpad_max_install_names -Wno-unused-command-line-argument $LDFLAGS"`
 	if !strings.Contains(s, want) {
 		t.Errorf("darwin LDFLAGS:\nwant %s\nin:\n%s", want, s)
 	}
@@ -607,5 +607,35 @@ func TestToolVarsStillExported(t *testing.T) {
 	s := Wrap(WrapOptions{UserScript: "make", Target: darwinTgt(), Project: "acme.org/thing"})
 	if !strings.Contains(s, `export SED="${SED:-sed}" GREP="${GREP:-grep}" EGREP="${EGREP:-grep -E}" FGREP="${FGREP:-grep -F}"`) {
 		t.Errorf("the ordinary case lost its tool vars:\n%s", s)
+	}
+}
+
+// The headerpad flag and its warning suppression travel together. Alone, the
+// linker flag reaching a compile-only invocation is a hard error under the
+// -Werror many configure probes use:
+//
+//	clang: error: -Wl,-headerpad_max_install_names: 'linker' input unused
+//	  [-Werror,-Wunused-command-line-argument]
+//
+// and a failed probe does not stop a build, it turns a feature off silently.
+func TestDarwinHeaderpadCarriesItsSuppression(t *testing.T) {
+	s := Wrap(WrapOptions{
+		UserScript: "make\n", Target: darwinTgt(), Host: darwinTgt(),
+		PkgxDir: "/opt/pkgx",
+	})
+	// LDFLAGS only. RUSTFLAGS carries the same flag as -C link-arg, which
+	// rustc hands to the linker driver and nothing else — there is no
+	// compile-only invocation on that path to be warned about.
+	var ldflags string
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(line, "export LDFLAGS=") {
+			ldflags = line
+		}
+	}
+	if !strings.Contains(ldflags, "-Wl,-headerpad_max_install_names") {
+		t.Fatalf("darwin LDFLAGS lost the install-name headroom: %q", ldflags)
+	}
+	if !strings.Contains(ldflags, "-Wno-unused-command-line-argument") {
+		t.Errorf("headerpad without its suppression: %s", ldflags)
 	}
 }
