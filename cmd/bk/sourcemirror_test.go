@@ -166,3 +166,19 @@ func TestFactoryRefusesAMirrorItCannotBuild(t *testing.T) {
 		t.Errorf("stderr = %q, want it to name the source mirror", errOut.String())
 	}
 }
+
+// TestNewSourceStoreRefusesABaseItCannotParse covers the DEFAULT seam — the
+// code every other test in this file replaces, and the one branch the repo's
+// 100% gate was rounding away.
+//
+// A source mirror pointed at something that is not an oci:// ref must say so
+// rather than silently record nothing: a mirror that quietly stopped writing
+// looks exactly like one that had nothing to write.
+func TestNewSourceStoreRefusesABaseItCannotParse(t *testing.T) {
+	if _, err := newSourceStore("not-an-oci-ref"); err == nil {
+		t.Fatal("a base that is not an oci:// ref built a store")
+	}
+	if _, err := newSourceStore("oci://ghcr.io/go-pkgx"); err != nil {
+		t.Errorf("a well-formed base was refused: %v", err)
+	}
+}

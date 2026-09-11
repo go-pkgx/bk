@@ -3,6 +3,7 @@ package fixup
 import (
 	"debug/elf"
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -226,5 +227,25 @@ func corruptSectionSize(t *testing.T, path, section string) {
 	le.PutUint64(raw[pos:], 1<<40) // absurdly large → past EOF
 	if err := os.WriteFile(path, raw, 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSetRunpathCannotOpenTheFile covers the one branch of SetRunpath the
+// repo's 100% gate was rounding away: the file that passed every structural
+// check and then would not open for writing — a read-only mount, a file
+// another process holds, a full inode table.
+//
+// It is reached honestly through the same seam the rest of this package uses,
+// because a test cannot make os.OpenFile fail on demand.
+func TestSetRunpathCannotOpenTheFile(t *testing.T) {
+	p := buildELF64LE(t, "/opt/x/aaaa", "libc.so.6", 16)
+	old := osOpenFile
+	osOpenFile = func(string, int, os.FileMode) (*os.File, error) {
+		return nil, errors.New("sealed")
+	}
+	t.Cleanup(func() { osOpenFile = old })
+	err := SetRunpath(p, "y")
+	if err == nil || !strings.Contains(err.Error(), "sealed") {
+		t.Errorf("err = %v, want the open failure to surface", err)
 	}
 }
