@@ -7,6 +7,7 @@ import (
 	"crypto/sha512"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash"
 )
 
@@ -77,7 +78,8 @@ func walkSignature(slice []byte, bo binary.ByteOrder, hdr, ncmd int, apply bool)
 		return false, nil
 	}
 	if off+size > len(slice) {
-		return false, ErrBadSignature
+		return false, fmt.Errorf("%w: LC_CODE_SIGNATURE at %d+%d runs past the %d-byte slice",
+			ErrBadSignature, off, size, len(slice))
 	}
 	return resignSuperBlob(slice, slice[off:off+size], apply)
 }
@@ -95,10 +97,10 @@ func MachoSignatureStale(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, sl := range slices {
+	for i, sl := range slices {
 		stale, err := walkSignature(raw[sl.off:sl.off+sl.size], sl.bo, sl.hdr, sl.ncmd, false)
 		if err != nil {
-			return false, err
+			return false, sliceErr(path, i, len(slices), err)
 		}
 		if stale {
 			return true, nil
@@ -141,20 +143,23 @@ func resignSuperBlob(slice, sig []byte, apply bool) (bool, error) {
 	}
 	count := int(be.Uint32(sig[8:]))
 	if 12+count*8 > len(sig) {
-		return false, ErrBadSignature
+		return false, fmt.Errorf("%w: SuperBlob claims %d blobs, which does not fit in %d bytes",
+			ErrBadSignature, count, len(sig))
 	}
 	done := false
 	for i := 0; i < count; i++ {
 		o := int(be.Uint32(sig[12+i*8+4:]))
 		if o < 0 || o+8 > len(sig) {
-			return done, ErrBadSignature
+			return done, fmt.Errorf("%w: blob %d of %d starts at %d, past the %d-byte signature",
+				ErrBadSignature, i, count, o, len(sig))
 		}
 		if be.Uint32(sig[o:]) != csMagicCodeDirectory {
 			continue
 		}
 		length := int(be.Uint32(sig[o+4:]))
 		if length < 44 || o+length > len(sig) {
-			return done, ErrBadSignature
+			return done, fmt.Errorf("%w: CodeDirectory at %d claims %d bytes of a %d-byte signature",
+				ErrBadSignature, o, length, len(sig))
 		}
 		changed, err := resignCodeDirectory(slice, sig[o:o+length], apply)
 		if err != nil {
@@ -195,16 +200,19 @@ func resignCodeDirectory(slice, cd []byte, apply bool) (bool, error) {
 	}
 	newHash, digestSize := hasherFor(hashType)
 	if newHash == nil {
-		return false, errors.New("fixup: unknown code signature hash type")
+		return false, fmt.Errorf("fixup: unknown code signature hash type %d", hashType)
 	}
 	if hashSize <= 0 || hashSize > digestSize {
-		return false, ErrBadSignature
+		return false, fmt.Errorf("%w: hash size %d is not in 1..%d for hash type %d",
+			ErrBadSignature, hashSize, digestSize, hashType)
 	}
 	if codeLimit < 0 || codeLimit > int64(len(slice)) {
-		return false, ErrBadSignature
+		return false, fmt.Errorf("%w: code limit %d is not within the %d-byte slice",
+			ErrBadSignature, codeLimit, len(slice))
 	}
 	if hashOff < 0 || hashOff+nCode*hashSize > len(cd) {
-		return false, ErrBadSignature
+		return false, fmt.Errorf("%w: %d code slots of %d bytes at offset %d run past the %d-byte CodeDirectory",
+			ErrBadSignature, nCode, hashSize, hashOff, len(cd))
 	}
 	// pageSize 0 means the whole image is hashed as one slot rather than paged.
 	page := int64(1) << pageShift
@@ -215,7 +223,8 @@ func resignCodeDirectory(slice, cd []byte, apply bool) (bool, error) {
 	for i := 0; i < nCode; i++ {
 		start := int64(i) * page
 		if start > codeLimit {
-			return false, ErrBadSignature
+			return false, fmt.Errorf("%w: code slot %d of %d starts at %d, past the code limit %d",
+				ErrBadSignature, i, nCode, start, codeLimit)
 		}
 		end := start + page
 		if end > codeLimit {
@@ -249,4 +258,22 @@ func hasherFor(t byte) (func() hash.Hash, int) {
 		return func() hash.Hash { return sha512.New384() }, sha512.Size384
 	}
 	return nil, 0
+}
+
+// sliceErr names the file, and the architecture slice within it, that a
+// signature refusal came from.
+//
+// `ErrBadSignature` on its own says a signature is malformed and nothing about
+// WHOSE. `openprinting.github.io/cups` failed its rebuild with exactly that and
+// no way to tell which of its binaries to look at — a guard that refuses
+// without naming its subject makes the operator reproduce the whole build to
+// find out what it already knew.
+//
+// A fat binary's slice index is part of the answer: only one architecture may
+// be malformed, and "the third slice" is where to point `otool -arch` at.
+func sliceErr(path string, i, n int, err error) error {
+	if n <= 1 {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return fmt.Errorf("%s (slice %d of %d): %w", path, i, n, err)
 }

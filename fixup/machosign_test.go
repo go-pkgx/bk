@@ -7,8 +7,10 @@ import (
 	"crypto/sha512"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -297,32 +299,37 @@ func TestResignHashTypes(t *testing.T) {
 // over: a half-understood signature restated anyway produces a binary that
 // dies with no message, which is the failure this whole file exists to avoid.
 func TestMalformedSignatureRefused(t *testing.T) {
+	// Each case also pins what the message SAYS. ErrBadSignature on its own
+	// tells an operator a signature is malformed and nothing about which file
+	// or which check — `openprinting.github.io/cups` failed a rebuild with
+	// exactly that, and there was no way to tell which of its binaries to open.
 	for _, tc := range []struct {
 		name   string
 		break_ func(img *signedImage)
 		want   error
+		says   string
 	}{
 		{"blob index past the end", func(img *signedImage) {
 			binary.BigEndian.PutUint32(img.raw[img.sigOff+16:], 0xfffffff0)
-		}, ErrBadSignature},
+		}, ErrBadSignature, "blob 0 of 1 starts at"},
 		{"directory longer than the blob", func(img *signedImage) {
 			binary.BigEndian.PutUint32(img.raw[img.cdOff+4:], 0xfffffff0)
-		}, ErrBadSignature},
+		}, ErrBadSignature, "CodeDirectory at"},
 		{"code limit past the image", func(img *signedImage) {
 			binary.BigEndian.PutUint64(img.raw[img.cdOff+56:], 1<<40)
-		}, ErrBadSignature},
+		}, ErrBadSignature, "code limit"},
 		{"hash bigger than its algorithm", func(img *signedImage) {
 			img.raw[img.cdOff+36] = 64
-		}, ErrBadSignature},
+		}, ErrBadSignature, "hash size 64 is not in"},
 		{"slots past the directory", func(img *signedImage) {
 			binary.BigEndian.PutUint32(img.raw[img.cdOff+28:], 1<<20)
-		}, ErrBadSignature},
+		}, ErrBadSignature, "code slots of"},
 		{"more slots than the image has pages", func(img *signedImage) {
 			binary.BigEndian.PutUint64(img.raw[img.cdOff+56:], 100)
-		}, ErrBadSignature},
+		}, ErrBadSignature, "past the code limit"},
 		{"blob count past the end", func(img *signedImage) {
 			binary.BigEndian.PutUint32(img.raw[img.sigOff+8:], 1<<20)
-		}, ErrBadSignature},
+		}, ErrBadSignature, "SuperBlob claims"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			img := buildSignedMachO(t, "/opt/x/v1+brewing/lib", sigOpts{})
@@ -334,7 +341,31 @@ func TestMalformedSignatureRefused(t *testing.T) {
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
+			if !strings.Contains(err.Error(), tc.says) {
+				t.Errorf("err = %q, does not say %q", err, tc.says)
+			}
+			if !strings.Contains(err.Error(), p) {
+				t.Errorf("err = %q, does not name the file %q", err, p)
+			}
 		})
+	}
+}
+
+// sliceErr names the architecture slice only when there is more than one: a
+// thin binary has no slice to point at, and saying "slice 0 of 1" would be
+// noise in every message a linux or single-arch build produces.
+func TestSliceErrNamesTheSliceOnlyInAFatBinary(t *testing.T) {
+	base := fmt.Errorf("%w: something", ErrBadSignature)
+	thin := sliceErr("/p/lib/a.dylib", 0, 1, base)
+	if !errors.Is(thin, ErrBadSignature) || strings.Contains(thin.Error(), "slice") {
+		t.Errorf("thin: %v", thin)
+	}
+	if !strings.Contains(thin.Error(), "/p/lib/a.dylib") {
+		t.Errorf("thin does not name the file: %v", thin)
+	}
+	fat := sliceErr("/p/lib/a.dylib", 2, 3, base)
+	if !errors.Is(fat, ErrBadSignature) || !strings.Contains(fat.Error(), "slice 2 of 3") {
+		t.Errorf("fat: %v", fat)
 	}
 }
 
@@ -349,6 +380,9 @@ func TestUnknownHashTypeRefused(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("want an error for an algorithm we cannot compute")
+	}
+	if !strings.Contains(err.Error(), "hash type 99") {
+		t.Errorf("err = %q, does not name the algorithm it could not compute", err)
 	}
 }
 
