@@ -219,7 +219,7 @@ func safeTarget(destDir, name string, strip int) (target string, ok bool, err er
 	if path.IsAbs(name) || filepath.IsAbs(filepath.FromSlash(name)) {
 		return "", false, fmt.Errorf("fetch: absolute path %q in archive", name)
 	}
-	parts := strings.Split(path.Clean(name), "/")
+	parts := stripComponents(name)
 	if len(parts) <= strip {
 		return "", false, nil
 	}
@@ -383,4 +383,28 @@ func headCommit(repo *gogit.Repository) string {
 		return ""
 	}
 	return ref.Hash().String()
+}
+
+// stripComponents splits an archive member name the way `tar --strip-components`
+// counts it: a leading "." IS a component.
+//
+// `path.Clean` removes it before the count, so N components off a "./"-prefixed
+// archive strips N+1 — which does not fail, it FLATTENS: the real root entry is
+// dropped and a subdirectory's namesake takes its place. The tar side of this
+// is go-pkgx/bottle#69, where `hdfgroup.org/HDF5 2.2.0` built the wrong tree
+// and cmake reported it as an unknown command in "CMakeLists.txt". Zip archives
+// carry "./" prefixes less often, but the two extractors must not disagree
+// about what `strip-components` means.
+//
+// Empty segments (from "//" or a trailing "/") are not components and are
+// dropped; "." is kept.
+func stripComponents(name string) []string {
+	raw := strings.Split(name, "/")
+	out := raw[:0]
+	for _, p := range raw {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
