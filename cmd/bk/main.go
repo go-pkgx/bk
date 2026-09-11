@@ -11,6 +11,7 @@
 //	bk publish           push a built bottle to an OCI registry
 //	bk closure           print a project set's transitive runtime closure (topological)
 //	bk factory           build a recipe set's whole closure and publish every bottle
+//	bk source            fetch the source a published bottle attests it was built from
 package main
 
 import (
@@ -110,7 +111,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|closure|depgaps|builder|factory> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|closure|depgaps|builder|factory|source> [args]")
 		return 2
 	}
 
@@ -154,6 +155,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runBuilder(rest[1:], stdout, stderr)
 	case "factory":
 		return runFactory(rest[1:], stdout, stderr)
+	case "source":
+		return runSource(rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "unknown command:", rest[0])
 		return 2
