@@ -24,6 +24,17 @@ var machoMagic = [][]byte{
 	{0xca, 0xfe, 0xba, 0xbe}, {0xbe, 0xba, 0xfe, 0xca}, // fat
 }
 
+// seams (swapped in tests): these paths are filesystem failures — a temp
+// directory that cannot be made, a file that cannot be written — which a test
+// cannot provoke honestly and which are the only thing a user would ever see
+// of them.
+var (
+	auditOpen      = os.Open
+	auditMkdirTemp = os.MkdirTemp
+	auditMkdirAll  = os.MkdirAll
+	auditOpenFile  = os.OpenFile
+)
+
 func looksMachO(b []byte) bool {
 	if len(b) < 4 {
 		return false
@@ -55,7 +66,7 @@ func looksMachO(b []byte) bool {
 // need: that directory is $PKGX_DIR and the package prefix sits under it at its
 // real depth, which is exactly what an @loader_path rpath is measured against.
 func auditMirroredBottle(path, ext, proj, ver string) (checked int, problems []error, err error) {
-	f, err := os.Open(path)
+	f, err := auditOpen(path)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -80,7 +91,7 @@ func auditMirroredBottle(path, ext, proj, ver string) (checked int, problems []e
 		return 0, nil, fmt.Errorf("cannot audit %s: unhandled compression %q", path, ext)
 	}
 
-	dir, err := os.MkdirTemp("", "bk-mirror-audit-")
+	dir, err := auditMkdirTemp("", "bk-mirror-audit-")
 	if err != nil {
 		return 0, nil, err
 	}
@@ -108,16 +119,16 @@ func auditMirroredBottle(path, ext, proj, ver string) (checked int, problems []e
 			continue // a tarball naming its way out of the tree audits nothing
 		}
 		dst := filepath.Join(dir, rel)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		if err := auditMkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return 0, nil, err
 		}
-		out, cerr := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+		out, cerr := auditOpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 		if cerr != nil {
 			return 0, nil, cerr
 		}
 		_, werr := out.Write(head[:n])
 		if werr == nil {
-			_, werr = io.Copy(out, tr)
+			_, werr = ioCopy(out, tr)
 		}
 		out.Close()
 		if werr != nil {
