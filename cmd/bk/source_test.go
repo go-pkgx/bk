@@ -234,3 +234,36 @@ func TestRunSourceReportsABadPlatform(t *testing.T) {
 		t.Fatalf("code = %d, stderr = %q", code, errs)
 	}
 }
+
+// TestSourceIsReachableFromTheDispatcher: the subcommand has to be wired, and
+// a case nothing calls is a command nobody has.
+func TestSourceIsReachableFromTheDispatcher(t *testing.T) {
+	code, _, errs := run2(t, "source")
+	if code != 2 || !strings.Contains(errs, "usage: bk source") {
+		t.Fatalf("code = %d, stderr = %q", code, errs)
+	}
+}
+
+// TestSourceSeamsReachTheRegistry exercises the DEFAULT seams — the code the
+// other tests replace. Both branches: a base that is not an oci:// ref, so the
+// client cannot be built, and one that is well-formed but unreachable, so the
+// call itself is made and fails.
+func TestSourceSeamsReachTheRegistry(t *testing.T) {
+	t.Setenv("PKGX_VERIFY", "0")
+	t.Run("attestations", func(t *testing.T) {
+		if _, err := sourceAttestations("not-an-oci-ref", "p", "1", "darwin", "aarch64"); err == nil {
+			t.Error("a base that is not an oci:// ref built a client")
+		}
+		if _, err := sourceAttestations("oci://127.0.0.1:1/x", "p", "1", "darwin", "aarch64"); err == nil {
+			t.Error("an unreachable registry answered")
+		}
+	})
+	t.Run("puller", func(t *testing.T) {
+		if _, err := sourcePuller("not-an-oci-ref", "abc"); err == nil {
+			t.Error("a base that is not an oci:// ref built a client")
+		}
+		if _, err := sourcePuller("oci://127.0.0.1:1/x", "abc"); err == nil {
+			t.Error("an unreachable registry answered")
+		}
+	})
+}
