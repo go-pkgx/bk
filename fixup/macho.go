@@ -303,7 +303,7 @@ func rewriteMachoStringsCmd(path string, fn func(uint32, string) string) error {
 		return err
 	}
 	changed := false
-	for _, sl := range slices {
+	for i, sl := range slices {
 		slice := raw[sl.off : sl.off+sl.size]
 		ch, err := walkMachoStrings(slice, sl.bo, sl.hdr, sl.ncmd, fn)
 		changed = changed || ch
@@ -315,7 +315,7 @@ func rewriteMachoStringsCmd(path string, fn func(uint32, string) string) error {
 		// dyld error, just exit 137. Restate the hashes over what we just wrote.
 		if ch {
 			if _, err := resignSlice(slice, sl.bo, sl.hdr, sl.ncmd); err != nil {
-				return err
+				return sliceErr(path, i, len(slices), err)
 			}
 		}
 	}
