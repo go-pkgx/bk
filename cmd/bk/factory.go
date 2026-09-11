@@ -584,6 +584,26 @@ func (f *factory) mirrorOne(proj, ver string) {
 		f.fail(proj, ver, "fetch", err)
 		return
 	}
+	// A mirror is never unpacked, so fixup's relocatability guards never run on
+	// it. Read them off the staged tarball instead — it costs one decompression
+	// and says, at publish time, what would otherwise surface weeks later as a
+	// third package's dyld error. See go-pkgx/packages#147.
+	if f.osn == "darwin" {
+		switch checked, problems, aerr := auditMirroredBottle(path, ext, proj, ver); {
+		case aerr != nil:
+			fmt.Fprintf(f.stderr, "⚠️  %s %s (%s): not audited: %v\n", proj, ver, f.platform, aerr)
+		case len(problems) > 0:
+			fmt.Fprintf(f.stderr, "⚠️  NOT RELOCATABLE %s %s (%s): %d of %d Mach-O\n",
+				proj, ver, f.platform, len(problems), checked)
+			for i, pr := range problems {
+				if i == 3 {
+					fmt.Fprintf(f.stderr, "      … and %d more\n", len(problems)-3)
+					break
+				}
+				fmt.Fprintf(f.stderr, "      %v\n", pr)
+			}
+		}
+	}
 	tag, desc, err := factoryPublish(publishOptions{
 		Dist: f.dist, Project: proj, Version: ver,
 		OS: f.osn, Arch: f.arch, Path: path,
