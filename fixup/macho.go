@@ -408,6 +408,58 @@ func underDir(p, dir string) (string, bool) {
 	return filepath.ToSlash(p[len(dir):]), true
 }
 
+// relativeRpath turns an ABSOLUTE rpath pointing inside $PKGX_DIR into the
+// @loader_path one that means the same thing, and reports whether it changed.
+//
+// This is the third defect of a darwin bottle, distinct from a bare install
+// name and from an absolute reference: the REFERENCE is relocated and the
+// SEARCH ROOT is not. gnu.org/help2man's perl XS records
+//
+//	@rpath/gnu.org/gettext/v1/lib/libintl.8.dylib
+//
+// — correct, relocatable, qualified — and carries exactly two rpaths, both of
+// them paths on the machine that built it (/Users/runner/.pkgx and
+// .../gnu.org/gettext/v1.0.0/lib). Off that machine the reference resolves
+// against nothing, and on darwin there is no second chance: dyld ignores
+// LD_LIBRARY_PATH, SIP strips DYLD_LIBRARY_PATH, and pkgx's --library-path
+// branch is linux-only. The bottle's own rpaths are the whole mechanism.
+//
+// It cannot be repaired by linking deeper rpaths in: bk emits @loader_path
+// depths 4 through 8, measured for <prefix>/bin and <prefix>/lib, and this
+// bundle installs NINE levels below its prefix
+// (lib/perl5/darwin-thread-multi-2level/auto/Locale/gettext/). No fixed set of
+// depths covers where a package chooses to put things.
+//
+// It is not the LC_RPATH rule either. That rule refuses to INVENT an rpath,
+// because how deep a package installs is not recoverable from a binary. Here
+// nothing is invented: the absolute rpath states the target and the file's own
+// location states the depth, so the relative spelling is derived from two
+// things already in hand — the same footing as deriving an install name from
+// where the file is.
+func relativeRpath(exe, rpath, pkgxDir string) (string, bool) {
+	if pkgxDir == "" || !filepath.IsAbs(rpath) {
+		return rpath, false
+	}
+	clean := filepath.Clean(rpath)
+	dir := filepath.Clean(pkgxDir)
+	if _, under := underDir(clean, dir); !under && clean != dir {
+		return rpath, false
+	}
+	// A file outside $PKGX_DIR would get a relative path climbing out of the
+	// tree, which is neither shorter nor more portable than what it replaces.
+	if _, under := underDir(exe, dir); !under {
+		return rpath, false
+	}
+	rel, err := filepath.Rel(filepath.Dir(exe), clean)
+	if err != nil {
+		return rpath, false
+	}
+	if rel == "." {
+		return "@loader_path", true
+	}
+	return "@loader_path/" + filepath.ToSlash(rel), true
+}
+
 // rewriteMacho strips the +brewing staging prefix from a Mach-O's install name
 // and dep references (buildInstall → prefix), the darwin analogue of the .pc /
 // .cmake path rewrite. Removing +brewing shrinks the string, so it always fits.
@@ -430,12 +482,23 @@ func rewriteMacho(exe string, opts Options) error {
 	// resolves nowhere would trade a bottle that works in one place for a
 	// bottle that works in none — so it is measured per file, not assumed.
 	toRpath := false
+	// Whether any rpath is a builder path we can restate relatively. It is
+	// tracked apart from toRpath because the two are independent: a file can
+	// carry an rpath that reaches $PKGX_DIR on the builder and nowhere else,
+	// which is precisely the case worth repairing.
+	relocRpath := false
 	if opts.PkgxDir != "" {
 		rpaths, err := machoRpaths(exe)
 		if err != nil {
 			return err
 		}
 		toRpath = rpathReaches(exe, opts.PkgxDir, rpaths)
+		for _, r := range rpaths {
+			if _, ok := relativeRpath(exe, r, opts.PkgxDir); ok {
+				relocRpath = true
+				break
+			}
+		}
 		if !toRpath {
 			opts.log("macho %s: no rpath reaching %s, leaving install names absolute", exe, opts.PkgxDir)
 		}
@@ -452,7 +515,7 @@ func rewriteMacho(exe string, opts Options) error {
 	if _, ok := qualifyID(exe, machoID(exe), opts); ok {
 		fixableID = true
 	}
-	if opts.BuildInstall == "" && !toRpath && !fixableID {
+	if opts.BuildInstall == "" && !toRpath && !fixableID && !relocRpath {
 		// Nothing to rewrite — but a file that already references @rpath with no
 		// LC_RPATH is dead however little we touch it, and this is the branch it
 		// arrives on.
@@ -468,8 +531,16 @@ func rewriteMacho(exe string, opts Options) error {
 			}
 		}
 		// An rpath is a search ROOT, not a reference: @rpath means nothing
-		// inside one, and the relative entries were linked in already.
-		if !toRpath || cmd == lcRpath {
+		// inside one, and the relative entries were linked in already. The one
+		// thing worth saying about a search root is where it is: an absolute
+		// one names a directory on the build machine.
+		if cmd == lcRpath {
+			if r, ok := relativeRpath(exe, s, opts.PkgxDir); ok {
+				return r
+			}
+			return s
+		}
+		if !toRpath {
 			return s
 		}
 		// A reference that is ALREADY @rpath/… — because the dependency was

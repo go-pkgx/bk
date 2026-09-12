@@ -322,24 +322,57 @@ func TestNoRpathReferenceNeedsNoRpath(t *testing.T) {
 	}
 }
 
-// TestAnAbsoluteRpathIsNotRelocatability is the llvm.org case. Its darwin
+// TestAnAbsoluteRpathBecomesRelocatable is the llvm.org case. Its darwin
 // bottle has, on every one of the 118 Mach-O files that reference a sibling
 // package, exactly two rpaths: "@loader_path/../lib" — its own lib directory,
 // which cannot reach a sibling — and "/Users/runner/.pkgx", the CI runner's
-// home. It loads on the runner and nowhere else:
+// home. It loaded on the runner and nowhere else:
 //
 //	dyld: Library not loaded: @rpath/zlib.net/v1.3.1/lib/libz.1.3.1.dylib
 //	  tried: '/Users/runner/.pkgx/zlib.net/…' (no such file)
 //
 // and it built, signed, attested and published without a complaint, because the
 // old guard asked only whether an LC_RPATH existed.
-func TestAnAbsoluteRpathIsNotRelocatability(t *testing.T) {
+//
+// The guard that caught it is still there, but it no longer has anything to
+// say about this file: an absolute rpath INSIDE $PKGX_DIR states the target,
+// the file's own location states the depth, and relativeRpath writes the entry
+// that means the same thing from anywhere. What used to be a build refusal is
+// now a repair — see TestAbsolutePkgxRpathsBecomeLoaderPath for the shape that
+// no linker flag could have fixed.
+func TestAnAbsoluteRpathBecomesRelocatable(t *testing.T) {
 	pkgx := filepath.Join(t.TempDir(), ".pkgx")
 	prefix := filepath.Join(pkgx, "llvm.org", "v22.1.8")
 	exe := filepath.Join(prefix, "bin", "clang")
 	place(t, exe,
 		machoCmd{lcRpath, pkgx},                  // the builder's own directory
 		machoCmd{lcRpath, "@loader_path/../lib"}, // its own lib, not a sibling's
+		machoCmd{lcLoadDylib, "@rpath/zlib.net/v1.3.1/lib/libz.1.3.1.dylib"},
+	)
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatalf("err = %v; want the builder rpath repaired, not refused", err)
+	}
+	got, err := ReadMachoStrings(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0] != "@loader_path/../../.." {
+		t.Errorf("rpath = %q, want %q", got[0], "@loader_path/../../..")
+	}
+}
+
+// What the guard is still for: an absolute rpath that does NOT name anything
+// inside $PKGX_DIR. Homebrew's prefix is a real directory on the build machine
+// and a missing one everywhere else, and no arithmetic on the file's own
+// location can say where a consumer keeps it — so this is the case that must
+// still refuse to publish rather than be guessed at.
+func TestAnAbsoluteRpathOutsidePkgxDirStillRefuses(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "llvm.org", "v22.1.8")
+	exe := filepath.Join(prefix, "bin", "clang")
+	place(t, exe,
+		machoCmd{lcRpath, "/opt/homebrew/lib"},
+		machoCmd{lcRpath, "@loader_path/../lib"},
 		machoCmd{lcLoadDylib, "@rpath/zlib.net/v1.3.1/lib/libz.1.3.1.dylib"},
 	)
 	err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx})
