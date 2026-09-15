@@ -10,7 +10,7 @@ require (
 	github.com/go-pkgx/bottle v0.23.0
 	github.com/go-regexp/engine v0.1.3
 	github.com/go-versions/semver v0.2.0
-	github.com/hashicorp/hcl/v2 v2.24.0
+	github.com/hashicorp/hcl/v2 v2.25.0
 	github.com/klauspost/compress v1.20.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
