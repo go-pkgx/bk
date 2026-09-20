@@ -96,6 +96,9 @@ func TestRelativeRpathRefusals(t *testing.T) {
 		{"already relative", exe, "@loader_path/../..", pkgx},
 		{"outside the tree", exe, "/usr/lib", pkgx},
 		{"file outside the tree", "/elsewhere/l.dylib", pkgx, pkgx},
+		// A relative exe is refused up front: it is what makes the
+		// filepath.Rel inside total.
+		{"relative file", "l.dylib", pkgx, pkgx},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got, ok := relativeRpath(c.exe, c.rpath, c.pkgx)

@@ -437,7 +437,11 @@ func underDir(p, dir string) (string, bool) {
 // things already in hand — the same footing as deriving an install name from
 // where the file is.
 func relativeRpath(exe, rpath, pkgxDir string) (string, bool) {
-	if pkgxDir == "" || !filepath.IsAbs(rpath) {
+	// exe must be absolute too, not merely under an absolute dir: it is what
+	// makes the filepath.Rel below total, so the call needs no error branch —
+	// and a branch no test can reach is a line the coverage gate is right to
+	// refuse.
+	if pkgxDir == "" || !filepath.IsAbs(rpath) || !filepath.IsAbs(exe) {
 		return rpath, false
 	}
 	clean := filepath.Clean(rpath)
@@ -450,10 +454,7 @@ func relativeRpath(exe, rpath, pkgxDir string) (string, bool) {
 	if _, under := underDir(exe, dir); !under {
 		return rpath, false
 	}
-	rel, err := filepath.Rel(filepath.Dir(exe), clean)
-	if err != nil {
-		return rpath, false
-	}
+	rel, _ := filepath.Rel(filepath.Dir(exe), clean)
 	if rel == "." {
 		return "@loader_path", true
 	}

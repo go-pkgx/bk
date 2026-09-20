@@ -1425,3 +1425,38 @@ func TestTailErrorsAreBoundedAndFirst(t *testing.T) {
 		t.Errorf("kept the wrong end of the errors:\n%s", got)
 	}
 }
+
+// A recipe that declares it does not target the platform being built is not
+// attempted. `platforms:` was parsed and consulted by nobody, so a darwin run
+// walked into every linux-only recipe and collected the failure. Of the 81
+// pantry recipes whose platforms: excludes darwin, the seven that do have a
+// darwin bottle are all MIRRORS — this factory has never built one, so nothing
+// that could succeed is being dropped.
+func TestRunFactorySkipsARecipeThatDoesNotTargetThePlatform(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "linuxonly.org",
+		"platforms: linux\nversions:\n  github: a/l/tags\nbuild: make\n")
+	writeClosureRecipe(t, h.pantry, "portable.org",
+		"versions:\n  github: a/p/tags\nbuild: make\n")
+
+	if code := h.run(t, "--platform", "darwin/aarch64",
+		"--recipes", "linuxonly.org portable.org", "--to", "oci://example.test/pkgs"); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	for _, b := range h.built {
+		if strings.HasPrefix(b, "linuxonly.org@") {
+			t.Errorf("built %q; the recipe says it does not target darwin", b)
+		}
+	}
+	if !strings.Contains(h.out.String(), "SKIP linuxonly.org (recipe does not target darwin/aarch64)") {
+		t.Errorf("no reason given for the skip:\n%s", h.out.String())
+	}
+	// A skip is not a failure, and it is counted as what it is.
+	if !strings.Contains(h.out.String(), "1 skipped") {
+		t.Errorf("skip not counted:\n%s", h.out.String())
+	}
+	// The control: the portable recipe beside it still builds.
+	if got := strings.Join(h.built, " "); !strings.Contains(got, "portable.org@") {
+		t.Errorf("built = %q, want portable.org among them", got)
+	}
+}

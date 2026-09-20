@@ -30,6 +30,14 @@ func TestSupportsAcceptsEverySpelling(t *testing.T) {
 		{"darwin only", []any{"darwin"}, map[string]bool{
 			"darwin/aarch64": true, "darwin/x86-64": true, "linux/x86-64": false,
 		}},
+		// A non-string entry cannot name a platform, so it admits nothing —
+		// and the entries beside it still count.
+		{"list with a non-string entry", []any{1, "linux"}, map[string]bool{
+			"linux/x86-64": true, "darwin/aarch64": false,
+		}},
+		{"list of only non-strings", []any{1}, map[string]bool{
+			"linux/x86-64": false, "darwin/aarch64": false,
+		}},
 		// A declaration shaped like nothing we know supports nothing rather
 		// than everything: a recipe we cannot read is not a candidate.
 		{"unreadable", map[string]any{"linux": true}, map[string]bool{

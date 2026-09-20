@@ -1,9 +1,6 @@
 package pantry
 
-import (
-	"fmt"
-	"strings"
-)
+import "strings"
 
 // Supports reports whether a recipe's `platforms:` admits one target.
 //
@@ -57,15 +54,15 @@ func platformEntries(v any) []string {
 	case []any:
 		out := make([]string, 0, len(x))
 		for _, e := range x {
+			// A non-string entry (`platforms: [1]`) is dropped rather than
+			// stringified. It cannot name a platform, and the schema gate
+			// rejects it long before here; keeping it would only let a
+			// nonsense entry admit a build.
 			if s, ok := e.(string); ok {
 				out = append(out, strings.TrimSpace(s))
-			} else {
-				out = append(out, strings.TrimSpace(fmt.Sprint(e)))
 			}
 		}
 		return out
-	case []string:
-		return x
 	}
 	return nil
 }

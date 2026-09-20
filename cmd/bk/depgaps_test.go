@@ -354,3 +354,53 @@ func TestRunDepgapsPrintsBothHalves(t *testing.T) {
 		t.Errorf("the missing-project half is missing:\n%s", out.String())
 	}
 }
+
+// A recipe that declares it does not target this platform is not a gap on it.
+// Without this, kernel.org/linux and github.com/vmware/tdnf — both
+// `platforms: linux` — put rpm.org/rpm, opensuse.org/libsolv, elfutils.org and
+// kernel.org/libcap into a darwin/aarch64 ranking, where none of them will ever
+// be asked for.
+func TestUnsatisfiableSkipsRecipesThatDoNotTargetThePlatform(t *testing.T) {
+	root := t.TempDir()
+	writeGapRecipe(t, root, "kernel.org/linux",
+		minimal+"platforms: linux\ndependencies:\n  elfutils.org: '*'\n  openssl.org: ^1.1\n")
+	writeGapRecipe(t, root, "portable.org",
+		minimal+"dependencies:\n  elfutils.org: '*'\n  openssl.org: ^1.1\n")
+
+	have := map[string][]string{"openssl.org": {"3.5.0"}}
+	darwin := target.Target{Platform: "darwin", Arch: "aarch64"}
+	got, absent, err := unsatisfiable(root, darwin, have)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the portable recipe counts, on both halves of the answer.
+	if want := []string{"portable.org"}; !equalStrings(got["openssl.org ^1.1"], want) {
+		t.Errorf("version-line gap = %v, want %v", got["openssl.org ^1.1"], want)
+	}
+	if want := []string{"portable.org"}; !equalStrings(absent["elfutils.org"], want) {
+		t.Errorf("absent-project gap = %v, want %v", absent["elfutils.org"], want)
+	}
+
+	// The same pantry on linux counts both, which is the control: the recipe is
+	// skipped for the platform it excludes, not dropped outright.
+	got, absent, err = unsatisfiable(root, linuxTarget(), have)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["openssl.org ^1.1"]) != 2 || len(absent["elfutils.org"]) != 2 {
+		t.Errorf("on linux: got %v / %v, want both recipes counted",
+			got["openssl.org ^1.1"], absent["elfutils.org"])
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
