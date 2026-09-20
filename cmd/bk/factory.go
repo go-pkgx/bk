@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-attest/sign"
@@ -742,6 +743,22 @@ func envInt(key string) int {
 // last max lines, so a failure's error tail can be written to the artifact CI
 // leaves behind.
 type tailWriter struct {
+	// One tailWriter is handed to the shell runner as BOTH stdout and stderr,
+	// and mvdan.cc/sh runs a script's commands in goroutines — a pipeline, a
+	// backgrounded command, or simply the two streams of one command all reach
+	// Write at once. Unsynchronised, the buffer below is re-sliced by one
+	// goroutine while another indexes it, and the factory dies mid-run:
+	//
+	//	panic: runtime error: slice bounds out of range [43:0]
+	//	main.(*tailWriter).Write(…) cmd/bk/factory.go:773
+	//	mvdan.cc/sh/v3/interp.(*tracer).flush(…)
+	//	created by sync.(*WaitGroup).Go in goroutine 1
+	//
+	// Measured on go-pkgx/packages run 35504607323, darwin/x86-64: grpc.io had
+	// finished compiling and the panic took the WHOLE job with it — the two
+	// bottles already built were never published, and the run reported a build
+	// failure for a build that had succeeded.
+	mu    sync.Mutex
 	w     io.Writer
 	max   int
 	part  []byte
@@ -772,6 +789,10 @@ func errorLine(s string) bool {
 }
 
 func (t *tailWriter) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	// The wrapped writer is inside the lock too: two goroutines writing a build
+	// log interleaved mid-line is what the tail is supposed to make readable.
 	n, err := t.w.Write(p)
 	t.part = append(t.part, p[:n]...)
 	for {
@@ -785,6 +806,7 @@ func (t *tailWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// push records one complete line. The caller holds t.mu.
 func (t *tailWriter) push(line string) {
 	t.lines = append(t.lines, line)
 	if len(t.lines) > t.max {
@@ -801,6 +823,8 @@ func (t *tailWriter) push(line string) {
 // Both, not one: the errors say what broke and the tail says where the build
 // had got to, and a reader who has neither has to run the build again.
 func (t *tailWriter) tail() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	lines := t.lines
 	if len(t.part) > 0 {
 		lines = append(append([]string{}, lines...), string(t.part))
