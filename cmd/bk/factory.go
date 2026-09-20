@@ -267,6 +267,16 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 			f.fail(proj, "", "recipe", err)
 			continue
 		}
+		// `platforms:` was parsed and consulted by nobody, so a darwin run
+		// attempted every linux-only recipe and collected the failures. Of the
+		// 81 recipes whose platforms: excludes darwin, seven do have a darwin
+		// bottle and all seven are MIRRORS — this factory has never built one,
+		// so nothing that could succeed is being dropped here.
+		if !pantry.Supports(rec, tgt.Platform, tgt.Arch) {
+			fmt.Fprintf(stdout, "SKIP %s (recipe does not target %s)\n", proj, *platform)
+			f.skipped++
+			continue
+		}
 		vers, err := f.versionsFor(rec, proj, requested[proj], *maxVersions)
 		if err != nil {
 			f.fail(proj, "", "versions", err)

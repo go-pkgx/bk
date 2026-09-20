@@ -141,6 +141,14 @@ func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string
 			// schema gate already reports. Counting it here would be noise.
 			return nil
 		}
+		// A recipe that declares it does not target this platform is not a gap
+		// on it. Without this, elfutils.org, rpm.org/rpm, opensuse.org/libsolv
+		// and kernel.org/libcap ranked as darwin/aarch64 gaps because
+		// kernel.org/linux and github.com/vmware/tdnf — both `platforms:
+		// linux` — ask for them.
+		if !pantry.Supports(rec, tgt.Platform, tgt.Arch) {
+			return nil
+		}
 		for _, deps := range []map[string]any{rec.Dependencies, build.BuildDeps(rec)} {
 			for _, spec := range build.DepSpecs(deps, tgt) {
 				proj := build.SpecProject(spec)
