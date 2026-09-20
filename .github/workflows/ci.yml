@@ -14,9 +14,16 @@ jobs:
       - run: go vet ./...
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      # -race, because a concurrency guard that cannot fire is not a guard.
+      # tailWriter took a whole darwin/x86-64 factory run down with
+      #   panic: runtime error: slice bounds out of range [43:0]
+      # and the test written for it passed here either way until this flag
+      # existed: without -race the corruption is a matter of luck, and CI's
+      # luck was good. The whole suite is clean under it today, so this costs
+      # runtime and nothing else.
       - name: test + 100% coverage gate
         run: |
-          go test ./... -covermode=atomic -coverprofile=cov.out
+          go test ./... -race -covermode=atomic -coverprofile=cov.out
           total=$(go tool cover -func=cov.out | awk '/^total:/{print $3}')
           echo "total coverage: $total"
           if [ "$total" != "100.0%" ]; then

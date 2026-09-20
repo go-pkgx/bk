@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1458,5 +1459,50 @@ func TestRunFactorySkipsARecipeThatDoesNotTargetThePlatform(t *testing.T) {
 	// The control: the portable recipe beside it still builds.
 	if got := strings.Join(h.built, " "); !strings.Contains(got, "portable.org@") {
 		t.Errorf("built = %q, want portable.org among them", got)
+	}
+}
+
+// One tailWriter is the shell runner's stdout AND stderr, and mvdan.cc/sh runs
+// a script's commands in goroutines, so Write is called from several at once.
+// Unsynchronised it re-slices its buffer under another goroutine's index and
+// takes the whole factory run down:
+//
+//	panic: runtime error: slice bounds out of range [43:0]
+//
+// Measured on go-pkgx/packages run 35504607323 (darwin/x86-64), where grpc.io
+// had finished compiling and the panic discarded the run's two built bottles.
+func TestTailWriterIsWrittenFromSeveralGoroutines(t *testing.T) {
+	const writers, each = 8, 200
+	tw := &tailWriter{w: io.Discard, max: 50}
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := range each {
+				// Mixed shapes: whole lines, several lines at once, and
+				// fragments that leave a partial line behind — the last is what
+				// makes the buffer non-empty between calls.
+				switch j % 3 {
+				case 0:
+					fmt.Fprintf(tw, "writer %d line %d\n", i, j)
+				case 1:
+					fmt.Fprintf(tw, "a %d\nb %d\nc %d\n", i, j, i)
+				default:
+					fmt.Fprintf(tw, "partial %d-%d ", i, j)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Nothing to assert about WHICH lines survive — they interleave by design.
+	// What must hold is that the writer is still coherent: at most max lines,
+	// and a tail that can be read.
+	if got := len(tw.lines); got > tw.max {
+		t.Errorf("kept %d lines, max is %d", got, tw.max)
+	}
+	if tw.tail() == "" {
+		t.Error("tail is empty after 1600 writes")
 	}
 }
