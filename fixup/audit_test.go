@@ -76,3 +76,56 @@ func TestAuditRelocatableSkipsNonMachO(t *testing.T) {
 		t.Errorf("checked=%d problems=%v, want 0 and none", checked, problems)
 	}
 }
+
+// The audit refuses a Mach-O that names one rpath twice. ld will not link
+// against such a library, so the damage lands on every dependent rather than on
+// the bottle carrying it — which is why a duplicate survived a build, a
+// signature, a publish and an inspection without anything complaining, until
+// github.com/facebookincubator/fizz failed to link against folly.
+func TestAuditRefusesADuplicateRpath(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "foo", "v1.0.0")
+	exe := filepath.Join(prefix, "lib", "libfoo.dylib")
+	place(t, exe,
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+		machoCmd{lcLoadDylib, "@rpath/other.org/bar/v1/lib/libbar.dylib"},
+	)
+	checked, problems := AuditRelocatable(prefix, pkgx)
+	if checked != 1 {
+		t.Fatalf("checked %d files, want 1", checked)
+	}
+	var found error
+	for _, p := range problems {
+		if errors.Is(p, ErrDuplicateRpath) {
+			found = p
+		}
+	}
+	if found == nil {
+		t.Fatalf("no duplicate reported; problems = %v", problems)
+	}
+	// The message has to name the file AND the repeated entry, or the reader
+	// has to go looking for which of them it is.
+	if !strings.Contains(found.Error(), "libfoo.dylib") ||
+		!strings.Contains(found.Error(), "@loader_path/../../../..") {
+		t.Errorf("message hides half the problem: %v", found)
+	}
+}
+
+// One rpath named once is not a duplicate, however many other rpaths there are.
+func TestAuditAcceptsDistinctRpaths(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "foo", "v1.0.0")
+	exe := filepath.Join(prefix, "lib", "libfoo.dylib")
+	place(t, exe,
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+		machoCmd{lcRpath, "@loader_path/../../../../.."},
+		machoCmd{lcLoadDylib, "@rpath/other.org/bar/v1/lib/libbar.dylib"},
+	)
+	_, problems := AuditRelocatable(prefix, pkgx)
+	for _, p := range problems {
+		if errors.Is(p, ErrDuplicateRpath) {
+			t.Errorf("distinct rpaths reported as duplicate: %v", p)
+		}
+	}
+}

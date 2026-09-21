@@ -488,6 +488,23 @@ func rewriteMacho(exe string, opts Options) error {
 	// carry an rpath that reaches $PKGX_DIR on the builder and nowhere else,
 	// which is precisely the case worth repairing.
 	relocRpath := false
+	// Every rpath spelling the file already carries. Relativising an absolute
+	// one can land on a string that is ALREADY there — bk links in
+	// @loader_path/../../../.. itself, and a file four levels below $PKGX_DIR
+	// whose build also recorded the absolute path produces exactly that — and a
+	// duplicate LC_RPATH is not cosmetic:
+	//
+	//	ld: duplicate LC_RPATH '@loader_path/../../../..' in
+	//	    .../facebook.com/folly/v2026.09.14.00/lib/libfolly.0.58.0-dev.dylib
+	//	c++: error: linker command failed with exit code 1
+	//
+	// Every dependent then fails to link. Measured on the folly bottle this
+	// factory published: 2 × @loader_path/../../../.. where one is bk's and one
+	// came from the rewrite. Leaving the absolute entry alone keeps a builder
+	// path in the artefact, which is a leak; writing the duplicate breaks
+	// everything downstream, which is a break. The leak is the better trade,
+	// and the reaching relative rpath the guard asks for is present either way.
+	taken := map[string]bool{}
 	if opts.PkgxDir != "" {
 		rpaths, err := machoRpaths(exe)
 		if err != nil {
@@ -495,7 +512,11 @@ func rewriteMacho(exe string, opts Options) error {
 		}
 		toRpath = rpathReaches(exe, opts.PkgxDir, rpaths)
 		for _, r := range rpaths {
-			if _, ok := relativeRpath(exe, r, opts.PkgxDir); ok {
+			taken[r] = true
+		}
+		for _, r := range rpaths {
+			rel, ok := relativeRpath(exe, r, opts.PkgxDir)
+			if ok && !taken[rel] {
 				relocRpath = true
 				break
 			}
@@ -536,7 +557,9 @@ func rewriteMacho(exe string, opts Options) error {
 		// thing worth saying about a search root is where it is: an absolute
 		// one names a directory on the build machine.
 		if cmd == lcRpath {
-			if r, ok := relativeRpath(exe, s, opts.PkgxDir); ok {
+			r, ok := relativeRpath(exe, s, opts.PkgxDir)
+			if ok && !taken[r] {
+				taken[r] = true
 				return r
 			}
 			return s
