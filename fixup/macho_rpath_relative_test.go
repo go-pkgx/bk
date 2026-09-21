@@ -115,3 +115,64 @@ func TestRelativeRpathRefusals(t *testing.T) {
 		t.Errorf("own directory = %q, %v; want \"@loader_path\", true", got, ok)
 	}
 }
+
+// Relativising an absolute rpath can produce a string the file ALREADY has,
+// and a duplicate LC_RPATH is fatal to everything downstream:
+//
+//	ld: duplicate LC_RPATH '@loader_path/../../../..' in
+//	    .../facebook.com/folly/v2026.09.14.00/lib/libfolly.0.58.0-dev.dylib
+//	c++: error: linker command failed with exit code 1
+//
+// Measured on a bottle this factory published after the relativisation landed:
+// libfolly carried @loader_path/../../../.. twice — one linked in by bk, one
+// written by the rewrite — and github.com/facebookincubator/fizz could not link
+// against it at all.
+//
+// Leaving the absolute entry keeps a builder path in the artefact, which is a
+// leak. Writing the duplicate breaks every dependent, which is a break. The
+// guard's requirement — a relative rpath that reaches $PKGX_DIR — is satisfied
+// either way, because the one that would have been duplicated is already there.
+func TestARelativisedRpathIsNotWrittenTwice(t *testing.T) {
+	pkgx := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(pkgx, "acme.org", "foo", "v1.0.0")
+	exe := filepath.Join(prefix, "lib", "libfoo.dylib")
+	placePad(t, exe, 256,
+		machoCmd{lcRpath, "@loader_path/../../../.."}, // bk's, and the depth of this file
+		machoCmd{lcRpath, pkgx},                       // the builder's, same place
+		machoCmd{lcLoadDylib, "@rpath/other.org/bar/v1/lib/libbar.dylib"},
+	)
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMachoStrings(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rpaths []string
+	for _, s := range got {
+		if strings.HasPrefix(s, "@loader_path") || filepath.IsAbs(s) {
+			rpaths = append(rpaths, s)
+		}
+	}
+	seen := map[string]int{}
+	for _, r := range rpaths {
+		seen[r]++
+	}
+	for r, n := range seen {
+		if n > 1 {
+			t.Errorf("rpath %q appears %d times; ld refuses a duplicate LC_RPATH", r, n)
+		}
+	}
+	// And the absolute one is left as it was rather than half-written.
+	if got[1] != pkgx {
+		t.Errorf("second rpath = %q, want the builder path left alone (%q)", got[1], pkgx)
+	}
+	// The guard is satisfied all the same: a relative rpath reaches the root.
+	checked, problems := AuditRelocatable(prefix, pkgx)
+	if checked == 0 {
+		t.Fatal("audit checked nothing")
+	}
+	for _, p := range problems {
+		t.Errorf("audit refuses: %v", p)
+	}
+}
