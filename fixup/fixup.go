@@ -253,9 +253,11 @@ func flattenHeaders(prefix string, log func(string, ...any)) error {
 		return err
 	}
 	var dominated []string
-	for _, e := range subents {
-		if systemHeaderNames()[strings.ToLower(e.Name())] {
-			dominated = append(dominated, e.Name())
+	if !intentionalShadow[strings.ToLower(name)] {
+		for _, e := range subents {
+			if systemHeaderNames()[strings.ToLower(e.Name())] {
+				dominated = append(dominated, e.Name())
+			}
 		}
 	}
 	if len(dominated) > 0 {

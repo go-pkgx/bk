@@ -314,3 +314,27 @@ func TestFlattenHeadersConsultsTheFilesystem(t *testing.T) {
 		t.Errorf("the log must name it: %v", logs)
 	}
 }
+
+// ncurses' curses.h IS the interface the SDK's curses.h implements, in a newer
+// version, so the flatten must go ahead: ncurses exports no CPATH of its own
+// and 49 recipes `#include <curses.h>`. Widening the shadow guard to consult
+// the filesystem changed that as collateral; this is the stopgap that puts it
+// back, and go-pkgx/bk#155 is the design question it stands in for.
+func TestFlattenHeadersStillFlattensNcurses(t *testing.T) {
+	prefix := t.TempDir()
+	for _, h := range []string{"curses.h", "term.h", "panel.h", "ncurses_dll.h"} {
+		write(t, filepath.Join(prefix, "include", "ncursesw", h), "h")
+	}
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "include", "curses.h")); err != nil {
+		t.Errorf("ncurses must still be flattened: %v", err)
+	}
+	// And <ncursesw/curses.h> has to keep resolving for anything that asks for
+	// it that way, which is what the self-symlink is for.
+	fi, err := os.Lstat(filepath.Join(prefix, "include", "ncursesw"))
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("include/ncursesw must remain a symlink to .: %v", err)
+	}
+}
