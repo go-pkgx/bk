@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -245,5 +246,71 @@ func TestFlattenHeadersSkipsXlocale(t *testing.T) {
 	}
 	if !anyContains(logs, "Xlocale.h") {
 		t.Errorf("the log must name the header that blocked it: %v", logs)
+	}
+}
+
+// TestFlattenHeadersSkipsOpenSSL is the second time an extension header slipped
+// through the list, and it cost more than the first: openssl.org ships 142
+// headers under include/openssl, the flatten put every one of them at the
+// include root, and openssl's own err.h then answered every consumer's
+// `#include <err.h>`.
+//
+// developers.yubico.com/libfido2's tools call errx(3), so they stopped
+// compiling:
+//
+//	tools/cred_make.c:37:3: error: call to undeclared function 'errx'
+//
+// and two attempts to repair it from the recipe were defeated — the second,
+// `-include err.h`, because -include resolves against the -I path too and so
+// opened openssl's header as well.
+func TestFlattenHeadersSkipsOpenSSL(t *testing.T) {
+	prefix := t.TempDir()
+	for _, h := range []string{"ssl.h", "err.h", "bio.h", "evp.h"} {
+		write(t, filepath.Join(prefix, "include", "openssl", h), "h")
+	}
+	var logs []string
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", Log: func(s string) { logs = append(logs, s) }}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "include", "ssl.h")); !os.IsNotExist(err) {
+		t.Error("openssl must not be flattened while it carries err.h")
+	}
+	fi, err := os.Lstat(filepath.Join(prefix, "include", "openssl"))
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		t.Error("include/openssl must stay a real directory")
+	}
+	if !anyContains(logs, "err.h") {
+		t.Errorf("the log must name the header that blocked it: %v", logs)
+	}
+}
+
+// The curated list is a FLOOR. A header the machine carries blocks the flatten
+// even when no list ever mentioned it — which is the only way to stop the next
+// xlocale.h being found by something breaking.
+func TestFlattenHeadersConsultsTheFilesystem(t *testing.T) {
+	defer restore()
+	sdk := t.TempDir()
+	write(t, filepath.Join(sdk, "usr", "include", "wildly_specific_vendor.h"), "h")
+	t.Setenv("SDKROOT", sdk)
+	systemHeadersOnce = sync.Once{}
+	systemHeadersCache = nil
+	t.Cleanup(func() { systemHeadersOnce = sync.Once{}; systemHeadersCache = nil })
+
+	if systemHeaders["wildly_specific_vendor.h"] {
+		t.Fatal("the premise is wrong: the curated list must NOT contain it")
+	}
+	prefix := t.TempDir()
+	for _, h := range []string{"thing.h", "wildly_specific_vendor.h"} {
+		write(t, filepath.Join(prefix, "include", "vendor", h), "h")
+	}
+	var logs []string
+	if err := FixUp(Options{Prefix: prefix, Platform: "darwin", Log: func(s string) { logs = append(logs, s) }}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "include", "thing.h")); !os.IsNotExist(err) {
+		t.Error("a header the machine carries must block the flatten, list or no list")
+	}
+	if !anyContains(logs, "wildly_specific_vendor.h") {
+		t.Errorf("the log must name it: %v", logs)
 	}
 }
