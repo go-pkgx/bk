@@ -116,3 +116,25 @@ func systemIncludeDirs() []string {
 	}
 	return dirs
 }
+
+// intentionalShadow names include/ subdirectories whose headers REPLACE the
+// system ones of the same name, so the flatten must go ahead despite the guard.
+//
+// The guard added with the filesystem union asks "does a header of this name
+// exist". That is the right question for openssl's err.h — a different API that
+// happens to share a name with libc's — and the wrong one for ncurses, whose
+// curses.h IS the interface, in a newer implementation than the SDK's.
+//
+// This list exists because widening the guard changed ncurses' layout as
+// COLLATERAL, not by intent: ncurses exports no CPATH of its own, so the
+// flatten is the only thing that makes `#include <curses.h>` resolve, and 49
+// recipes depend on it. Restoring that is not a design decision; it is
+// declining to change what the guard was never aimed at.
+//
+// The design question — stop flattening and have a package export its include
+// subdirectory instead, which would make this list unnecessary — is go-pkgx/bk#155.
+// Until it is answered, this is a stopgap and is meant to read like one.
+var intentionalShadow = map[string]bool{
+	"ncursesw": true,
+	"ncurses":  true,
+}
