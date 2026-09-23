@@ -87,6 +87,9 @@ func main() {
 	case "python-venv-stubber.sh":
 		osExit(pythonVenvStubber(os.Args[1:], os.Stderr))
 		return
+	case "libtool":
+		osExit(libtoolShim(os.Args[1:], os.Stderr))
+		return
 	}
 	// The compiler shims, including the triple-prefixed spellings autoconf
 	// reaches for first (`x86_64-pc-linux-gnu-gcc`). Matched by SUFFIX so one

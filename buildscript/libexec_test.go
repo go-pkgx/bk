@@ -211,3 +211,51 @@ func TestConfigGuessTripleUnknownArch(t *testing.T) {
 		t.Errorf("want the bare shims plus one triple's worth, got %d", n)
 	}
 }
+
+// The libtool shim is materialised on darwin and nowhere else: the name
+// collision is a macOS fact, and putting a `libtool` ahead of PATH on linux
+// would shadow the GNU one every autotools build there expects.
+func TestWriteLibexecForPutsLibtoolOnDarwinOnly(t *testing.T) {
+	for _, tc := range []struct {
+		platform string
+		want     bool
+	}{
+		{"darwin", true},
+		{"linux", false},
+	} {
+		dir := t.TempDir()
+		if err := WriteLibexecFor(dir, false, "x86_64-apple-darwin", tc.platform, "x86-64"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := os.Lstat(filepath.Join(dir, "libtool"))
+		if got := err == nil; got != tc.want {
+			t.Errorf("%s: libtool shim present = %v, want %v", tc.platform, got, tc.want)
+		}
+	}
+}
+
+// A symlink that cannot be made must stop the build rather than leave the
+// wrong libtool first on PATH.
+//
+// There is deliberately no companion test for "os.Executable failed": the
+// call above this one already returns that error, so the branch is
+// unreachable. A test asserting it would have passed on the EARLIER return —
+// which is how it was written first, and why the coverage gate still showed
+// the block at zero.
+func TestWriteLibexecForLibtoolErrors(t *testing.T) {
+	t.Run("the symlink cannot be made", func(t *testing.T) {
+		oldSym := osSymlink
+		n := 0
+		osSymlink = func(a, b string) error {
+			n++
+			if filepath.Base(b) == "libtool" {
+				return errBoomLibexec
+			}
+			return oldSym(a, b)
+		}
+		defer func() { osSymlink = oldSym }()
+		if err := WriteLibexecFor(t.TempDir(), false, "t", "darwin", "x86-64"); !errors.Is(err, errBoomLibexec) {
+			t.Errorf("err = %v, want the injected one", err)
+		}
+	})
+}
