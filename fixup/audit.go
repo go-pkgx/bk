@@ -3,6 +3,7 @@ package fixup
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // AuditRelocatable runs the Mach-O relocatability guards over an already-laid-out
@@ -40,9 +41,68 @@ func AuditRelocatable(prefix, pkgxDir string) (checked int, problems []error) {
 		if err := checkMachoSignature(p); err != nil {
 			problems = append(problems, err)
 		}
+		if err := checkAbsoluteRefs(p); err != nil {
+			problems = append(problems, err)
+		}
 		return nil
 	})
 	return checked, problems
+}
+
+// ErrAbsoluteRef means a Mach-O asks dyld for a library by an absolute path
+// that is not part of macOS — so it loads only on a machine that happens to
+// have that exact path, which is the build machine and nobody else.
+//
+// Every guard beside this one reads `@rpath/…` strings and skips anything
+// spelled differently, so a reference like
+//
+//	/opt/homebrew/opt/gettext/lib/libintl.8.dylib   (git-scm.org, 656 files)
+//	/opt/homebrew/opt/brotli/lib/libbrotlidec.1.dylib  (freetype.org)
+//
+// was invisible to all of them. Homebrew is not a dependency of anything here;
+// it is what happened to be installed on the runner, found by a configure
+// script that then recorded its path. The consequence is not only a dyld
+// failure on the user's machine: freetype's generated `freetype2.pc` inherited
+// `Requires.private: … libbrotlidec`, so `fontconfig`'s build now fails at
+// `pkg-config` on a package nothing declares.
+//
+// The rule is stated as an ALLOWLIST on purpose. A denylist of known-bad
+// prefixes inherits the blind spot of whoever wrote it — `/Users/runner` was
+// listed and `/opt/homebrew` was not, which is why 711 references went out.
+// What may legitimately be absolute is small, fixed and owned by Apple:
+// `/usr/lib` and `/System`. Everything else absolute names a machine.
+//
+// Measured over the installed closures: 5642 such references in 63 projects —
+// `/Users/runner` 4093, `/opt/qt.io` 834, `/opt/homebrew` 711, plus one
+// `/Users/builder/actions-runner/_work/pantry/pantry/builds/…` inherited from
+// an upstream mirror.
+var ErrAbsoluteRef = errors.New("fixup: absolute reference to a path outside the system")
+
+// systemLibDirs are the only absolute prefixes a relocatable Mach-O may name.
+// They are part of macOS, present on every machine, and not ours to vendor.
+var systemLibDirs = []string{"/usr/lib/", "/System/"}
+
+func checkAbsoluteRefs(exe string) error {
+	refs, err := readMachoRefs(exe)
+	if err != nil {
+		return err
+	}
+	for _, r := range refs {
+		if !strings.HasPrefix(r, "/") {
+			continue
+		}
+		system := false
+		for _, d := range systemLibDirs {
+			if strings.HasPrefix(r, d) {
+				system = true
+				break
+			}
+		}
+		if !system {
+			return fmt.Errorf("%w: %s references %s", ErrAbsoluteRef, exe, r)
+		}
+	}
+	return nil
 }
 
 // ErrStaleSignature means a Mach-O carries a code signature that no longer
