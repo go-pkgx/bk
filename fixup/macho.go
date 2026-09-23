@@ -712,10 +712,9 @@ func qualifyRef(exe, soname string, opts Options) (string, bool) {
 		return "", false
 	}
 	self := unstage(exe, opts)
+	// filepath.Dir never answers "" and Join never does either, so there is no
+	// empty-directory case to guard against here.
 	for _, dir := range []string{filepath.Dir(self), filepath.Join(opts.Prefix, "lib")} {
-		if dir == "" {
-			continue
-		}
 		cand := filepath.Join(dir, soname)
 		// The file may be at the final prefix already (fixup runs after the
 		// install) or still under the staging prefix whose path was baked into

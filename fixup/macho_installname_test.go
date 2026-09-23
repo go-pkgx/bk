@@ -553,3 +553,30 @@ func TestBareReferenceToAnotherPackageIsLeftAlone(t *testing.T) {
 	}
 	t.Errorf("references = %v\nwant @rpath/libzstd.1.dylib kept verbatim", strs)
 }
+
+// While a build is still writing, the file is under the +brewing staging
+// prefix and the name it must be given is the final one. qualifyRef stats
+// where the bytes ARE and writes where they WILL BE; a lookup that only knew
+// one of the two would answer "no such library" for every package fixed up
+// before it is moved into place.
+func TestQualifyBareReferenceFindsTheStagedFile(t *testing.T) {
+	pkgx := t.TempDir()
+	prefix := filepath.Join(pkgx, "bytereef.org", "mpdecimal", "v2.5.1")
+	staging := filepath.Join(pkgx, "bytereef.org", "mpdecimal", "v2.5.1+brewing")
+	if err := os.MkdirAll(filepath.Join(staging, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// the library exists ONLY under the staging prefix
+	if err := os.WriteFile(filepath.Join(staging, "lib", "libmpdec.3.dylib"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := qualifyRef(
+		filepath.Join(staging, "lib", "libmpdec++.2.5.1.dylib"),
+		"libmpdec.3.dylib",
+		Options{Prefix: prefix, BuildInstall: staging, PkgxDir: pkgx},
+	)
+	want := "@rpath/bytereef.org/mpdecimal/v2.5.1/lib/libmpdec.3.dylib"
+	if !ok || got != want {
+		t.Errorf("qualifyRef = %q, %v\nwant %q, true", got, ok, want)
+	}
+}
