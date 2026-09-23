@@ -1506,3 +1506,32 @@ func TestTailWriterIsWrittenFromSeveralGoroutines(t *testing.T) {
 		t.Error("tail is empty after 1600 writes")
 	}
 }
+
+// TestRunFactoryReportsAToolchainPerlDrift: said once, at the top, instead of
+// forty times in the middle.
+//
+// The base toolchain pins perl for the XS-bearing tools inside it. When one of
+// those recipes moves, every autotools recipe that generates a man page dies at
+// install time on a module it cannot load — and the message names a C file, not
+// a pin, so no single failure points at the cause. gnu.org/libidn2 and
+// gnu.org/fribidi both failed that way before this existed.
+func TestRunFactoryReportsAToolchainPerlDrift(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "app.org", "versions:\n  github: a/app/tags\nbuild: make\n")
+	writeClosureRecipe(t, h.pantry, "gnu.org/texinfo",
+		"dependencies:\n  perl.org: ~5.99\nversions:\n  github: a/t/tags\nbuild: make\n")
+
+	if code := h.run(t, "--recipes", "app.org", "--to", "oci://example.test/pkgs"); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	got := h.errb.String()
+	for _, want := range []string{"toolchain:", "gnu.org/texinfo", "~5.99", build.ToolchainPerl} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stderr does not mention %q:\n%s", want, got)
+		}
+	}
+	// Reported, not refused: the run still built.
+	if len(h.built) == 0 {
+		t.Error("a toolchain warning must not stop the run")
+	}
+}
