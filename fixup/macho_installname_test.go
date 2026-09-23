@@ -460,3 +460,96 @@ func TestMachoIDOfSomethingUnreadable(t *testing.T) {
 		t.Errorf("machoID of a missing file = %q, want empty", got)
 	}
 }
+
+// A bare @rpath/<soname> REFERENCE — no directory — resolves nowhere in the
+// pkgx layout: an rpath entry points at $PKGX_DIR or at a package root, never
+// at a lib dir, so dyld joins the soname onto a directory that does not hold
+// it. qualifyID fixes the library's own name, which only helps whatever links
+// it AFTERWARDS; every dependent already built carries the bare string.
+//
+// Measured on the published catalogue, where the reference and the file it
+// wants ship in the SAME package:
+//
+//	libjpeg-turbo.org      bin/cjpeg                  -> @rpath/libjpeg.8.dylib
+//	bytereef.org/mpdecimal lib/libmpdec++.2.5.1.dylib -> @rpath/libmpdec.3.dylib
+//
+// cjpeg does not start at all. Across 2319 Mach-O files in installed closures,
+// 124 carried a bare reference and 102 of them resolved to nothing.
+func TestQualifyBareReferenceToOwnPackage(t *testing.T) {
+	pkgx := t.TempDir()
+	prefix := filepath.Join(pkgx, "libjpeg-turbo.org", "v3.2.0")
+	if err := os.MkdirAll(filepath.Join(prefix, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(prefix, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// the library the reference means, one directory away from the binary
+	if err := os.WriteFile(filepath.Join(prefix, "lib", "libjpeg.8.dylib"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exe := buildMachOPad(t, 256,
+		machoCmd{lcLoadDylib, "@rpath/libjpeg.8.dylib"},
+		machoCmd{lcRpath, "@loader_path/../../.."},
+	)
+	bin := filepath.Join(prefix, "bin", "cjpeg")
+	b, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rewriteMacho(bin, Options{Prefix: prefix, PkgxDir: pkgx, Platform: "darwin"}); err != nil {
+		t.Fatal(err)
+	}
+	strs, err := readMachoRefs(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "@rpath/libjpeg-turbo.org/v3.2.0/lib/libjpeg.8.dylib"
+	for _, s := range strs {
+		if s == want {
+			return
+		}
+	}
+	t.Errorf("references = %v\nwant one of them to be %q", strs, want)
+}
+
+// Nothing is invented. A bare soname whose file is in neither the referring
+// file's directory nor the package's lib belongs to some dependency, and which
+// one is not something to guess at — the string is left exactly as it was.
+func TestBareReferenceToAnotherPackageIsLeftAlone(t *testing.T) {
+	pkgx := t.TempDir()
+	prefix := filepath.Join(pkgx, "simplesystems.org", "libtiff", "v4.7.2")
+	if err := os.MkdirAll(filepath.Join(prefix, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := buildMachOPad(t, 256,
+		machoCmd{lcLoadDylib, "@rpath/libzstd.1.dylib"}, // zstd is a DEPENDENCY
+		machoCmd{lcRpath, "@loader_path/../../../.."},
+	)
+	bin := filepath.Join(prefix, "bin", "tiffsplit")
+	b, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteMacho(bin, Options{Prefix: prefix, PkgxDir: pkgx, Platform: "darwin"}); err != nil {
+		t.Fatal(err)
+	}
+	strs, err := readMachoRefs(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range strs {
+		if s == "@rpath/libzstd.1.dylib" {
+			return
+		}
+	}
+	t.Errorf("references = %v\nwant @rpath/libzstd.1.dylib kept verbatim", strs)
+}
