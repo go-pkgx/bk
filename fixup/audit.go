@@ -37,9 +37,54 @@ func AuditRelocatable(prefix, pkgxDir string) (checked int, problems []error) {
 		if err := checkMachoMagic(p); err != nil {
 			problems = append(problems, err)
 		}
+		if err := checkMachoSignature(p); err != nil {
+			problems = append(problems, err)
+		}
 		return nil
 	})
 	return checked, problems
+}
+
+// ErrStaleSignature means a Mach-O carries a code signature that no longer
+// describes its own bytes — the state an in-place edit leaves behind when
+// nothing restates the hashes.
+//
+// On Apple silicon this is not a load error. The kernel checks each page
+// against the code directory at first fault and kills the process outright:
+//
+//	$ gm version
+//	$ echo $?
+//	137                              ← SIGKILL, nothing on either stream
+//
+// There is no dyld message to grep for, which is why an audit that classified
+// on the output text recorded 34 dead packages as healthy. The crash report is
+// the only thing that says so: termination namespace CODESIGNING, "Invalid
+// Page".
+//
+// `codesign -v` on the EXECUTABLE is no help either — it is usually not the
+// file that was edited. `graphicsmagick.org` 1.3.48 is Developer ID signed and
+// verifies clean while dying on `gnu.org/libtool`'s `libltdl.7.dylib`.
+//
+// 2123 files across 56 published project@versions reached the catalogue this
+// way before `fixup` learned to re-sign (#96), and every guard here missed
+// them: they all read Mach-O *references* and none asked whether the bytes
+// still hash to what the signature claims. `MachoSignatureStale` could answer
+// it from #101 onwards and nothing ever called it. A guard that is written,
+// tested and unwired guards nothing.
+var ErrStaleSignature = errors.New("fixup: code signature no longer describes the file")
+
+// checkMachoSignature reports a Mach-O whose signature has gone stale, naming
+// it — the operator's next move is to rebuild that package, and "something in
+// this prefix" does not say which.
+func checkMachoSignature(exe string) error {
+	stale, err := MachoSignatureStale(exe)
+	if err != nil {
+		return err
+	}
+	if stale {
+		return fmt.Errorf("%w: %s", ErrStaleSignature, exe)
+	}
+	return nil
 }
 
 // ErrMachoMagicMismatch means a Mach-O header's word size contradicts its own
