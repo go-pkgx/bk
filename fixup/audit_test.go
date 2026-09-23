@@ -241,3 +241,68 @@ func TestCheckMachoMagicOnSomethingElse(t *testing.T) {
 		t.Errorf("err = %v, want a parse error and not a magic mismatch", err)
 	}
 }
+
+// placeSigned writes a signed image at path, so an audit test can put one
+// inside a prefix rather than in a bare temp dir.
+func placeSigned(t *testing.T, path string, img signedImage) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, img.raw, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestAuditRelocatableFindsTheStaleSignature: the check that existed, was
+// tested, and was wired to nothing.
+//
+// Every other guard here reads a Mach-O *reference*. None of them asks whether
+// the bytes still hash to what the signature claims, so 2123 files across 56
+// published project@versions went out in a state where Apple silicon SIGKILLs
+// them at the first page fault — with no dyld error and no output at all.
+func TestAuditRelocatableFindsTheStaleSignature(t *testing.T) {
+	pkgxDir := t.TempDir()
+	prefix := filepath.Join(pkgxDir, "gnu.org", "libtool", "v2.6.2")
+
+	bad := filepath.Join(prefix, "lib", "libltdl.7.dylib")
+	placeSigned(t, bad, buildSignedMachO(t, "@loader_path/../../../..", sigOpts{badHashes: true}))
+	placeSigned(t, filepath.Join(prefix, "lib", "libok.dylib"),
+		buildSignedMachO(t, "@loader_path/../../../..", sigOpts{}))
+
+	checked, problems := AuditRelocatable(prefix, pkgxDir)
+	if checked != 2 {
+		t.Fatalf("checked %d Mach-O, want 2", checked)
+	}
+	if len(problems) != 1 {
+		t.Fatalf("reported %d problem(s), want 1: %v", len(problems), problems)
+	}
+	if !errors.Is(problems[0], ErrStaleSignature) {
+		t.Errorf("problem is %v, want ErrStaleSignature", problems[0])
+	}
+	// Naming the file is the point: the operator's next move is to rebuild
+	// THAT package, and a prefix-wide complaint does not say which.
+	if !strings.Contains(problems[0].Error(), bad) {
+		t.Errorf("problem does not name %s: %v", bad, problems[0])
+	}
+}
+
+// TestAuditRelocatableSurfacesAnUnreadableSignature: a signature bk cannot
+// compute is reported, not silently passed. Reading "no verdict" as "sound" is
+// how an unrunnable bottle gets published.
+func TestAuditRelocatableSurfacesAnUnreadableSignature(t *testing.T) {
+	pkgxDir := t.TempDir()
+	prefix := filepath.Join(pkgxDir, "x", "v1")
+
+	img := buildSignedMachO(t, "@loader_path/../../..", sigOpts{})
+	img.raw[img.cdOff+37] = 99 // a hash algorithm we cannot compute
+	placeSigned(t, filepath.Join(prefix, "lib", "libx.dylib"), img)
+
+	_, problems := AuditRelocatable(prefix, pkgxDir)
+	if len(problems) != 1 {
+		t.Fatalf("reported %d problem(s), want 1: %v", len(problems), problems)
+	}
+	if errors.Is(problems[0], ErrStaleSignature) {
+		t.Errorf("called an unreadable signature stale: %v", problems[0])
+	}
+}
