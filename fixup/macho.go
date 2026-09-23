@@ -575,6 +575,30 @@ func rewriteMacho(exe string, opts Options) error {
 		// the day pcre2 reaches 10.49. The relocation was right and the version
 		// was not.
 		if rest, ok := strings.CutPrefix(s, "@rpath/"); ok && cmd != lcRpath {
+			// A BARE @rpath/<soname> — no directory — is the consumer half of
+			// the defect qualifyID fixes on the producer. Qualifying the
+			// library's own install name only helps what is linked AFTER; every
+			// dependent already carries the bare string, and nothing rewrote it.
+			//
+			// It resolves nowhere: an rpath entry points at $PKGX_DIR or at a
+			// package root, never at some other package's lib dir, so dyld
+			// joins the soname onto a directory that does not contain it.
+			// Measured on the published catalogue — the reference and the file
+			// it wants are in the SAME package, three of them:
+			//
+			//   libjpeg-turbo.org  bin/cjpeg  -> @rpath/libjpeg.8.dylib
+			//   bytereef.org/mpdecimal  lib/libmpdec++.2.5.1.dylib -> @rpath/libmpdec.3.dylib
+			//
+			// cjpeg cannot start at all; the mpdecimal one waits for whoever
+			// loads the C++ library. Both ship the file one directory away.
+			//
+			// Only a name that is really there is rewritten — the package's own
+			// lib dir, or the referring file's — so this can invent nothing. A
+			// bare name whose file belongs to a DEPENDENCY is left alone: which
+			// package it came from is not something to guess at.
+			if q, ok := qualifyRef(exe, rest, opts); ok {
+				return q
+			}
 			full := filepath.Join(opts.PkgxDir, rest)
 			t := transformRpath(full, filepath.Dir(opts.Prefix))
 			if short, ok := underDir(t, opts.PkgxDir); ok {
@@ -672,6 +696,55 @@ func qualifyID(exe, id string, opts Options) (string, bool) {
 		return "", false
 	}
 	return "@rpath/" + rel, true
+}
+
+// qualifyRef gives a BARE @rpath/<soname> REFERENCE the directory the file is
+// actually in, when that file ships in the SAME package. It is qualifyID's
+// mirror image: qualifyID fixes what a library calls itself, this fixes what
+// its consumers ask for.
+//
+// The two directories tried are the only ones a bare name can honestly mean:
+// beside the referring file, and the package's own lib. Anything else would be
+// a guess about which package a soname came from, and an invented reference is
+// worse than the bare one — it would point somewhere plausible and wrong.
+func qualifyRef(exe, soname string, opts Options) (string, bool) {
+	if opts.PkgxDir == "" || soname == "" || strings.Contains(soname, "/") {
+		return "", false
+	}
+	self := unstage(exe, opts)
+	// filepath.Dir never answers "" and Join never does either, so there is no
+	// empty-directory case to guard against here.
+	for _, dir := range []string{filepath.Dir(self), filepath.Join(opts.Prefix, "lib")} {
+		cand := filepath.Join(dir, soname)
+		// The file may be at the final prefix already (fixup runs after the
+		// install) or still under the staging prefix whose path was baked into
+		// the binaries. Which one holds bytes is not worth a guess: try both,
+		// and name the final one either way.
+		if !exists(cand) && !exists(staged(cand, opts)) {
+			continue
+		}
+		if rel, ok := underDir(cand, opts.PkgxDir); ok {
+			return "@rpath/" + rel, true
+		}
+	}
+	return "", false
+}
+
+// exists reports whether a path is there, through the stat seam the tests
+// inject on.
+func exists(p string) bool {
+	_, err := osStat(p)
+	return err == nil
+}
+
+// staged is unstage's inverse: the path a file is at RIGHT NOW, while the build
+// is still writing into +brewing. qualifyRef has to stat the file that exists,
+// and name the one that will.
+func staged(p string, opts Options) string {
+	if opts.BuildInstall == "" || !strings.HasPrefix(p, opts.Prefix) {
+		return p
+	}
+	return opts.BuildInstall + strings.TrimPrefix(p, opts.Prefix)
 }
 
 // ErrDeadRpath means a Mach-O references @rpath/… and carries no LC_RPATH at
