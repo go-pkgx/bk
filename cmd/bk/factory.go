@@ -166,6 +166,17 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// The base toolchain pins perl for the XS-bearing tools inside it. If one of
+	// those recipes has moved, every autotools recipe that generates a man page
+	// or an info manual will die at install time on a module it cannot load —
+	// and the message names a C file, not a pin, so the cause is not obvious
+	// from any one failure. Say it once here, where it is one line instead of
+	// forty. Reported, not refused: whether a mismatched toolchain should stop a
+	// run is the same question as go-pkgx/packages#147 asks of a mirror.
+	for _, e := range build.CheckToolchainPerl(*pantryDir) {
+		fmt.Fprintln(stderr, "factory: toolchain:", e)
+	}
+
 	want, err := factoryWant(*recipes, *recipesFile)
 	if err != nil {
 		fmt.Fprintln(stderr, "factory:", err)

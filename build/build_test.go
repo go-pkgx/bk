@@ -1,6 +1,7 @@
 package build
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -312,19 +313,103 @@ func TestEvalDepsRecipeConstraintBeatsBase(t *testing.T) {
 	}
 }
 
-// TestBaseToolchainPerlMatchesTexinfo: the base toolchain and the tools inside
-// it have to agree. texinfo ships compiled XS modules and asks for perl ~5.42;
-// an unconstrained perl put 5.44 on PATH ahead of it and makeinfo refused to
-// load its own modules, taking down every recipe that generates a .info manual.
-func TestBaseToolchainPerlMatchesTexinfo(t *testing.T) {
+// TestBaseToolchainPinsPerl: the base toolchain and the XS-bearing tools inside
+// it have to agree, and the pin must be STATED, not left to whatever is newest.
+//
+// This test used to assert the pin equalled the literal "~5.42" — texinfo's
+// constraint on the day it was written. texinfo moved to ~5.44 and the literal
+// did not, so the test went on passing while help2man refused to load its own
+// Locale::gettext under the pinned perl. Comparing against a copy is not
+// comparing; the copy is checked by TestCheckToolchainPerl instead, which reads
+// the recipe.
+func TestBaseToolchainPinsPerl(t *testing.T) {
 	base := BaseToolchain()
-	if !contains(base, "perl.org~5.42") || contains(base, "perl.org") {
-		t.Errorf("perl must be pinned to texinfo's line, got %v", base)
+	if !contains(base, "perl.org"+ToolchainPerl) || contains(base, "perl.org") {
+		t.Errorf("perl must be pinned to %s, got %v", ToolchainPerl, base)
 	}
 	// a recipe still wins over the pin
-	if got := EvalDeps("acme.org/thing", map[string]any{"perl.org": "^5.44"}, nil, lin()); !contains(got, "perl.org^5.44") || contains(got, "perl.org~5.42") {
+	if got := EvalDeps("acme.org/thing", map[string]any{"perl.org": "^5.99"}, nil, lin()); !contains(got, "perl.org^5.99") || contains(got, "perl.org"+ToolchainPerl) {
 		t.Errorf("a recipe must override the base perl pin: %v", got)
 	}
+}
+
+// writeRecipe lays out projects/<proj>/package.yml under a throwaway pantry.
+func writeRecipe(t *testing.T, root, proj, body string) {
+	t.Helper()
+	dir := filepath.Join(root, "projects", filepath.FromSlash(proj))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.yml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const recipeWithPerl = `distributable:
+  url: https://example.com/x-{{ version }}.tar.gz
+versions:
+  github: acme/x
+dependencies:
+  perl.org: %s
+build:
+  script: make
+test: true
+`
+
+// TestCheckToolchainPerl: the check the old test only claimed to be. It reads
+// what the recipe declares, so a recipe moving is something it can SEE.
+func TestCheckToolchainPerl(t *testing.T) {
+	t.Run("agreeing", func(t *testing.T) {
+		root := t.TempDir()
+		for _, p := range perlXSToolchainProjects {
+			writeRecipe(t, root, p, fmt.Sprintf(recipeWithPerl, ToolchainPerl))
+		}
+		if problems := CheckToolchainPerl(root); len(problems) != 0 {
+			t.Errorf("reported %v for recipes that agree with the pin", problems)
+		}
+	})
+	t.Run("one recipe has moved", func(t *testing.T) {
+		root := t.TempDir()
+		writeRecipe(t, root, perlXSToolchainProjects[0], fmt.Sprintf(recipeWithPerl, "~5.46"))
+		writeRecipe(t, root, perlXSToolchainProjects[1], fmt.Sprintf(recipeWithPerl, ToolchainPerl))
+		problems := CheckToolchainPerl(root)
+		if len(problems) != 1 {
+			t.Fatalf("reported %d problem(s), want 1: %v", len(problems), problems)
+		}
+		for _, want := range []string{perlXSToolchainProjects[0], "~5.46", ToolchainPerl} {
+			if !strings.Contains(problems[0].Error(), want) {
+				t.Errorf("problem does not name %q: %v", want, problems[0])
+			}
+		}
+	})
+	t.Run("a recipe that is not there", func(t *testing.T) {
+		// A pantry need not be complete. Refusing to build over a missing file
+		// would be a worse failure than the one this prevents.
+		if problems := CheckToolchainPerl(t.TempDir()); len(problems) != 0 {
+			t.Errorf("reported %v for an empty pantry", problems)
+		}
+	})
+	t.Run("a recipe that names no perl", func(t *testing.T) {
+		root := t.TempDir()
+		writeRecipe(t, root, perlXSToolchainProjects[0], `distributable:
+  url: https://example.com/x-{{ version }}.tar.gz
+versions:
+  github: acme/x
+build:
+  script: make
+test: true
+`)
+		if problems := CheckToolchainPerl(root); len(problems) != 0 {
+			t.Errorf("reported %v for a recipe with no perl constraint", problems)
+		}
+	})
+	t.Run("a recipe we cannot read", func(t *testing.T) {
+		root := t.TempDir()
+		writeRecipe(t, root, perlXSToolchainProjects[0], "versions: [1, 2\n")
+		if problems := CheckToolchainPerl(root); len(problems) != 1 {
+			t.Errorf("want the parse failure reported, got %v", problems)
+		}
+	})
 }
 
 // TestBaseToolchainHasHelp2man: autotools recipes generate man pages with

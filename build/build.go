@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-pkgx/bk/moustache"
+	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/target"
 )
 
@@ -154,6 +155,53 @@ func valStr(v any) string {
 	}
 }
 
+// ToolchainPerl is the perl constraint the base toolchain pins, and the one
+// every XS-bearing tool in it must be built against. Stated once because the
+// only way it can be wrong is by disagreeing with itself.
+const ToolchainPerl = "~5.44"
+
+// perlXSToolchainProjects are the base-toolchain members that ship compiled
+// perl modules, so the perl they resolve to is not a preference but a hard
+// requirement. CheckToolchainPerl reads what each one actually declares.
+var perlXSToolchainProjects = []string{"gnu.org/texinfo", "gnu.org/help2man"}
+
+// CheckToolchainPerl reports every XS-bearing toolchain recipe whose own
+// `perl.org` constraint disagrees with ToolchainPerl.
+//
+// It reads the recipes rather than a copy of them. That distinction is the
+// whole point: the unit test that claimed to check this asserted the pin
+// equalled the string "~5.42", which was texinfo's constraint on the day it was
+// written. texinfo moved to ~5.44, the literal did not, and the test kept
+// passing while every man-page-generating build broke.
+//
+// A recipe that is absent is not a disagreement — a pantry need not be
+// complete, and refusing to build because a file is missing would be a worse
+// failure than the one this prevents.
+func CheckToolchainPerl(pantryDir string) []error {
+	var problems []error
+	for _, proj := range perlXSToolchainProjects {
+		raw, err := os.ReadFile(filepath.Join(pantryDir, "projects", filepath.FromSlash(proj), "package.yml"))
+		if err != nil {
+			continue
+		}
+		r, err := pantry.Parse(raw)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", proj, err))
+			continue
+		}
+		got, ok := r.Dependencies["perl.org"]
+		if !ok {
+			continue
+		}
+		if s := strings.TrimSpace(fmt.Sprint(got)); s != ToolchainPerl {
+			problems = append(problems, fmt.Errorf(
+				"%s declares perl.org %s but the base toolchain pins %s: an XS module built against one refuses to load under the other",
+				proj, s, ToolchainPerl))
+		}
+	}
+	return problems
+}
+
 // BaseToolchain is the ambient build toolset brewkit provides so recipes need
 // only declare their SPECIFIC deps. Without it, autotools packages fail on
 // aclocal/makeinfo not-found (proven with wget).
@@ -167,15 +215,25 @@ func BaseToolchain() []string {
 		// runtime env (help2man publishes PERL5LIB for the Locale::gettext it
 		// bundles) for packages in the closure. gnu.org/libidn2 died without it.
 		"gnu.org/help2man",
-		// Pin perl to the line texinfo is BUILT against. texinfo ships compiled
-		// XS modules and its own recipe says `perl.org: ~5.42` ("requires stable
-		// minor; must match gettext's perl"). Naming perl unconstrained here put
-		// the newest one (5.44) on PATH ahead of it, and every recipe that runs
-		// makeinfo died at install time with
+		// Pin perl to the line the XS-bearing tools in this toolchain are BUILT
+		// against. texinfo, help2man and gettext all ship compiled perl modules,
+		// and an XS module refuses to load under any other API version — in both
+		// directions:
+		//
 		//   Perl API version v5.42.0 of …/TreeElementXS.c does not match v5.44.0
-		// The base toolchain and the tools IN it have to agree; a recipe that
-		// needs another perl still overrides this (see EvalDeps).
-		"perl.org~5.42",
+		//   Perl API version v5.44.0 of …/gettext.c        does not match v5.42.0
+		//
+		// The second is what this pin caused. It said ~5.42 while all three
+		// recipes had moved to ~5.44, so every autotools recipe that generates a
+		// man page through build-aux/missing died in help2man — gnu.org/libidn2
+		// and gnu.org/fribidi both failed their rebuild on it.
+		//
+		// A recipe that needs another perl still overrides this (see EvalDeps).
+		// CheckToolchainPerl is what notices when they part company again: the
+		// test that was supposed to guarantee this compared the pin against a
+		// LITERAL copied out of texinfo, so when texinfo moved the copy did not,
+		// and the check went on passing.
+		"perl.org" + ToolchainPerl,
 		"gnu.org/sed", "gnu.org/coreutils", "gnu.org/grep",
 		// Pin gawk to 5.3: gawk 5.4.1 has a regression that silently mishandles
 		// the option-resolution scripts autotools packages use to generate config
