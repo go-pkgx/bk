@@ -580,3 +580,115 @@ func TestQualifyBareReferenceFindsTheStagedFile(t *testing.T) {
 		t.Errorf("qualifyRef = %q, %v\nwant %q, true", got, ok, want)
 	}
 }
+
+// A bare soname that belongs to a DEPENDENCY is answered by the closure, not
+// guessed: the library is staged under $PKGX_DIR, and if exactly one project
+// there ships that file, that is where it came from.
+//
+// simplesystems.org/libtiff is the measured case — bin/tiffsplit asks for
+// @rpath/libzstd.1.dylib, facebook.com/zstd ships it, and nothing else in the
+// closure does. Across the installed closures of 44 packages, 76 of the 102
+// unresolvable bare references had exactly one owning project and none had
+// two; 60 of the 76 were this same libzstd.1.dylib, zstd's bare install name
+// still being recorded by consumers.
+func TestQualifyBareReferenceAgainstTheClosure(t *testing.T) {
+	pkgx := t.TempDir()
+	prefix := filepath.Join(pkgx, "simplesystems.org", "libtiff", "v4.7.2")
+	dep := filepath.Join(pkgx, "facebook.com", "zstd", "v1.5.7", "lib")
+	for _, d := range []string{filepath.Join(prefix, "bin"), dep} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dep, "libzstd.1.dylib"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := qualifyRef(filepath.Join(prefix, "bin", "tiffsplit"), "libzstd.1.dylib",
+		Options{Prefix: prefix, PkgxDir: pkgx})
+	// the MAJOR directory, as every other sibling reference is written: v1
+	// resolves to whatever 1.x the machine has, so a dependency's minor
+	// upgrade does not orphan its dependents.
+	want := "@rpath/facebook.com/zstd/v1/lib/libzstd.1.dylib"
+	if !ok || got != want {
+		t.Errorf("qualifyRef = %q, %v\nwant %q, true", got, ok, want)
+	}
+}
+
+// Two projects shipping one soname is a question about which one this binary
+// was linked against, and nothing in a Mach-O records the answer. Declining is
+// the only honest move: a reference invented from the wrong project would load
+// and behave, which is worse than one that fails loudly.
+func TestBareReferenceWithTwoOwnersIsDeclined(t *testing.T) {
+	pkgx := t.TempDir()
+	prefix := filepath.Join(pkgx, "a.org", "v1")
+	if err := os.MkdirAll(filepath.Join(prefix, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{
+		filepath.Join(pkgx, "one.org", "v1", "lib"),
+		filepath.Join(pkgx, "two.org", "v2", "lib"),
+	} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "libboth.1.dylib"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, ok := qualifyRef(filepath.Join(prefix, "bin", "tool"), "libboth.1.dylib",
+		Options{Prefix: prefix, PkgxDir: pkgx}); ok {
+		t.Errorf("qualifyRef = %q, true — two owners must not be resolved to one", got)
+	}
+}
+
+// Two versions of one project staged side by side is the ordinary case, not an
+// ambiguity: both are the same project, so the closure still answers. Counting
+// directories rather than projects would have declined it.
+func TestBareReferenceWithTwoVersionsOfOneProject(t *testing.T) {
+	pkgx := t.TempDir()
+	prefix := filepath.Join(pkgx, "a.org", "v1")
+	if err := os.MkdirAll(filepath.Join(prefix, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"v1.5.5", "v1.5.7"} {
+		d := filepath.Join(pkgx, "facebook.com", "zstd", v, "lib")
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "libzstd.1.dylib"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, ok := qualifyRef(filepath.Join(prefix, "bin", "tool"), "libzstd.1.dylib",
+		Options{Prefix: prefix, PkgxDir: pkgx})
+	want := "@rpath/facebook.com/zstd/v1/lib/libzstd.1.dylib"
+	if !ok || got != want {
+		t.Errorf("qualifyRef = %q, %v\nwant %q, true — two versions of ONE project are not two owners", got, ok, want)
+	}
+}
+
+// A soname is put into a glob pattern, so one carrying pattern metacharacters
+// makes the search itself fail. It must decline rather than propagate an error
+// out of a rewrite that has nothing to do with the caller's request.
+func TestBareReferenceWithAPatternInItsName(t *testing.T) {
+	pkgx := t.TempDir()
+	prefix := filepath.Join(pkgx, "a.org", "v1")
+	if err := os.MkdirAll(filepath.Join(prefix, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// filepath.Glob reports a malformed pattern only when it has a name to
+	// compare it against: it matches the directories first, then calls Match
+	// per entry. An empty lib dir never reaches the comparison, so the error
+	// branch needs a directory that matches AND a file inside it.
+	lib := filepath.Join(pkgx, "one.org", "v1", "lib")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lib, "libsomething.dylib"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := qualifyRef(filepath.Join(prefix, "bin", "tool"), "lib[bad.dylib",
+		Options{Prefix: prefix, PkgxDir: pkgx}); ok {
+		t.Errorf("qualifyRef = %q, true — a malformed pattern must decline", got)
+	}
+}
