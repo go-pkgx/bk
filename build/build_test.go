@@ -128,8 +128,8 @@ func TestBaseToolchainAndEvalDeps(t *testing.T) {
 	// gawk is pinned to 5.3 (5.4.1 regressed autotools config-header generation,
 	// e.g. libpng's pnglibconf drops PNG_SETJMP_SUPPORTED). Guard against a revert
 	// to the bare/latest form, and confirm it still dedups by bare project.
-	if contains(base, "gnu.org/gawk") || !contains(base, "gnu.org/gawk@5.3") {
-		t.Errorf("gawk must be pinned to @5.3, got base = %v", base)
+	if contains(base, "gnu.org/gawk") || !contains(base, "gnu.org/gawk"+ToolchainGawk) {
+		t.Errorf("gawk must be pinned to %s, got base = %v", ToolchainGawk, base)
 	}
 	// bison is required so autotools packages that ship a .y grammar (gettext's
 	// plural.y) can regenerate the .c during the build (ylwrap → bison).
@@ -303,12 +303,12 @@ func TestEvalDepsRecipeConstraintBeatsBase(t *testing.T) {
 	}
 	// a BUILD dep constrains it just as well
 	got = EvalDeps("acme.org/thing", nil, map[string]any{"gnu.org/gawk": "^5.4"}, lin())
-	if !contains(got, "gnu.org/gawk^5.4") || contains(got, "gnu.org/gawk@5.3") {
+	if !contains(got, "gnu.org/gawk^5.4") || contains(got, "gnu.org/gawk"+ToolchainGawk) {
 		t.Errorf("a build dep must override the base's gawk pin: %v", got)
 	}
 	// …and a project the recipe says nothing about still comes from the base,
 	// with the base's own pin intact.
-	if !contains(EvalDeps("acme.org/thing", nil, nil, lin()), "gnu.org/gawk@5.3") {
+	if !contains(EvalDeps("acme.org/thing", nil, nil, lin()), "gnu.org/gawk"+ToolchainGawk) {
 		t.Error("the base pin must survive when the recipe is silent")
 	}
 }

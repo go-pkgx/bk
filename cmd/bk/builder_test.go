@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/go-pkgx/bk/bottlepkg"
+	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bottle"
 )
 
@@ -714,5 +715,48 @@ func TestFactoryRejectsUnknownCompress(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "brotli") {
 		t.Errorf("the message does not name the bad value: %q", errb.String())
+	}
+}
+
+// TestToolchainPinsMeanWhatTheySay evaluates each pinned toolchain constraint
+// instead of comparing it to a string.
+//
+// `gnu.org/gawk@5.3` looked like a pin and was not one. A bare version is a
+// caret in this resolver, so it means ">=5.3, same major" and ADMITS 5.4.1 —
+// the single version the entry exists to exclude. Against the registry it
+// resolved to 5.4.1 every time. Nothing noticed for as long as no 5.3.x was
+// published for darwin: a pin that cannot be satisfied and a pin that selects
+// the wrong thing look identical until the version you meant exists.
+//
+// A test that asserted the entry equalled "gnu.org/gawk@5.3" would have passed
+// throughout. This one asks the resolver.
+func TestToolchainPinsMeanWhatTheySay(t *testing.T) {
+	constraintFor := func(project string) string {
+		t.Helper()
+		for _, spec := range build.BaseToolchain() {
+			if p, c := splitToolchainSpec(spec); p == project {
+				return c
+			}
+		}
+		t.Fatalf("%s is not in the base toolchain: %v", project, build.BaseToolchain())
+		return ""
+	}
+	for _, tc := range []struct {
+		project, version string
+		want             bool
+		why              string
+	}{
+		{"gnu.org/gawk", "5.3.2", true, "the version the pin exists to select"},
+		{"gnu.org/gawk", "5.4.1", false, "collapses libpng's pnglibconf: 175 features off"},
+		{"gnu.org/gawk", "5.4.0", false, "same 5.4 line, same regression"},
+		{"gnu.org/gawk", "6.0.0", false, "a later major is not what this pin means either"},
+		{"perl.org", "5.44.0", true, "the line the XS-bearing tools are built against"},
+		{"perl.org", "5.42.3", false, "an XS module refuses to load under another API version"},
+	} {
+		c := constraintFor(tc.project)
+		if got := bottle.ParseVer(tc.version).Satisfies(c); got != tc.want {
+			t.Errorf("%s %q satisfied by %s = %v, want %v (%s)",
+				tc.project, c, tc.version, got, tc.want, tc.why)
+		}
 	}
 }

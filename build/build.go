@@ -160,6 +160,11 @@ func valStr(v any) string {
 // only way it can be wrong is by disagreeing with itself.
 const ToolchainPerl = "~5.44"
 
+// ToolchainGawk is the gawk constraint the base toolchain pins. Stated once,
+// for the same reason as ToolchainPerl: the spelling is the whole content, and
+// a copy of it in a test is a copy that cannot disagree.
+const ToolchainGawk = "~5.3"
+
 // perlXSToolchainProjects are the base-toolchain members that ship compiled
 // perl modules, so the perl they resolve to is not a preference but a hard
 // requirement. CheckToolchainPerl reads what each one actually declares.
@@ -257,7 +262,21 @@ func BaseToolchain() []string {
 		// 5.4.1 and gawk-5.4.2.tar.gz is a 404, so there is nothing to relax TO —
 		// the fix is in git and in no release. Check for a release before assuming
 		// a later 5.4.x will do.
-		"gnu.org/gawk@5.3",
+		//
+		// Spelt with "~", not "@5.3". A BARE version is a caret in this resolver —
+		// `bottle`'s satisfies ends "default: // \"^\" and bare … sameN(v, base, 1)"
+		// — so `gawk@5.3` means ">=5.3, same major" and ADMITS 5.4.1, the one
+		// version this line exists to exclude. Measured against the registry, one
+		// empty store each:
+		//
+		//	gawk@5.3   -> 5.4.1      gawk~5.3    -> 5.3.2
+		//	gawk^5.3   -> 5.4.1      gawk<5.4    -> 5.3.2
+		//	gawk@5.3.2 -> 5.4.1      gawk@=5.3.2 -> 5.3.2
+		//
+		// It read as a pin for as long as it existed because no 5.3.x was published
+		// for darwin: vacuous and misspelt are indistinguishable until the version
+		// you meant to select exists.
+		"gnu.org/gawk" + ToolchainGawk,
 		// bison provides the yacc/bison grammar compiler. autotools packages that
 		// ship a .y grammar (e.g. gettext's gettext-runtime/intl/plural.y) regenerate
 		// the .c from it during the build via ylwrap; without bison that step fails
