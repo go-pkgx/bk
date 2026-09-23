@@ -235,12 +235,28 @@ func BaseToolchain() []string {
 		// and the check went on passing.
 		"perl.org" + ToolchainPerl,
 		"gnu.org/sed", "gnu.org/coreutils", "gnu.org/grep",
-		// Pin gawk to 5.3: gawk 5.4.1 has a regression that silently mishandles
-		// the option-resolution scripts autotools packages use to generate config
-		// headers — e.g. libpng's pnglibconf generation drops PNG_SETJMP_SUPPORTED,
-		// which then breaks the build (isolated: gawk 5.2.x and 5.3.2 keep it, 5.4.1
-		// drops it under any gcc, in every awk mode). 5.3.2 is the newest gawk with
-		// a working pkgx bottle; relax when a later 5.4.x fixes the regression.
+		// Pin gawk to 5.3. gawk 5.4.1 mishandles the option-resolution scripts
+		// autotools packages use to generate config headers, and "drops
+		// PNG_SETJMP_SUPPORTED" undersells it. Same libpng 1.6.58 tree, same
+		// ./configure, only AWK= differs:
+		//
+		//   gawk 5.3.2   202 #define    11 /*#undef
+		//   gawk 5.4.1    27 #define   186 /*#undef
+		//
+		// 175 features off, 0 on in the other direction. Every NUMERIC setting
+		// survives (PNG_ZBUF_SIZE, PNG_USER_WIDTH_MAX…) and every BOOLEAN goes to
+		// /*#undef*/, so the option evaluation is collapsing rather than losing an
+		// entry. PNG_SETJMP_SUPPORTED is merely the first one the compiler names;
+		// the errors that follow are about png_read_info, because PNG_READ_SUPPORTED
+		// went too. A libpng that BUILT under this gawk would be a libpng with no
+		// features — failing to compile is the lucky outcome.
+		//
+		// Probably the same bug as gawk's unreleased 5.4.2 NEWS entry, "Gawk should
+		// now once again work correctly when compiled without the GMP and MPFR
+		// libraries": our gawk is built without either. But ftp.gnu.org stops at
+		// 5.4.1 and gawk-5.4.2.tar.gz is a 404, so there is nothing to relax TO —
+		// the fix is in git and in no release. Check for a release before assuming
+		// a later 5.4.x will do.
 		"gnu.org/gawk@5.3",
 		// bison provides the yacc/bison grammar compiler. autotools packages that
 		// ship a .y grammar (e.g. gettext's gettext-runtime/intl/plural.y) regenerate
