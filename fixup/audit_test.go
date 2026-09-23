@@ -306,3 +306,77 @@ func TestAuditRelocatableSurfacesAnUnreadableSignature(t *testing.T) {
 		t.Errorf("called an unreadable signature stale: %v", problems[0])
 	}
 }
+
+// TestAuditRelocatableFindsTheHomebrewReference: the class every other guard
+// skips, because they all start by matching "@rpath/" and this does not.
+//
+// `git-scm.org` ships 656 files asking for
+// `/opt/homebrew/opt/gettext/lib/libintl.8.dylib` — a path that exists on the
+// runner that built it and on no user's machine.
+func TestAuditRelocatableFindsTheHomebrewReference(t *testing.T) {
+	pkgxDir := t.TempDir()
+	prefix := filepath.Join(pkgxDir, "git-scm.org", "v2.55.0")
+
+	bad := filepath.Join(prefix, "libexec", "git-receive-pack")
+	place(t, bad,
+		machoCmd{lcLoadDylib, "/opt/homebrew/opt/gettext/lib/libintl.8.dylib"},
+		machoCmd{lcRpath, "@loader_path/../../.."})
+
+	_, problems := AuditRelocatable(prefix, pkgxDir)
+	if len(problems) != 1 {
+		t.Fatalf("reported %d problem(s), want 1: %v", len(problems), problems)
+	}
+	if !errors.Is(problems[0], ErrAbsoluteRef) {
+		t.Errorf("problem is %v, want ErrAbsoluteRef", problems[0])
+	}
+	if !strings.Contains(problems[0].Error(), "/opt/homebrew/opt/gettext/lib/libintl.8.dylib") {
+		t.Errorf("problem does not name the path: %v", problems[0])
+	}
+}
+
+// TestAuditRelocatableAllowsTheSystemLibraries: the negative control that
+// stops the rule from condemning every binary on the machine. Linking
+// libSystem and a system framework by absolute path is how macOS works.
+func TestAuditRelocatableAllowsTheSystemLibraries(t *testing.T) {
+	pkgxDir := t.TempDir()
+	prefix := filepath.Join(pkgxDir, "lloyd.github.io", "yajl", "v2.1.0")
+	place(t, filepath.Join(prefix, "lib", "libyajl.2.dylib"),
+		machoCmd{lcLoadDylib, "/usr/lib/libSystem.B.dylib"},
+		machoCmd{lcLoadDylib, "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"},
+		machoCmd{lcRpath, "@loader_path/../../../.."})
+
+	_, problems := AuditRelocatable(prefix, pkgxDir)
+	if len(problems) != 0 {
+		t.Errorf("reported %v for the system libraries every Mach-O links", problems)
+	}
+}
+
+// TestAuditRelocatableIgnoresItsOwnInstallName: LC_ID_DYLIB is not a
+// reference. A package installed under an absolute prefix names itself that
+// way and asks dyld for nothing.
+func TestAuditRelocatableIgnoresItsOwnInstallName(t *testing.T) {
+	pkgxDir := t.TempDir()
+	prefix := filepath.Join(pkgxDir, "x", "v1")
+	place(t, filepath.Join(prefix, "lib", "libx.dylib"),
+		machoCmd{lcIDDylib, "/opt/x/v1/lib/libx.dylib"},
+		machoCmd{lcLoadDylib, "/usr/lib/libSystem.B.dylib"})
+
+	_, problems := AuditRelocatable(prefix, pkgxDir)
+	if len(problems) != 0 {
+		t.Errorf("condemned a package for what it calls itself: %v", problems)
+	}
+}
+
+// TestCheckAbsoluteRefsReportsAnUnreadableFile: reached directly, because
+// AuditRelocatable gates on isMachO and so cannot hand this one a file it
+// cannot parse. The branch still has to return the error rather than call the
+// file clean — "could not read" is not "has no absolute references".
+func TestCheckAbsoluteRefsReportsAnUnreadableFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "script")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkAbsoluteRefs(p); err == nil {
+		t.Error("want an error for a file that is not a Mach-O")
+	}
+}
