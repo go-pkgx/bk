@@ -34,9 +34,59 @@ func AuditRelocatable(prefix, pkgxDir string) (checked int, problems []error) {
 		if err := checkNoDuplicateRpath(p); err != nil {
 			problems = append(problems, err)
 		}
+		if err := checkMachoMagic(p); err != nil {
+			problems = append(problems, err)
+		}
 		return nil
 	})
 	return checked, problems
+}
+
+// ErrMachoMagicMismatch means a Mach-O header's word size contradicts its own
+// cputype: a 32-bit magic (0xfeedface) over a cputype carrying CPU_ARCH_ABI64,
+// or the reverse. No linker produces that. GNU strip does, on a file it was
+// never meant to touch:
+//
+//	cffa edfe 0c00 0001   before: magic 0xfeedfacf, cputype ARM64
+//	cefa edfe 0c00 0001   after:  magic 0xfeedface, cputype ARM64
+//
+// and it exits 0. `pkgx +<deps>` can put gnu.org/binutils ahead of /usr/bin on
+// darwin — gnu.org/gcc pulls it in at runtime — so a recipe's bare `strip` is
+// GNU's, and github.com/rcedgar/muscle 5.3 was built, signed, indexed and
+// published as a binary the kernel kills on sight (exit 137, no output).
+//
+// It was found by the LC_RPATH guard rather than by anything looking at the
+// header, and only because strip had taken the load commands with it. That is
+// a side effect: the malformation is four bytes wide and worth naming on its
+// own, because debug/macho parses such a file happily AS 32-bit and everything
+// downstream then reads the wrong offsets.
+var ErrMachoMagicMismatch = errors.New("fixup: Mach-O magic contradicts its cputype")
+
+// cpuArchABI64 is the bit a cputype sets to mean "64-bit variant".
+const cpuArchABI64 = 0x01000000
+
+// checkMachoMagic reports a slice whose header word size and cputype disagree.
+// machoInfo has already established that the file parses; thinSlice records the
+// header size, which is 32 for a 64-bit magic and 28 for a 32-bit one.
+func checkMachoMagic(exe string) error {
+	raw, slices, err := machoInfo(exe)
+	if err != nil {
+		return err
+	}
+	for _, sl := range slices {
+		// thinSlice has already refused an out-of-bounds offset, so the header
+		// bytes are there to read: no short-buffer case to guard, and a branch
+		// no test can reach is a line the coverage gate is right to refuse.
+		cpu := sl.bo.Uint32(raw[sl.off+4:])
+		bits := 32
+		if sl.hdr == 32 {
+			bits = 64
+		}
+		if (bits == 64) != (cpu&cpuArchABI64 != 0) {
+			return fmt.Errorf("%w: %s: %d-bit header, cputype %#08x", ErrMachoMagicMismatch, exe, bits, cpu)
+		}
+	}
+	return nil
 }
 
 // ErrDuplicateRpath means a Mach-O carries the same LC_RPATH twice. ld refuses
