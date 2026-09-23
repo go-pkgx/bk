@@ -1,6 +1,7 @@
 package fixup
 
 import (
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -127,5 +128,116 @@ func TestAuditAcceptsDistinctRpaths(t *testing.T) {
 		if errors.Is(p, ErrDuplicateRpath) {
 			t.Errorf("distinct rpaths reported as duplicate: %v", p)
 		}
+	}
+}
+
+// A 32-bit magic over a 64-bit cputype is what GNU strip leaves behind, and no
+// linker produces it. github.com/rcedgar/muscle 5.3 shipped that way for
+// darwin/aarch64 and the kernel kills it on sight — exit 137, no output.
+//
+// The existing guards caught that file only sideways, through the LC_RPATH it
+// no longer had, because strip took the load commands too. The malformation
+// itself is four bytes wide and needs naming: debug/macho parses such a file
+// happily AS 32-bit, so every offset read afterwards is wrong.
+func TestAuditRelocatableFindsAMagicThatContradictsTheCPU(t *testing.T) {
+	p := buildThin32WithA64BitCPU(t)
+	if err := checkMachoMagic(p); !errors.Is(err, ErrMachoMagicMismatch) {
+		t.Fatalf("err = %v, want ErrMachoMagicMismatch", err)
+	}
+	// and the audit reports it over a laid-out prefix, which is the only way a
+	// MIRRORED bottle is ever looked at — walkExes visits bin/, lib/ and
+	// libexec/, so the file has to be in one of them
+	prefix := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(prefix, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prefix, "lib", "libbad.dylib"), raw, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, problems := AuditRelocatable(prefix, t.TempDir())
+	found := false
+	for _, e := range problems {
+		if errors.Is(e, ErrMachoMagicMismatch) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("AuditRelocatable problems = %v, want the magic mismatch among them", problems)
+	}
+}
+
+// buildThin32WithA64BitCPU writes a file that is structurally a 32-bit Mach-O —
+// 28-byte header, one LC_RPATH — whose cputype carries CPU_ARCH_ABI64.
+//
+// Flipping the magic byte of a 64-bit fixture is NOT the same thing and does
+// not reproduce it: the load commands then start four bytes past where a
+// 32-bit reader looks, and the parse fails before the header can be judged.
+// The published muscle binary parses cleanly as 32-bit, which is exactly why
+// nothing downstream noticed.
+func buildThin32WithA64BitCPU(t *testing.T) string {
+	t.Helper()
+	le := binary.LittleEndian
+	const path = "@loader_path/../lib"
+	cmdSize := 12 + len(path) + 1
+	for cmdSize%4 != 0 {
+		cmdSize++
+	}
+	cmd := make([]byte, cmdSize)
+	le.PutUint32(cmd[0:], lcRpath)
+	le.PutUint32(cmd[4:], uint32(cmdSize))
+	le.PutUint32(cmd[8:], 12)
+	copy(cmd[12:], path)
+
+	buf := make([]byte, 28+len(cmd))
+	le.PutUint32(buf[0:], 0xfeedface) // MH_MAGIC — 32-bit
+	le.PutUint32(buf[4:], 0x0100000c) // CPU_TYPE_ARM64 — 64-bit
+	le.PutUint32(buf[12:], 6)         // MH_DYLIB
+	le.PutUint32(buf[16:], 1)         // ncmds
+	le.PutUint32(buf[20:], uint32(len(cmd)))
+	copy(buf[28:], cmd)
+
+	q := filepath.Join(t.TempDir(), "thin32-over-64.dylib")
+	if err := os.WriteFile(q, buf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return q
+}
+
+// And it must stay quiet on a healthy file, including a genuine 32-bit one:
+// the check is about DISAGREEMENT between the header and the cputype, not
+// about the word size.
+func TestCheckMachoMagicAcceptsAgreementBothWays(t *testing.T) {
+	p := buildMachO(t, machoCmd{lcRpath, "@loader_path/../lib"})
+	if err := checkMachoMagic(p); err != nil {
+		t.Errorf("64-bit magic + 64-bit cputype: %v", err)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[0] = 0xce // 32-bit magic
+	raw[7] = 0x00 // cputype 0x0000000c — CPU_TYPE_ARM, the 32-bit one
+	q := filepath.Join(t.TempDir(), "thin32.dylib")
+	if err := os.WriteFile(q, raw, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkMachoMagic(q); err != nil && errors.Is(err, ErrMachoMagicMismatch) {
+		t.Errorf("32-bit magic + 32-bit cputype must be accepted: %v", err)
+	}
+}
+
+// A file that is not a Mach-O at all is the reader's problem, not this check's:
+// the error is returned rather than mistaken for a malformation.
+func TestCheckMachoMagicOnSomethingElse(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "not-macho")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkMachoMagic(p); err == nil || errors.Is(err, ErrMachoMagicMismatch) {
+		t.Errorf("err = %v, want a parse error and not a magic mismatch", err)
 	}
 }
