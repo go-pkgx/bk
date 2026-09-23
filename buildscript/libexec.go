@@ -94,6 +94,29 @@ func WriteLibexecFor(dir string, libcPkgx bool, triple, platform, arch string) e
 	if err := WriteLibexec(dir); err != nil {
 		return err
 	}
+	// `libtool` on darwin, where TWO unrelated programs answer to the name:
+	// cctools' libtool merges static libraries, GNU libtool drives compilation.
+	// `pkgx +<deps>` prepends the dependency bin dirs to PATH, so any dependency
+	// shipping gnu.org/libtool puts the wrong one in front of /usr/bin — and a
+	// build that compiled 148 of 2639 objects dies on
+	//
+	//	libtool:   error: unrecognised option: '-framework'
+	//
+	// The shim routes an invocation to Apple's only when it carries a flag GNU
+	// libtool would refuse, so it can turn an error into a build and nothing
+	// else. Written whatever the libc mode: the collision is about PATH, not
+	// about a sovereign toolchain.
+	if platform == "darwin" {
+		// WriteLibexec above has already called osExecutable and returned its
+		// error, so there is no failing case left to handle here — a branch no
+		// test can reach is a line the coverage gate is right to refuse.
+		self, _ := osExecutable()
+		link := filepath.Join(dir, "libtool")
+		_ = osRemove(link)
+		if err := osSymlink(self, link); err != nil {
+			return err
+		}
+	}
 	if !libcPkgx {
 		return nil
 	}
