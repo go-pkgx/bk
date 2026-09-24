@@ -1390,6 +1390,10 @@ func TestErrorLine(t *testing.T) {
 		"clang: error: cannot find -lfoo",
 		"./gen.sh: /bin/bash: bad interpreter: No such file or directory",
 		"make[1]: *** [Makefile:2065: .] Error 2",
+		// gcc's configure refusing a target: the only line in a 151 KB log that
+		// said why the build stopped, and the one the artefact used to miss.
+		"*** Configuration aarch64-apple-darwin20.0.0 not supported",
+		"\t*** The C compiler cannot create executables",
 	} {
 		if !errorLine(s) {
 			t.Errorf("errorLine(%q) = false", s)
@@ -1403,6 +1407,9 @@ func TestErrorLine(t *testing.T) {
 		"0 errors, 3 warnings",
 		"checking for error_at_line... yes",
 		"make[2]: Leaving directory '/x'",
+		// `***` mid-line is a banner or a comment, not a diagnostic.
+		"echo '*** building stage 2 ***'",
+		"  /* *** internal *** */",
 	} {
 		if errorLine(s) {
 			t.Errorf("errorLine(%q) = true", s)
