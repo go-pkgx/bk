@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bk/build"
+	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bottle"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/ulikunitz/xz"
@@ -67,6 +68,76 @@ const libcSoname = "libc.so.6"
 // image as libc-X.Y.so with libc.so.6 a SYMLINK to it (tar carries no content
 // for a symlink). Both are handled — and `libc.so` is deliberately not, since
 // that one is a linker script, not an ELF.
+// ABIProvidesAnnotation lists the sonames a bottle's shared libraries call
+// themselves by, comma-separated and sorted.
+//
+// The compatibility key of a shared library is its soname, and a pkgx
+// constraint cannot express one: libxml2 2.13.9 ships libxml2.2.dylib and
+// 2.15.4 ships libxml2.16.dylib, and `^2` admits both. Recording what a bottle
+// PROVIDES is the half that can be computed locally; with it, a checker can ask
+// of any published version whether it still provides the soname a dependent
+// recorded, and refuse a constraint that cannot honour it
+// (go-pkgx/packages#207).
+//
+// It belongs beside GlibcVersionAnnotation in go-pkgx/bottle once a resolver
+// reads it; today only bk writes it, so it lives here rather than forcing a
+// cross-repo bump for a field nothing consumes yet.
+const ABIProvidesAnnotation = "org.go-pkgx.abi.provides"
+
+// sonamesFromTarball reads the ABI name of every shared library in a bottle.
+//
+// From the tarball rather than the build tree so it also describes a bottle we
+// did not build — a mirrored one carries whatever upstream linked, and that is
+// exactly the case where nobody knows what is inside (go-pkgx/packages#147).
+func sonamesFromTarball(tarball []byte, ext string) ([]string, error) {
+	r, closeFn, err := decompress(tarball, ext)
+	if err != nil {
+		return nil, err
+	}
+	defer closeFn()
+	var out []string
+	tr := tar.NewReader(r)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		// Regular files only: a symlink IS the soname in most layouts
+		// (libz.1.dylib -> libz.1.3.2.dylib) and would double-count.
+		if h.Typeflag != tar.TypeReg {
+			continue
+		}
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, err
+		}
+		if s := fixup.SonameOf(b); s != "" {
+			out = append(out, s)
+		}
+	}
+	return fixup.SortedUnique(out), nil
+}
+
+// decompress opens a bottle tarball's stream.
+func decompress(tarball []byte, ext string) (io.Reader, func(), error) {
+	var r io.Reader = bytes.NewReader(tarball)
+	if ext == bottle.ExtTarXz {
+		xr, err := xz.NewReader(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		return xr, func() {}, nil
+	}
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	return gz, func() { gz.Close() }, nil
+}
+
 func glibcMinKernelFromTarball(tarball []byte, ext string) (string, error) {
 	var r io.Reader = bytes.NewReader(tarball)
 	if ext == bottle.ExtTarXz {
@@ -257,6 +328,18 @@ func publishBottle(o publishOptions) (string, ocispec.Descriptor, error) {
 		// A tool built against a specific glibc: flavor the tag + self-describe
 		// which glibc, so a glibc-aware resolver matches it without parsing tags.
 		annotations = map[string]string{bottle.GlibcVersionAnnotation: strings.TrimPrefix(o.Glibc, "=")}
+	}
+	// Every bottle says which ABIs it provides, whatever else is annotated.
+	// A failure to read one is not a reason to refuse the publish: the bottle is
+	// correct, the description of it is merely missing, and the alternative is a
+	// factory that stops on a field nothing consumes yet.
+	if names, err := sonamesFromTarball(tarball, ext); err != nil {
+		fmt.Fprintf(os.Stderr, "bk: could not read the sonames of %s %s: %v\n", o.Project, o.Version, err)
+	} else if len(names) > 0 {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[ABIProvidesAnnotation] = strings.Join(names, ",")
 	}
 	desc, err := ociPush(o.Dist, o.Project, tag, o.OS, o.Arch, tarball, ext, refs, annotations)
 	if err != nil {
