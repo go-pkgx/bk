@@ -82,7 +82,73 @@ func FixUp(opts Options) error {
 	} else {
 		opts.log("skipping header flattening for %s", opts.Prefix)
 	}
-	return nil
+	return auditBuilt(opts)
+}
+
+// auditBuilt runs the relocatability guards over the package we just built.
+//
+// They existed and did not run here. AuditRelocatable is called from exactly
+// one place — the factory's MIRROR path — with the comment "a mirror is never
+// unpacked, so fixup's relocatability guards never run on it". True, and it
+// left the inverse unsaid: on the build path only checkRpathResolvable ran, so
+// a stale code signature, a 32-bit magic over a 64-bit cputype, a duplicate
+// LC_RPATH and an absolute /opt/homebrew reference were all checked on the
+// bottles we COPY and on none of the bottles we MAKE.
+//
+// What is fatal here is what is never correct and always fatal later:
+//
+//	stale signature  -> SIGKILL at the first page fault, no output at all
+//	magic mismatch   -> the kernel kills it, likewise silently
+//	duplicate rpath  -> ld refuses to link any CONSUMER against it
+//	absolute ref     -> names a path that exists on the builder and nowhere else
+//
+// A missing @rpath target is REPORTED instead. Measured over 26519 Mach-O in
+// 272 installed closures, 51 packages carry one — and qt.io is among them and
+// runs, because a dangling reference in a module nothing loads never faults.
+// Refusing would stop a fifth of the catalogue over latent defects; saying so
+// at build time puts them in the log where they can be drained.
+// No windows guard here: FixUp returns before this on that platform, and a
+// branch no test can reach is a line the coverage gate is right to refuse.
+func auditBuilt(opts Options) error {
+	return walkExes(opts.Prefix, func(p string) error {
+		if !isMachO(p) {
+			return nil
+		}
+		for _, check := range []func(string) error{
+			checkMachoSignature, checkMachoMagic, checkNoDuplicateRpath,
+		} {
+			if err := check(p); err != nil {
+				return err
+			}
+		}
+		// An absolute reference INTO $PKGX_DIR is this package's deliberate
+		// fallback, not a leak: rewriteMacho leaves a name absolute when no
+		// rpath reaches the store, because "@rpath would resolve to nothing,
+		// which is worse than a path that at least works on one machine".
+		// Refusing it here would fail the build where today it produces
+		// something usable, and the real remedy — an rpath that reaches — is a
+		// recipe change. Reported.
+		//
+		// Absolute anywhere ELSE is never that fallback. /opt/homebrew and
+		// /Users/builder name a machine that is not the user's, and no rpath
+		// decision produces them: they are what a configure script found lying
+		// around. Refused.
+		// underDir already answers false for an empty dir, so no guard here.
+		intoTheStore := func(ref string) bool {
+			_, ok := underDir(ref, opts.PkgxDir)
+			return ok
+		}
+		if err := checkAbsoluteRefs(p, intoTheStore); err != nil {
+			return err
+		}
+		if err := checkAbsoluteRefs(p, nil); err != nil {
+			opts.log("fixup: %v", err) // the tolerated fallback, said out loud
+		}
+		if err := checkRefExists(p, opts); err != nil {
+			opts.log("fixup: %v", err)
+		}
+		return nil
+	})
 }
 
 // fixPCFiles rewrites absolute build/install prefixes in pkg-config .pc files

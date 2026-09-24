@@ -376,7 +376,91 @@ func TestCheckAbsoluteRefsReportsAnUnreadableFile(t *testing.T) {
 	if err := os.WriteFile(p, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkAbsoluteRefs(p); err == nil {
+	if err := checkAbsoluteRefs(p, nil); err == nil {
+		t.Error("want an error for a file that is not a Mach-O")
+	}
+}
+
+// TestFixUpGuardsWhatWeBuild: the guards existed and ran on the bottles we
+// COPY, not the ones we MAKE.
+//
+// AuditRelocatable has exactly one caller — the factory's mirror path, whose
+// comment reads "a mirror is never unpacked, so fixup's relocatability guards
+// never run on it". True, and it left the inverse unsaid: the build path ran
+// only checkRpathResolvable, so a stale signature, a bad magic, a duplicate
+// LC_RPATH and an /opt/homebrew reference all went unchecked on everything the
+// factory produced.
+func TestFixUpGuardsWhatWeBuild(t *testing.T) {
+	t.Run("a stale signature is refused", func(t *testing.T) {
+		pkgx := t.TempDir()
+		prefix := filepath.Join(pkgx, "acme.org", "v1.0.0")
+		placeSigned(t, filepath.Join(prefix, "lib", "libacme.dylib"),
+			buildSignedMachO(t, "@loader_path/../../..", sigOpts{badHashes: true}))
+		err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx})
+		if !errors.Is(err, ErrStaleSignature) {
+			t.Errorf("FixUp = %v, want ErrStaleSignature", err)
+		}
+	})
+	t.Run("a reference to another machine is refused", func(t *testing.T) {
+		pkgx := t.TempDir()
+		prefix := filepath.Join(pkgx, "acme.org", "v1.0.0")
+		place(t, filepath.Join(prefix, "bin", "acme"),
+			machoCmd{lcLoadDylib, "/opt/homebrew/opt/gettext/lib/libintl.8.dylib"},
+			machoCmd{lcRpath, "@loader_path/../../.."})
+		err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx})
+		if !errors.Is(err, ErrAbsoluteRef) {
+			t.Errorf("FixUp = %v, want ErrAbsoluteRef", err)
+		}
+	})
+	t.Run("an absolute path INTO the store is the deliberate fallback", func(t *testing.T) {
+		// rewriteMacho leaves a name absolute when no rpath reaches the store,
+		// because "@rpath would resolve to nothing, which is worse than a path
+		// that at least works on one machine". Refusing it would fail a build
+		// that today produces something usable.
+		pkgx := t.TempDir()
+		prefix := filepath.Join(pkgx, "other.org", "v2.0.0")
+		dep := filepath.Join(pkgx, "acme.org", "v1.2.3", "lib", "libfoo.dylib")
+		place(t, filepath.Join(prefix, "bin", "bar"),
+			machoCmd{lcRpath, "@loader_path/.."}, // stops short of the store
+			machoCmd{lcLoadDylib, dep})
+		var logged []string
+		if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx,
+			Log: func(s string) { logged = append(logged, s) }}); err != nil {
+			t.Fatalf("FixUp refused the fallback: %v", err)
+		}
+		if !strings.Contains(strings.Join(logged, "\n"), "absolute reference") {
+			t.Errorf("the fallback was not reported: %v", logged)
+		}
+	})
+	t.Run("a dangling @rpath target is reported, not refused", func(t *testing.T) {
+		// 51 of 272 installed closures carry one, and qt.io is among them and
+		// runs: a dangling reference in a module nothing loads never faults.
+		pkgx := t.TempDir()
+		prefix := filepath.Join(pkgx, "acme.org", "v1.0.0")
+		place(t, filepath.Join(prefix, "bin", "acme"),
+			machoCmd{lcLoadDylib, "@rpath/gnome.org/libxml2/v2/lib/libxml2.2.dylib"},
+			machoCmd{lcRpath, "@loader_path/../../.."})
+		var logged []string
+		if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx,
+			Log: func(s string) { logged = append(logged, s) }}); err != nil {
+			t.Fatalf("FixUp = %v, want it reported and tolerated", err)
+		}
+		if !strings.Contains(strings.Join(logged, "\n"), "libxml2.2.dylib") {
+			t.Errorf("the missing target was not reported: %v", logged)
+		}
+	})
+}
+
+// TestCheckRefExistsReportsAnUnreadableFile: reached directly, because
+// auditBuilt gates on isMachO and so never hands this one a file it cannot
+// parse. "Could not read" is not "has no missing references".
+func TestCheckRefExistsReportsAnUnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "script")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkRefExists(p, Options{PkgxDir: dir}); err == nil {
 		t.Error("want an error for a file that is not a Mach-O")
 	}
 }
