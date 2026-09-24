@@ -1,0 +1,58 @@
+package buildscript
+
+import (
+	"strings"
+	"testing"
+)
+
+// Two `pkgx +…` invocations, not one — and the TOOL one first, because every
+// variable pkgx writes prepends, so whatever is evaluated last ends up first on
+// the search paths. The link closure must win.
+func TestWrapEmitsTwoClosuresToolsFirst(t *testing.T) {
+	s := Wrap(WrapOptions{
+		UserScript: "make",
+		Deps:       []string{"unicode.org^71", "freetype.org"},
+		ToolDeps:   []string{"nodejs.org", "gnu.org/autoconf"},
+		Target:     darwinTgt(), Host: darwinTgt(),
+		PkgxBin: "/bin/pkgx",
+	})
+	tool := strings.Index(s, `"+nodejs.org"`)
+	link := strings.Index(s, `"+unicode.org^71"`)
+	if tool < 0 || link < 0 {
+		t.Fatalf("one of the two closures is missing:\n%s", s)
+	}
+	if tool > link {
+		t.Errorf("the tool closure is evaluated after the link one, so tool paths would come first")
+	}
+
+	// They must be SEPARATE invocations: a line carrying both would put the two
+	// constraint sets through one resolution, which is the thing being fixed.
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, `"+nodejs.org"`) && strings.Contains(line, `"+unicode.org^71"`) {
+			t.Fatalf("both closures in one invocation: %q", line)
+		}
+	}
+
+	// Each says which closure failed, so an operator is not left guessing.
+	if !strings.Contains(s, "bk: the tool environment failed") {
+		t.Error("the tool closure's failure is not named")
+	}
+	if !strings.Contains(s, "bk: the dependency environment failed") {
+		t.Error("the link closure's failure is not named")
+	}
+}
+
+// An empty tool set emits nothing at all, so a recipe with no build
+// dependencies produces the script it always did.
+func TestWrapWithNoToolDepsEmitsOneEval(t *testing.T) {
+	s := Wrap(WrapOptions{
+		UserScript: "make", Deps: []string{"zlib.net"},
+		Target: darwinTgt(), Host: darwinTgt(), PkgxBin: "/bin/pkgx",
+	})
+	if strings.Contains(s, "the tool environment failed") {
+		t.Errorf("an empty tool closure still emitted an eval:\n%s", s)
+	}
+	if !strings.Contains(s, `"+zlib.net"`) {
+		t.Errorf("the link closure is missing:\n%s", s)
+	}
+}

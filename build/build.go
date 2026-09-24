@@ -301,6 +301,80 @@ func BaseToolchain() []string {
 //
 // The same silent override applied to every base project (gawk, make, bison…),
 // so a recipe could never correct one.
+// EvalLinkDeps is the set a build LINKS against: the recipe's own runtime
+// dependencies, and nothing else.
+//
+// These are the constraints that have to agree with what a CONSUMER will
+// resolve, because they are the ones that end up as @rpath references in the
+// artefact. Nothing a build merely runs belongs here.
+func EvalLinkDeps(runtime map[string]any, tgt target.Target) []string {
+	return sortedSpecs(DepSpecs(runtime, tgt))
+}
+
+// EvalToolDeps is the set a build RUNS: the recipe's build dependencies plus
+// the base toolchain. Nothing here is linked into the artefact, so its version
+// constraints are nobody else's business.
+//
+// Keeping these apart from the link set is what lets qt.io build at all. qt
+// declares unicode.org ^71 as a LINK dependency and nodejs.org as a BUILD one,
+// and nodejs needs unicode.org ^73 to start. ICU bumps its major — and its
+// soname — every release, so the two can never intersect:
+//
+//	pkgx: no version of unicode.org satisfies "^71" AND "^73" (available: 3);
+//	      asked for by ^71 (requested), ^73 (nodejs.org)
+//
+// They did not need to. nodejs runs as a build step and exits; its ICU is never
+// in the same process as qt's. One closure asked a question that has no answer.
+//
+// The project itself is filtered out of the base toolchain for the reason
+// EvalDeps gives below: its own published bottle must not shadow the thing
+// being built.
+func EvalToolDeps(project string, runtime, buildDeps map[string]any, tgt target.Target) []string {
+	out := DepSpecs(buildDeps, tgt)
+	// A recipe that names a toolchain project REPLACES the toolchain's pin, and
+	// it does so from either list. Splitting the closures must not turn that
+	// override into a coexistence: two perls in one build is the XS mismatch the
+	// ToolchainPerl pin exists to prevent —
+	//
+	//	Perl API version v5.42.0 of …/TreeElementXS.c does not match v5.44.0
+	//
+	// — and the recipe's copy being first on PATH would not stop the toolchain's
+	// modules finding the other one.
+	named := map[string]bool{project: true}
+	for _, s := range DepSpecs(runtime, tgt) {
+		named[SpecProject(s)] = true
+	}
+	for _, s := range out {
+		named[SpecProject(s)] = true
+	}
+	for _, s := range BaseToolchain() {
+		if named[SpecProject(s)] {
+			continue
+		}
+		out = append(out, s)
+	}
+	return sortedSpecs(out)
+}
+
+// sortedSpecs orders a spec list so the generated script is deterministic.
+//
+// No de-duplication: after the split each list is unique by construction.
+// DepSpecs already reduces a platform override to one entry per project
+// (`unicode.org: ^71` with `linux: {unicode.org: ~71}` yields `unicode.org~71`
+// alone), and EvalToolDeps drops any toolchain entry the recipe names. EvalDeps
+// needed a dedup because it merged three lists into one; these do not, and a
+// guard that cannot fire is worse than none — it reads as a guarantee.
+func sortedSpecs(specs []string) []string {
+	out := append([]string(nil), specs...)
+	sort.Strings(out)
+	return out
+}
+
+// Deprecated: the build now composes two closures — EvalLinkDeps and
+// EvalToolDeps. This is kept as the CONTROL for that split: a test asserts that
+// it still puts a link constraint and a build tool in ONE list, which is what
+// forced qt.io's unicode.org ^71 and nodejs.org's ^73 through a single
+// intersection. Delete it once that history stops being worth pinning.
 func EvalDeps(project string, runtime, buildDeps map[string]any, tgt target.Target) []string {
 	seen := map[string]bool{}
 	var out []string

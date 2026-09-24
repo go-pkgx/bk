@@ -12,8 +12,23 @@ import (
 // user script (the output of Generate). It is a port of libpkgx brewkit's
 // make_build_script.
 type WrapOptions struct {
-	UserScript  string        // the pantry script, already rendered by Generate
-	Deps        []string      // dependency pkgspecs for `pkgx +<spec>` (runtime + build)
+	UserScript string   // the pantry script, already rendered by Generate
+	Deps       []string // LINK dependencies: what the artefact is built against
+	// ToolDeps are what the build RUNS — build dependencies and the base
+	// toolchain — resolved in their OWN `pkgx +…` closure.
+	//
+	// Two closures, not one, because a build tool's runtime requirement and the
+	// product's link requirement answer different questions and do not have to
+	// agree. qt.io could not build at all while they shared one: it links
+	// unicode.org ^71 and its build runs nodejs.org, which needs ^73 to start,
+	// and ICU changes its major — and its soname — every release.
+	//
+	// The tool eval is emitted FIRST so that the link eval's directories land
+	// ahead of it in every search path: pkgx writes each variable as
+	// VAR="new${VAR:+:$VAR}", so the last eval wins. Nothing is dropped, so a
+	// recipe that names a header-bearing dependency under build.dependencies
+	// still finds it — one place later than before.
+	ToolDeps    []string
 	Target      target.Target // what we build FOR — drives FLAGS
 	Host        target.Target // where we run — drives TMPDIR
 	Home        string        // a fresh HOME for the build
@@ -54,25 +69,14 @@ func Wrap(o WrapOptions) string {
 	fmt.Fprintf(&b, "#!%s\n\nset -eo pipefail\n\n", bash)
 	b.WriteString("export PKGX_HOME=\"$HOME\"\n")
 
-	if plus := o.depPlus(); plus != "" {
-		pkgx := o.PkgxBin
-		if pkgx == "" {
-			pkgx = "pkgx"
-		}
-		// The dependency environment must be a HARD failure. `eval "$(pkgx +…)"`
-		// swallows it: when pkgx errors, the substitution is empty, `eval ""`
-		// succeeds, and the build carries on with NO deps — then dies much later
-		// with something unrelated ("C compiler cannot create executables",
-		// "cannot find -lncursesw") that costs an hour to trace back. Capture the
-		// output, check the status, and say which command failed.
-		b.WriteString("set -a\n")
-		fmt.Fprintf(&b, "__bk_deps_env=\"$(CLICOLOR_FORCE=1 %s %s)\" || {\n", pkgx, plus)
-		fmt.Fprintf(&b, "  echo \"bk: the dependency environment failed: %s %s\" >&2\n", pkgx, plus)
-		b.WriteString("  exit 1\n}\n")
-		b.WriteString("eval \"$__bk_deps_env\"\n")
-		b.WriteString("unset __bk_deps_env\n")
-		b.WriteString("set +a\n")
+	pkgxBin := o.PkgxBin
+	if pkgxBin == "" {
+		pkgxBin = "pkgx"
 	}
+	// Tools first: each variable pkgx writes PREPENDS, so whatever is evaluated
+	// last comes first on the path. The link closure must win.
+	writeDepEval(&b, pkgxBin, o.toolPlus(), "tool")
+	writeDepEval(&b, pkgxBin, o.depPlus(), "dependency")
 	if o.BrewkitPath != "" {
 		fmt.Fprintf(&b, "export PATH=\"%s:$PATH\"\n", o.BrewkitPath)
 	}
@@ -104,6 +108,39 @@ func Wrap(o WrapOptions) string {
 // llvm.org as the default compiler unless one is already present, the host is
 // darwin (uses the system toolchain), or the target is a windows cross build
 // (its compiler comes from the recipe's llvm-mingw dep).
+// writeDepEval emits one `eval "$(pkgx +…)"` block, or nothing when the set is
+// empty.
+//
+// The environment must be a HARD failure. `eval "$(pkgx +…)"` swallows it: when
+// pkgx errors, the substitution is empty, `eval ""` succeeds, and the build
+// carries on with NO deps — then dies much later with something unrelated ("C
+// compiler cannot create executables", "cannot find -lncursesw") that costs an
+// hour to trace back. Capture the output, check the status, and say which
+// command failed, naming WHICH of the two closures it was.
+func writeDepEval(b *strings.Builder, pkgx, plus, what string) {
+	if plus == "" {
+		return
+	}
+	b.WriteString("set -a\n")
+	fmt.Fprintf(b, "__bk_deps_env=\"$(CLICOLOR_FORCE=1 %s %s)\" || {\n", pkgx, plus)
+	fmt.Fprintf(b, "  echo \"bk: the %s environment failed: %s %s\" >&2\n", what, pkgx, plus)
+	b.WriteString("  exit 1\n}\n")
+	b.WriteString("eval \"$__bk_deps_env\"\n")
+	b.WriteString("unset __bk_deps_env\n")
+	b.WriteString("set +a\n")
+}
+
+// toolPlus is the `+spec` list for the tool closure. It gets none of the
+// compiler/libc additions below: those decide what the ARTEFACT links, and a
+// build tool has no opinion about that.
+func (o WrapOptions) toolPlus() string {
+	parts := make([]string, 0, len(o.ToolDeps))
+	for _, d := range o.ToolDeps {
+		parts = append(parts, `"+`+d+`"`)
+	}
+	return strings.Join(parts, " ")
+}
+
 func (o WrapOptions) depPlus() string {
 	parts := make([]string, 0, len(o.Deps)+1)
 	for _, d := range o.Deps {
