@@ -65,10 +65,16 @@ func TestMajorLeafRefusesALinkToAnotherFile(t *testing.T) {
 }
 
 // A missing file yields its own name rather than an error: the reference may
-// already be stale, and this must not be the thing that fails the build.
+// already be stale, and this must not be the thing that fails the build. Both
+// spellings of absent — no directory, and a directory without the file — reach
+// it, which is why the directory is read before the file is resolved.
 func TestMajorLeafOnAMissingFile(t *testing.T) {
 	if got := majorLeaf(filepath.Join(t.TempDir(), "libgone.1.2.3.dylib")); got != "libgone.1.2.3.dylib" {
-		t.Fatalf("majorLeaf = %q, want the original name", got)
+		t.Fatalf("majorLeaf on an empty directory = %q, want the original name", got)
+	}
+	gone := filepath.Join(t.TempDir(), "nodir", "libgone.1.2.3.dylib")
+	if got := majorLeaf(gone); got != "libgone.1.2.3.dylib" {
+		t.Fatalf("majorLeaf with no directory = %q, want the original name", got)
 	}
 }
 
@@ -85,6 +91,10 @@ func TestIsMajorSoname(t *testing.T) {
 		{"libpcre2-8.0.dylib", "libpcre2-8.dylib", false}, // no numeric component left
 		{"libz.1.3.1.dylib", "libz.1.so", false},
 		{"libz.1.3.1.so", "libz.1.dylib", false},
+		// An empty component is not a major.
+		{"libz..1.dylib", "libz..dylib", false},
+		// Nor is a component that is not a number.
+		{"libfoo.1a.2.dylib", "libfoo.1a.dylib", false},
 	} {
 		if got := isMajorSoname(tc.leaf, tc.cand); got != tc.want {
 			t.Errorf("isMajorSoname(%q, %q) = %v, want %v", tc.leaf, tc.cand, got, tc.want)

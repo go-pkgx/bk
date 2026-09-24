@@ -344,11 +344,11 @@ func walkExes(prefix string, fn func(string) error) error {
 // unchanged, and they ship together, so their full version cannot drift.
 func majorLeaf(orig string) string {
 	dir, leaf := filepath.Split(orig)
-	real, err := filepath.EvalSymlinks(orig)
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return leaf
 	}
-	ents, err := os.ReadDir(dir)
+	real, err := filepath.EvalSymlinks(orig)
 	if err != nil {
 		return leaf
 	}
