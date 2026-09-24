@@ -317,3 +317,92 @@ func walkExes(prefix string, fn func(string) error) error {
 	}
 	return nil
 }
+
+// majorLeaf reduces a reference's FILENAME to the soname its major line
+// guarantees, for a path whose directory transformRpath has just majored.
+//
+// transformRpath majors the directory of a reference into another package —
+// v1.3.1 becomes v1 — so the reference follows that package's patch releases.
+// The leaf was carried over whole, and a full-version leaf undoes exactly what
+// majoring the directory bought. Measured on the published cairo 1.18.4 bottle:
+//
+//	libcairo.2.dylib -> @rpath/zlib.net/v1/lib/libz.1.3.1.dylib
+//
+// zlib.net/v1 now resolves to 1.3.2, whose lib dir holds libz.1.3.2.dylib with
+// libz.1.dylib and libz.dylib beside it — and no libz.1.3.1.dylib. The
+// directory moved with the upgrade, as intended; the filename did not, so the
+// reference resolves nowhere. Seven closures carried it: cairo's own and the
+// six that pull cairo in (pango, poppler, graphviz, harfbuzz, ffmpeg, openjdk).
+//
+// Only a symlink that really sits beside the target AND really points at it is
+// used, so this invents nothing: a library that ships no soname link keeps the
+// name the build chose. The link must also keep a numeric component — libz.1 is
+// the major line we just bound to, while libz would bind across majors, which
+// is a wider promise than the directory makes.
+//
+// The package's own libraries never reach here: transformRpath returns those
+// unchanged, and they ship together, so their full version cannot drift.
+func majorLeaf(orig string) string {
+	dir, leaf := filepath.Split(orig)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return leaf
+	}
+	real, err := filepath.EvalSymlinks(orig)
+	if err != nil {
+		return leaf
+	}
+	best := ""
+	for _, e := range ents {
+		if e.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		n := e.Name()
+		if !isMajorSoname(leaf, n) {
+			continue
+		}
+		tgt, err := filepath.EvalSymlinks(filepath.Join(dir, n))
+		if err != nil || tgt != real {
+			continue
+		}
+		if best == "" || len(n) < len(best) {
+			best = n
+		}
+	}
+	if best == "" {
+		return leaf
+	}
+	return best
+}
+
+// isMajorSoname reports whether cand is leaf truncated at a dot boundary with
+// at least one numeric component left — libz.1.dylib for libz.1.3.1.dylib, but
+// not libz.dylib, and not a different library's name.
+func isMajorSoname(leaf, cand string) bool {
+	const ext = ".dylib"
+	l, ok := strings.CutSuffix(leaf, ext)
+	if !ok {
+		return false
+	}
+	c, ok := strings.CutSuffix(cand, ext)
+	if !ok {
+		return false
+	}
+	if !strings.HasPrefix(l, c+".") {
+		return false
+	}
+	i := strings.LastIndex(c, ".")
+	if i < 0 {
+		return false
+	}
+	last := c[i+1:]
+	if last == "" {
+		return false
+	}
+	for _, r := range last {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}

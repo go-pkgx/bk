@@ -601,6 +601,9 @@ func rewriteMacho(exe string, opts Options) error {
 			}
 			full := filepath.Join(opts.PkgxDir, rest)
 			t := transformRpath(full, filepath.Dir(opts.Prefix))
+			if t != full {
+				t = filepath.Join(filepath.Dir(t), majorLeaf(full))
+			}
 			if short, ok := underDir(t, opts.PkgxDir); ok {
 				return "@rpath/" + short
 			}
@@ -624,6 +627,9 @@ func rewriteMacho(exe string, opts Options) error {
 			// libraries keep their full version: they ship together and cannot
 			// disagree.
 			t := transformRpath(s, filepath.Dir(opts.Prefix))
+			if t != s {
+				t = filepath.Join(filepath.Dir(t), majorLeaf(s))
+			}
 			rest, _ := underDir(t, opts.PkgxDir)
 			return "@rpath/" + rest
 		}
