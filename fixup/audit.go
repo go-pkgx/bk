@@ -3,6 +3,7 @@ package fixup
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -41,12 +42,60 @@ func AuditRelocatable(prefix, pkgxDir string) (checked int, problems []error) {
 		if err := checkMachoSignature(p); err != nil {
 			problems = append(problems, err)
 		}
-		if err := checkAbsoluteRefs(p); err != nil {
+		if err := checkAbsoluteRefs(p, nil); err != nil {
 			problems = append(problems, err)
 		}
 		return nil
 	})
 	return checked, problems
+}
+
+// ErrMissingRef means a Mach-O names a file under $PKGX_DIR that is not there.
+//
+// The reference records a decision taken when the binary was LINKED —
+// @rpath/gnome.org/libxml2/v2/lib/libxml2.2.dylib — and the resolver takes the
+// same decision again, separately, when a consumer installs. Nothing keeps the
+// two in agreement, and they disagree on both axes:
+//
+//	libxml2 2.13.9 -> 2.15.4   same pkgx major, DIFFERENT soname (libxml2.2 -> libxml2.16)
+//	gettext 0.26   -> 1.0.0    different major, SAME soname (libintl.8, compat 13)
+//
+// So a major-versioned reference can be satisfied and still not resolve, and an
+// ABI-compatible upgrade can look like a break. Measured over 26519 Mach-O in
+// 272 installed closures: 51 packages name a file that is not there.
+//
+// REPORTED, not refused. qt.io is among the 51 and runs: a dangling reference in
+// a module nothing loads never faults. Refusing would stop a fifth of the
+// catalogue from building over defects that are latent — the backlog has to
+// drain first.
+var ErrMissingRef = errors.New("fixup: @rpath reference names a file that is not there")
+
+// checkRefExists reports an @rpath reference naming a path under $PKGX_DIR that
+// does not exist. During a build the closure installed is exactly what the
+// recipe declared, so this is that build's own disagreement and not an
+// inherited one.
+func checkRefExists(exe string, opts Options) error {
+	if opts.PkgxDir == "" {
+		return nil
+	}
+	refs, err := readMachoRefs(exe)
+	if err != nil {
+		return err
+	}
+	for _, r := range refs {
+		rest, ok := strings.CutPrefix(r, "@rpath/")
+		if !ok || !strings.Contains(rest, "/") {
+			continue // a BARE soname is checkRpathResolvable's business
+		}
+		cand := filepath.Join(opts.PkgxDir, filepath.FromSlash(rest))
+		// The package's own files may still be under the staging prefix while
+		// fixup runs, so try both — the same pair qualifyRef stats.
+		if exists(cand) || exists(staged(cand, opts)) {
+			continue
+		}
+		return fmt.Errorf("%w: %s references %s", ErrMissingRef, exe, r)
+	}
+	return nil
 }
 
 // ErrAbsoluteRef means a Mach-O asks dyld for a library by an absolute path
@@ -82,7 +131,16 @@ var ErrAbsoluteRef = errors.New("fixup: absolute reference to a path outside the
 // They are part of macOS, present on every machine, and not ours to vendor.
 var systemLibDirs = []string{"/usr/lib/", "/System/"}
 
-func checkAbsoluteRefs(exe string) error {
+// tolerate, when non-nil, is asked about each absolute reference before it is
+// refused. The build path uses it for the ONE absolute form that is deliberate
+// — a path into $PKGX_DIR, left by rewriteMacho when no rpath reaches the store
+// — and the mirror audit passes nil, because in a bottle we only copy there is
+// no such decision to respect.
+//
+// It takes the REFERENCE, not the error text. Deciding on the message was the
+// first thing tried and it was always true: the message names the file too, and
+// the file is itself under $PKGX_DIR.
+func checkAbsoluteRefs(exe string, tolerate func(ref string) bool) error {
 	refs, err := readMachoRefs(exe)
 	if err != nil {
 		return err
@@ -98,9 +156,10 @@ func checkAbsoluteRefs(exe string) error {
 				break
 			}
 		}
-		if !system {
-			return fmt.Errorf("%w: %s references %s", ErrAbsoluteRef, exe, r)
+		if system || (tolerate != nil && tolerate(r)) {
+			continue
 		}
+		return fmt.Errorf("%w: %s references %s", ErrAbsoluteRef, exe, r)
 	}
 	return nil
 }
