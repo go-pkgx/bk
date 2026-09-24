@@ -154,16 +154,19 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	// Local recipe overrides: candidate fixes for genuine upstream-recipe bugs,
 	// applied to the pantry before the closure is computed so we validate them
 	// here before proposing them upstream.
+	var skippedOverrides map[string][]string
 	if *overridesDir != "" {
-		if _, err := factoryOverrides(overrides.Options{
+		ores, err := factoryOverrides(overrides.Options{
 			Dir:  *overridesDir,
 			Root: *pantryDir,
 			Log:  func(s string) { fmt.Fprintln(stdout, s) },
 			Warn: func(s string) { fmt.Fprintln(stderr, s) },
-		}); err != nil {
+		})
+		if err != nil {
 			fmt.Fprintln(stderr, "factory:", err)
 			return 1
 		}
+		skippedOverrides = ores.SkippedProjects
 	}
 
 	// The base toolchain pins perl for the XS-bearing tools inside it. If one of
@@ -245,11 +248,12 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		osn: osn, arch: arch, platform: *platform,
 		dist: *to, bottles: *bottles, glibc: *glibc,
 		force: *force, key: kp, when: factoryTime(),
-		mirror:    strings.TrimRight(*mirrorFrom, "/"),
-		want:      strings.TrimSpace(*versionSpec),
-		wantPer:   pins,
-		requested: requested,
-		stdout:    stdout, stderr: stderr,
+		mirror:           strings.TrimRight(*mirrorFrom, "/"),
+		want:             strings.TrimSpace(*versionSpec),
+		wantPer:          pins,
+		skippedOverrides: skippedOverrides,
+		requested:        requested,
+		stdout:           stdout, stderr: stderr,
 	}
 	if f.mirror != "" {
 		setUpstreamDist(f.mirror)
@@ -340,6 +344,10 @@ type factory struct {
 	// in --recipes. Closing an index gap needs ONE named version of ONE project,
 	// and --versions applies to every requested project at once.
 	wantPer map[string]string
+	// skippedOverrides maps a project onto the overrides that were meant to
+	// change its recipe and could not be applied. Building it anyway produces a
+	// bottle from a recipe we know is not the one we meant to build.
+	skippedOverrides map[string][]string
 	// requested is the set of projects the operator NAMED, as opposed to the
 	// ones the closure walk added. --force applies only to the first: see
 	// forcing.
@@ -407,6 +415,18 @@ func (f *factory) versionsFor(rec *pantry.Recipe, proj string, requested bool, m
 func (f *factory) forcing(proj string) bool { return f.force && f.requested[proj] }
 
 func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
+	// An override that did not apply is not a warning. The recipe about to be
+	// built is the UNPATCHED one, and it will fail for whatever the patch
+	// existed to fix — or, worse, succeed and publish a bottle missing a
+	// correction somebody made on purpose.
+	//
+	// Measured 2026-09-24: mozilla.org/nss failed two rebuilds on the exact
+	// -Werror error its override disables, because that override had stopped
+	// applying and said so in one line among 229 "override applied".
+	if patches := f.skippedOverrides[proj]; len(patches) > 0 {
+		f.fail(proj, ver, "override", fmt.Errorf("%s did not apply, so this would build an unpatched recipe", strings.Join(patches, ", ")))
+		return
+	}
 	tag := flavoredTag(proj, ver, f.glibc)
 	if !f.forcing(proj) {
 		switch published, err := factoryHasPlatform(f.dist, proj, tag, f.osn, f.arch); {

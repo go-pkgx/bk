@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -61,6 +62,31 @@ func (o Options) warn(format string, a ...any) {
 type Result struct {
 	Applied []string
 	Skipped []string
+	// SkippedProjects maps a pantry project onto the patch names that were
+	// meant to change its recipe and did not.
+	//
+	// A patch stops applying when upstream edits the lines its context hangs
+	// on, or when one of OUR earlier patches does. Nothing about the build says
+	// so afterwards: the recipe is merely the unpatched one, and it fails for
+	// whatever reason the patch existed to remove. Measured 2026-09-24 on
+	// go-pkgx/packages: 3 of 231 overrides had stopped applying, among them the
+	// -Werror switch mozilla.org/nss needs, whose absence cost two rebuilds and
+	// a duplicate fix for a defect that was already fixed.
+	SkippedProjects map[string][]string
+}
+
+// projectOf maps `projects/<project>/package.yml` onto `<project>`, and
+// reports false for a path that is not a recipe.
+func projectOf(path string) (string, bool) {
+	rest, ok := strings.CutPrefix(filepath.ToSlash(path), "projects/")
+	if !ok {
+		return "", false
+	}
+	proj, ok := strings.CutSuffix(rest, "/package.yml")
+	if !ok || proj == "" {
+		return "", false
+	}
+	return proj, true
 }
 
 // Apply applies every Dir/*.patch to the pantry checkout at Root, in sorted
@@ -118,6 +144,18 @@ func Apply(o Options) (Result, error) {
 
 	for _, p := range parsed {
 		if err := applyFiles(o.Root, p.files); err != nil {
+			for _, fl := range p.files {
+				for _, n := range []string{fl.NewName, fl.OldName} {
+					if proj, ok := projectOf(strip(n)); ok {
+						if res.SkippedProjects == nil {
+							res.SkippedProjects = map[string][]string{}
+						}
+						if !slices.Contains(res.SkippedProjects[proj], p.name) {
+							res.SkippedProjects[proj] = append(res.SkippedProjects[proj], p.name)
+						}
+					}
+				}
+			}
 			o.warn("override SKIP (does not apply): %s: %v", p.name, err)
 			res.Skipped = append(res.Skipped, p.name)
 			continue
