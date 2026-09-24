@@ -177,7 +177,8 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	}
 
 	// deps + tokens + script
-	deps := EvalDeps(project, recipe.Dependencies, buildDeps(recipe), tgt)
+	deps := EvalLinkDeps(recipe.Dependencies, tgt)
+	toolDeps := EvalToolDeps(project, recipe.Dependencies, buildDeps(recipe), tgt)
 	toks := moustache.Prefix(paths.BuildInstall)
 	toks = append(toks, moustache.Version(version, "version")...)
 	toks = append(toks, moustache.Token{From: "version.tag", To: tag})
@@ -206,7 +207,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		return res, fmt.Errorf("write libexec: %w", err)
 	}
 	script := buildscript.Wrap(buildscript.WrapOptions{
-		UserScript: user, Deps: deps, Target: tgt, Host: host,
+		UserScript: user, Deps: deps, ToolDeps: toolDeps, Target: tgt, Host: host,
 		Home: paths.Home, SrcRoot: paths.Build, PkgxDir: config.PkgxDir(), Install: paths.Install, Project: project,
 		PkgxBin: r.PkgxBin, BashPath: r.BashPath, BrewkitPath: libexecDir,
 		LibcPkgx: r.LibcMode == "pkgx",
