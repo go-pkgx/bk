@@ -794,8 +794,27 @@ func errorLine(s string) bool {
 		strings.Contains(s, "bad interpreter"):
 		return true
 	}
-	// `make[2]: *** [path:line: target] Error 2` — the *** is what distinguishes
-	// make's own failure line from a target called something with "error" in it.
+	// A line whose first characters are `***` is a build tool speaking about
+	// itself rather than echoing a command — make, autoconf and gcc's configure
+	// all use that prefix for their own diagnostics. Requiring "Error " as well
+	// kept make's failures and dropped everyone else's:
+	//
+	//	*** Configuration aarch64-apple-darwin20.0.0 not supported
+	//
+	// was the ONLY line in a 151 KB gcc log that named the cause — gcc 14.4.0
+	// has no aarch64*-*-darwin* case in gcc/config.gcc — and failures-detail.txt
+	// did not have it. What it had was `make[1]: *** [Makefile:4637:
+	// configure-gcc] Error 1`, which names the target that failed and nothing
+	// about why.
+	//
+	// The prefix is what keeps this narrow. `***` anywhere in a line also
+	// matches a banner or a comment; at the start of one it is a convention.
+	if strings.HasPrefix(strings.TrimLeft(s, " \t"), "***") {
+		return true
+	}
+	// make prefixes its own line with the recipe name — `make[2]: *** [path:line:
+	// target] Error 2` — so it never starts with ***; the Error keeps it apart
+	// from a target whose name contains one.
 	return strings.Contains(s, "***") && strings.Contains(s, "Error ")
 }
 
