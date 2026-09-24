@@ -60,3 +60,46 @@ func TestSortedUnique(t *testing.T) {
 		}
 	}
 }
+
+// The Mach-O side, without needing a linker — so the linux lane exercises it
+// too. The install name carries a directory and the soname is its last
+// component: the path is where this build put the file, the basename is what
+// dyld matches on.
+func TestSonameOfMachOFixture(t *testing.T) {
+	p := buildMachO(t, machoCmd{lcIDDylib, "@rpath/zlib.net/v1/lib/libz.1.dylib"})
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := SonameOf(raw); got != "libz.1.dylib" {
+		t.Errorf("SonameOf = %q, want libz.1.dylib", got)
+	}
+}
+
+// A Mach-O with no LC_ID_DYLIB is an executable or a bundle: nothing binds to
+// it by name.
+func TestSonameOfMachOWithoutAnID(t *testing.T) {
+	p := buildMachO(t, machoCmd{lcLoadDylib, "@rpath/other/v1/lib/libother.1.dylib"})
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := SonameOf(raw); got != "" {
+		t.Errorf("SonameOf = %q, want empty", got)
+	}
+}
+
+// A universal binary carries the same ID in each slice; the first one answers.
+func TestSonameOfFatMachO(t *testing.T) {
+	p := buildFatMachO(t,
+		[]machoCmd{{lcIDDylib, "@rpath/a/v1/lib/libfat.2.dylib"}},
+		[]machoCmd{{lcIDDylib, "@rpath/a/v1/lib/libfat.2.dylib"}},
+	)
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := SonameOf(raw); got != "libfat.2.dylib" {
+		t.Errorf("SonameOf = %q, want libfat.2.dylib", got)
+	}
+}
