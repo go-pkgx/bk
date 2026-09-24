@@ -86,11 +86,16 @@ const ABIProvidesAnnotation = "org.go-pkgx.abi.provides"
 
 // sonamesFromTarball reads the ABI name of every shared library in a bottle.
 //
+// bottle.Decompressor, not a local one: every format this factory has ever
+// published is handled there, and a reader taught two of the three fails with
+// "gzip: invalid header" on a .tar.zst — which is the default, so the first
+// version of this wrote the annotation on nothing at all.
+//
 // From the tarball rather than the build tree so it also describes a bottle we
 // did not build — a mirrored one carries whatever upstream linked, and that is
 // exactly the case where nobody knows what is inside (go-pkgx/packages#147).
 func sonamesFromTarball(tarball []byte, ext string) ([]string, error) {
-	r, closeFn, err := decompress(tarball, ext)
+	r, closeFn, err := bottle.Decompressor(ext, bytes.NewReader(tarball))
 	if err != nil {
 		return nil, err
 	}
@@ -119,23 +124,6 @@ func sonamesFromTarball(tarball []byte, ext string) ([]string, error) {
 		}
 	}
 	return fixup.SortedUnique(out), nil
-}
-
-// decompress opens a bottle tarball's stream.
-func decompress(tarball []byte, ext string) (io.Reader, func(), error) {
-	var r io.Reader = bytes.NewReader(tarball)
-	if ext == bottle.ExtTarXz {
-		xr, err := xz.NewReader(r)
-		if err != nil {
-			return nil, nil, err
-		}
-		return xr, func() {}, nil
-	}
-	gz, err := gzip.NewReader(r)
-	if err != nil {
-		return nil, nil, err
-	}
-	return gz, func() { gz.Close() }, nil
 }
 
 func glibcMinKernelFromTarball(tarball []byte, ext string) (string, error) {

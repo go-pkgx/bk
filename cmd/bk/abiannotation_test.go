@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/go-pkgx/bottle"
@@ -149,5 +150,37 @@ func TestPublishBottleAnnotatesTheABIItProvides(t *testing.T) {
 	}
 	if got[ABIProvidesAnnotation] != "libfoo.so.1" {
 		t.Errorf("annotation = %q, want libfoo.so.1 (all: %v)", got[ABIProvidesAnnotation], got)
+	}
+}
+
+// zstd is what this factory publishes by DEFAULT, and the first version of
+// this reader knew only gzip and xz. It failed on every real bottle —
+//
+//	bk: could not read the sonames of fftw.org 3.3.11: gzip: invalid header
+//
+// — so the annotation was written on nothing at all. This is the case that was
+// missing.
+func TestSonamesFromTarballReadsAZstdBottle(t *testing.T) {
+	lib, err := os.ReadFile(filepath.Join("testdata", "libfoo.so.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(tarBytes(map[string][]byte{"lib/libfoo.so.1": lib})); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sonamesFromTarball(buf.Bytes(), bottle.ExtTarZst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "libfoo.so.1" {
+		t.Fatalf("sonames = %v, want [libfoo.so.1]", got)
 	}
 }
