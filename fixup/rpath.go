@@ -486,3 +486,38 @@ func abiOrMajor(full string, opts Options, useABI bool) string {
 	}
 	return filepath.Join(filepath.Dir(t), leaf)
 }
+
+// loaderPathRef answers a BARE @rpath/<name> reference with a path relative to
+// the referring file, when the named file ships in the same package.
+//
+// It exists for a file that carries no usable rpath. Every other repair here
+// produces another @rpath reference, which is no help: @rpath is a search
+// through LC_RPATH entries, and a file with none searches nowhere. dyld
+// resolves @loader_path against the referring file's own directory instead, so
+// it needs no load command and survives the store being mounted anywhere.
+//
+// Only a name with NO directory is answered, and only when the file is really
+// there — in the referring file's own directory, or the package's lib dir.
+// Inventing a location for a dependency's library is what the closure-owner
+// search is for, and that one needs an rpath.
+func loaderPathRef(exe, ref string, opts Options) (string, bool) {
+	name, ok := strings.CutPrefix(ref, "@rpath/")
+	if !ok || name == "" || strings.Contains(name, "/") {
+		return "", false
+	}
+	self := unstage(exe, opts)
+	for _, dir := range []string{filepath.Dir(self), filepath.Join(opts.Prefix, "lib")} {
+		cand := filepath.Join(dir, name)
+		// Fixup runs after the install, but the staging prefix is what was
+		// baked into the binaries: which one holds bytes is not worth a guess.
+		if !exists(cand) && !exists(staged(cand, opts)) {
+			continue
+		}
+		rel, err := filepath.Rel(filepath.Dir(self), cand)
+		if err != nil {
+			continue
+		}
+		return "@loader_path/" + filepath.ToSlash(rel), true
+	}
+	return "", false
+}

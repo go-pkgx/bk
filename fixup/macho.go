@@ -567,7 +567,20 @@ func rewriteMacho(exe string, opts Options) error {
 	if _, ok := qualifyID(exe, machoID(exe), opts); ok {
 		fixableID = true
 	}
-	if opts.BuildInstall == "" && !toRpath && !fixableID && !relocRpath {
+	// A BARE reference to a file this package ships is repairable even here,
+	// with @loader_path, which needs no rpath. Without this term the file took
+	// the "nothing to rewrite" exit below and met the guard instead — which is
+	// how mpdecimal's rebuild was refused with no way forward.
+	fixableSibling := false
+	if refs, rerr := readMachoRefs(exe); rerr == nil {
+		for _, r := range refs {
+			if _, ok := loaderPathRef(exe, r, opts); ok {
+				fixableSibling = true
+				break
+			}
+		}
+	}
+	if opts.BuildInstall == "" && !toRpath && !fixableID && !relocRpath && !fixableSibling {
 		// Nothing to rewrite — but a file that already references @rpath with no
 		// LC_RPATH is dead however little we touch it, and this is the branch it
 		// arrives on.
@@ -608,6 +621,20 @@ func rewriteMacho(exe string, opts Options) error {
 			return s
 		}
 		if !toRpath {
+			// No rpath reaches $PKGX_DIR — often no LC_RPATH at all — so
+			// nothing below can help: an @rpath reference rewritten to another
+			// @rpath reference still resolves nowhere. A SIBLING needs no
+			// rpath, though. mpdecimal's C++ library records
+			//
+			//	@rpath/libmpdec.3.dylib
+			//
+			// for a file sitting beside it, and the build has been refused
+			// since the guard went in — correctly, and with no way forward.
+			// @loader_path answers it exactly, and is independent of where the
+			// store is mounted.
+			if lp, ok := loaderPathRef(exe, s, opts); ok {
+				return lp
+			}
 			return s
 		}
 		// A reference that is ALREADY @rpath/… — because the dependency was
