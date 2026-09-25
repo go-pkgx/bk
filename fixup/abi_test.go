@@ -3,6 +3,7 @@ package fixup
 import (
 	"debug/elf"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -101,5 +102,35 @@ func TestSonameOfFatMachO(t *testing.T) {
 	}
 	if got := SonameOf(raw); got != "libfat.2.dylib" {
 		t.Errorf("SonameOf = %q, want libfat.2.dylib", got)
+	}
+}
+
+// MachoNeeded is what a file LOADS. The install name is not a dependency:
+// counting it makes a library appear to depend on wherever it happens to live,
+// which is what made bk's undeclared sweep report a self-edge on its first run.
+func TestMachoNeededExcludesTheInstallName(t *testing.T) {
+	p := buildMachO(t,
+		machoCmd{lcIDDylib, "@rpath/acme.org/thing/v1/lib/libthing.1.dylib"},
+		machoCmd{lcLoadDylib, "@rpath/other.org/dep/v2/lib/libdep.2.dylib"},
+		machoCmd{lcRpath, "@loader_path/../../.."},
+	)
+	got, err := MachoNeeded(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "@rpath/other.org/dep/v2/lib/libdep.2.dylib" {
+		t.Fatalf("MachoNeeded = %v, want only the loaded dylib", got)
+	}
+}
+
+// A file that is not a Mach-O is an error, not an empty list: the caller skips
+// it, and "no dependencies" would be a claim.
+func TestMachoNeededOnANonMachO(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "script")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MachoNeeded(p); err == nil {
+		t.Error("a shell script read as a Mach-O")
 	}
 }

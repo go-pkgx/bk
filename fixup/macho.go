@@ -281,6 +281,36 @@ func ReadMachoStrings(path string) ([]string, error) {
 	return out, nil
 }
 
+// MachoNeeded is what a Mach-O LOADS: its LC_LOAD_DYLIB, weak and re-export
+// entries, and nothing else.
+//
+// ReadMachoStrings returns every load-command string, which includes the
+// file's OWN install name (LC_ID_DYLIB) and its LC_RPATH entries. Counting the
+// install name as a dependency makes a library appear to depend on wherever it
+// happens to live — the ELF side has had ReadNeeded for exactly this reason,
+// and the Mach-O side had no equivalent.
+func MachoNeeded(path string) ([]string, error) {
+	raw, slices, err := machoInfo(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, sl := range slices {
+		walkMachoStrings(raw[sl.off:sl.off+sl.size], sl.bo, sl.hdr, sl.ncmd, func(cmd uint32, s string) string {
+			switch cmd {
+			case lcLoadDylib, lcLoadWeakDylib, lcReexportDylib:
+				if !seen[s] {
+					seen[s] = true
+					out = append(out, s)
+				}
+			}
+			return s
+		})
+	}
+	return out, nil
+}
+
 // RewriteMachoStrings rewrites every dylib-name/rpath string in a Mach-O in
 // place by applying fn — every architecture slice of a fat binary. It cannot
 // grow a string (Mach-O load commands are a fixed size), so a longer
