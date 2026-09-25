@@ -573,7 +573,20 @@ func rewriteMacho(exe string, opts Options) error {
 		// arrives on.
 		return checkRpathResolvable(exe, opts)
 	}
-	err := rewriteMachoStringsCmd(exe, func(cmd uint32, s string) string {
+	// The initial rpath set, kept so the second pass below starts where the
+	// first did rather than from what the first pass left behind.
+	taken0 := make(map[string]bool, len(taken))
+	for k := range taken {
+		taken0[k] = true
+	}
+	// An ABI line is LONGER than the major directory it replaces
+	// (abi-libxml2.16.dylib against v2), and a load-command string cannot grow
+	// past the header padding the linker left. Where it does not fit, the
+	// answer is the major — not nothing: skipping the file would give up the
+	// relocation that was already working and leave a builder path in the
+	// bottle.
+	useABI := true
+	rewrite := func(cmd uint32, s string) string {
 		if opts.BuildInstall != "" {
 			s = strings.ReplaceAll(s, opts.BuildInstall, opts.Prefix)
 		}
@@ -630,10 +643,7 @@ func rewriteMacho(exe string, opts Options) error {
 				return q
 			}
 			full := filepath.Join(opts.PkgxDir, rest)
-			t := transformRpath(full, filepath.Dir(opts.Prefix))
-			if t != full {
-				t = filepath.Join(filepath.Dir(t), majorLeaf(full))
-			}
+			t := abiOrMajor(full, opts, useABI)
 			if short, ok := underDir(t, opts.PkgxDir); ok {
 				return "@rpath/" + short
 			}
@@ -656,23 +666,19 @@ func rewriteMacho(exe string, opts Options) error {
 			// tree), so v10 resolves to whatever 10.x is there. A package's own
 			// libraries keep their full version: they ship together and cannot
 			// disagree.
-			t := transformRpath(s, filepath.Dir(opts.Prefix))
-			if t != s {
-				leaf := majorLeaf(s)
-				t = filepath.Join(filepath.Dir(t), leaf)
-				// Better than the major, when the dependency offers it: bind to
-				// the ABI LINE. v<major> holds one version, so a project that
-				// changes its soname inside a major cannot have both lines
-				// installed — see abiLine.
-				if a, ok := abiLine(s, leaf, opts.PkgxDir); ok {
-					t = a
-				}
-			}
+			t := abiOrMajor(s, opts, useABI)
 			rest, _ := underDir(t, opts.PkgxDir)
 			return "@rpath/" + rest
 		}
 		return s
-	})
+	}
+	err := rewriteMachoStringsCmd(exe, rewrite)
+	if errors.Is(err, ErrNoSpace) && useABI {
+		useABI = false
+		taken = taken0
+		opts.log("macho %s: the ABI line does not fit the header padding, binding to the major instead", exe)
+		err = rewriteMachoStringsCmd(exe, rewrite)
+	}
 	if errors.Is(err, ErrNoSpace) {
 		opts.log("skip macho for %s: %v", exe, err)
 		return nil

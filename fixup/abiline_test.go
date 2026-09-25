@@ -128,3 +128,67 @@ func TestRewriteBindsToTheABILineWhenOffered(t *testing.T) {
 		})
 	}
 }
+
+// The SAME question through the other door, and what happens when the answer
+// does not fit.
+//
+// A Mach-O records a dependency either as an absolute path or as @rpath/<rest>,
+// and which one it is depends on the DEPENDENCY's install name, not on
+// anything the consumer chose. libxml2's install name is already @rpath, so
+// hwloc arrives through this branch — and #183, which touched only the
+// absolute one, rewrote nothing for it: the rebuilt bottle still recorded
+// @rpath/gnome.org/libxml2/v2/lib/libxml2.16.dylib and died the moment v2
+// named the 2.13 line.
+//
+// The third case is the one that made this more than a one-line fix. An ABI
+// line is LONGER than the major it replaces, so a file whose linker left no
+// header padding cannot hold it — and the old code skipped such a file
+// ENTIRELY, which would have traded a working relocation for a builder path
+// baked into the bottle.
+func TestRewriteBindsToTheABILineThroughTheRpathDoor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		link bool
+		pad  int
+		want string
+	}{
+		{"with the link and room for it", true, 64,
+			"@rpath/abi.example/abi-libfoo.1.dylib/lib/libfoo.1.dylib"},
+		{"with the link but no room", true, 0,
+			"@rpath/abi.example/v1/lib/libfoo.1.dylib"},
+		{"without the link", false, 64,
+			"@rpath/abi.example/v1/lib/libfoo.1.dylib"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pkgx := filepath.Join(t.TempDir(), ".pkgx")
+			dep := filepath.Join(pkgx, "abi.example", "v1.0.0", "lib")
+			if err := os.MkdirAll(dep, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.link {
+				if err := os.Symlink("v1.0.0", filepath.Join(pkgx, "abi.example", "abi-libfoo.1.dylib")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prefix := filepath.Join(pkgx, "other.org", "bar", "v2.0.0")
+			exe := filepath.Join(prefix, "bin", "bar")
+			placePad(t, exe, tc.pad,
+				machoCmd{lcRpath, "@loader_path/../../../.."},
+				machoCmd{lcLoadDylib, "@rpath/abi.example/v1.0.0/lib/libfoo.1.dylib"},
+			)
+			if err := FixUp(Options{Prefix: prefix, Platform: "darwin", PkgxDir: pkgx}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadMachoStrings(exe)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range got {
+				if s == tc.want {
+					return
+				}
+			}
+			t.Errorf("no reference is %q; the file records %v", tc.want, got)
+		})
+	}
+}
