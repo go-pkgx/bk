@@ -457,3 +457,32 @@ func abiLine(orig, leaf, pkgxDir string) (string, bool) {
 
 // abiVersionDirRE finds the /v<version>/ boundary in a store-relative path.
 var abiVersionDirRE = regexp.MustCompile(`^(.+?)/(v[0-9][^/]*/)`)
+
+// abiOrMajor reduces an absolute store path to what a reference should bind
+// to: the ABI LINE when the dependency offers one, the major directory
+// otherwise, and the path unchanged when it is not a store reference at all.
+//
+// It exists because there are TWO doors to this question and the ABI half was
+// put through only one of them. A Mach-O records a dependency either as an
+// absolute path or as @rpath/<rest>, and which one it is depends on the
+// dependency's own install name, not on anything the consumer chose. hwloc
+// comes through the @rpath door — libxml2's install name is already @rpath —
+// so #183 rewrote nothing for it, and the rebuilt bottle still recorded
+//
+//	@rpath/gnome.org/libxml2/v2/lib/libxml2.16.dylib
+//
+// which dies the moment v2 names the 2.13 line. One function, both doors.
+// useABI is false on the second pass, where the first ran out of header
+// padding: the major form is shorter, and keeping the relocation matters more
+// than binding to the line.
+func abiOrMajor(full string, opts Options, useABI bool) string {
+	t := transformRpath(full, filepath.Dir(opts.Prefix))
+	if t == full {
+		return t
+	}
+	leaf := majorLeaf(full)
+	if a, ok := abiLine(full, leaf, opts.PkgxDir); ok && useABI {
+		return a
+	}
+	return filepath.Join(filepath.Dir(t), leaf)
+}
