@@ -406,3 +406,54 @@ func isMajorSoname(leaf, cand string) bool {
 	}
 	return true
 }
+
+// abiLine rewrites a majored reference to bind to the dependency's ABI LINE
+// instead of its package major, when the store offers one.
+//
+// `v<major>` holds one version, so a project that changes its soname INSIDE a
+// major cannot have both lines installed. Measured with both of libxml2's:
+//
+//	v2      -> v2.15.4      (and nothing can reach 2.13.9's libxml2.2.dylib)
+//	v2.13   -> v2.13.9
+//	v2.15   -> v2.15.4
+//
+// ICU has the same shape and no such problem, because it bumps its major with
+// its soname. libxml2 does not, so `open-mpi.org` — which needs hwloc's
+// libxml2.16 and gettext's libxml2.2 at once — has no closure at all.
+//
+// bottle now installs an `abi-<soname>` link beside the version aliases, from
+// what the bottle DECLARES it provides. Naming that instead of v<major> gives
+// the same late binding — a patch or minor upgrade within the line still moves
+// the link — keyed on the thing that decides whether a consumer can load it.
+//
+// Only when the link is really there. A dependency published before bottle
+// wrote them, or one whose soname this build did not name, keeps the v<major>
+// form and behaves exactly as before.
+func abiLine(orig, leaf, pkgxDir string) (string, bool) {
+	if pkgxDir == "" || leaf == "" {
+		return "", false
+	}
+	rest, ok := underDir(orig, pkgxDir)
+	if !ok {
+		return "", false
+	}
+	// <project>/v<version>/<tail...> — the project may itself contain slashes,
+	// so the version directory is the only reliable boundary.
+	slash := filepath.ToSlash(rest)
+	m := abiVersionDirRE.FindStringSubmatch(slash)
+	if m == nil {
+		return "", false
+	}
+	project := m[1]
+	tail := slash[len(m[1])+1+len(m[2]):]
+	link := filepath.Join(pkgxDir, filepath.FromSlash(project), "abi-"+leaf)
+	// osStat, not Lstat: a dangling link is not a line anybody can bind to,
+	// and following it is the same question dyld will ask.
+	if _, err := osStat(link); err != nil {
+		return "", false
+	}
+	return filepath.Join(pkgxDir, filepath.FromSlash(project), "abi-"+leaf, filepath.FromSlash(tail)), true
+}
+
+// abiVersionDirRE finds the /v<version>/ boundary in a store-relative path.
+var abiVersionDirRE = regexp.MustCompile(`^(.+?)/(v[0-9][^/]*/)`)
