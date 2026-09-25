@@ -155,7 +155,15 @@ func TestRunUndeclaredAllDeclared(t *testing.T) {
 }
 
 // No projects at all is a usage error, not an empty success.
+//
+// stdin is set explicitly: the first version let it default to the test
+// process's own, which is whatever the harness happened to leave there. It
+// passed on darwin and linux and failed on all three BSD lanes, where the job
+// runs over ssh — a test that reads the ambient stdin is testing the harness.
 func TestRunUndeclaredWithNothingToDo(t *testing.T) {
+	old := undeclaredStdin
+	defer func() { undeclaredStdin = old }()
+	undeclaredStdin = strings.NewReader("")
 	if code, _, _ := run2(t, "undeclared"); code != 2 {
 		t.Errorf("exit = %d, want 2", code)
 	}
