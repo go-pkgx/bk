@@ -658,7 +658,15 @@ func rewriteMacho(exe string, opts Options) error {
 			// disagree.
 			t := transformRpath(s, filepath.Dir(opts.Prefix))
 			if t != s {
-				t = filepath.Join(filepath.Dir(t), majorLeaf(s))
+				leaf := majorLeaf(s)
+				t = filepath.Join(filepath.Dir(t), leaf)
+				// Better than the major, when the dependency offers it: bind to
+				// the ABI LINE. v<major> holds one version, so a project that
+				// changes its soname inside a major cannot have both lines
+				// installed — see abiLine.
+				if a, ok := abiLine(s, leaf, opts.PkgxDir); ok {
+					t = a
+				}
 			}
 			rest, _ := underDir(t, opts.PkgxDir)
 			return "@rpath/" + rest
