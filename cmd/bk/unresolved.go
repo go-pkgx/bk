@@ -14,6 +14,11 @@ import (
 	"github.com/go-pkgx/bottle"
 )
 
+// unresolvedPrefixRE matches a store-relative VERSION directory — the prefix a
+// soname search looks under. It anchors on the trailing slash the caller adds,
+// so "a.org/v1" matches and "a.org/v1/lib" does not.
+var unresolvedPrefixRE = regexp.MustCompile(`^(.+?)/v[0-9][^/]*/$`)
+
 // unresolvedOwnerRE reads the project out of a store-relative path: everything
 // before the version directory. A project name has slashes in it —
 // gnupg.org/gpgme — so that directory is the only reliable terminator.
@@ -107,49 +112,96 @@ func runUnresolved(args []string, stdout, stderr io.Writer) int {
 }
 
 // unresolvedByOwner maps each project in the store onto the references its own
-// Mach-O files name and the store cannot answer.
+// binaries name and the store cannot answer.
 //
-// On darwin "is it satisfied" is a STAT, not a search: a Mach-O reference is a
-// path, and either the store has that file or the program does not start.
+// The two formats ask differently shaped questions, and the answer has to be
+// shaped to match. A Mach-O names a PATH, so "is it satisfied" is a stat:
+// either the store has that file or the program does not start. An ELF names a
+// SONAME and the loader searches for it, so the question is whether ANYTHING
+// in the closure provides that name — which cannot be answered file by file,
+// only once the whole store has been walked.
+//
+// Doing both in one pass matters more than it looks: a store built on one
+// platform is read on another all the time, and an audit that understands only
+// the host's format reports a linux closure as flawless because it could not
+// read a single file in it.
 func unresolvedByOwner(dir string) map[string][]string {
 	out := map[string][]string{}
 	seen := map[string]bool{}
+	// ELF: the soname each owner needs, resolved against the whole store after
+	// the walk. Kept in order so the report does not move between runs.
+	type want struct{ owner, soname string }
+	var elfWants []want
+	var prefixes []string
+
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() {
+		if err != nil {
 			return nil
 		}
 		rel := filepath.ToSlash(strings.TrimPrefix(strings.TrimPrefix(p, dir), string(filepath.Separator)))
+		if d.IsDir() {
+			// A version directory is a prefix a soname search may look in.
+			if m := unresolvedPrefixRE.FindStringSubmatch(rel + "/"); m != nil {
+				prefixes = append(prefixes, p)
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
 		m := unresolvedOwnerRE.FindStringSubmatch(rel)
 		if m == nil {
 			return nil
 		}
 		owner := m[1]
-		refs, rerr := bottle.MachoNeeded(p)
-		if rerr != nil {
+		if refs, rerr := bottle.MachoNeeded(p); rerr == nil {
+			if _, ok := out[owner]; !ok {
+				out[owner] = nil // examined, even if clean
+			}
+			for _, ref := range refs {
+				if !strings.HasPrefix(ref, "@rpath/") {
+					continue // /usr/lib and the system frameworks are the host's
+				}
+				if _, serr := os.Stat(filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(ref, "@rpath/")))); serr == nil {
+					continue
+				}
+				// One line per (owner, reference): the same reference from
+				// forty binaries is forty occurrences of ONE defect, and
+				// printing all of them buries the count that matters.
+				key := owner + "\x00" + ref
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				out[owner] = append(out[owner], ref)
+			}
 			return nil
 		}
-		if _, ok := out[owner]; !ok {
-			out[owner] = nil // the project was examined, even if it is clean
-		}
-		for _, ref := range refs {
-			if !strings.HasPrefix(ref, "@rpath/") {
-				continue // /usr/lib and the system frameworks are the host's
+		if sonames, eerr := bottle.ELFNeeded(p); eerr == nil {
+			if _, ok := out[owner]; !ok {
+				out[owner] = nil
 			}
-			if _, serr := os.Stat(filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(ref, "@rpath/")))); serr == nil {
+			for _, s := range sonames {
+				elfWants = append(elfWants, want{owner, s})
+			}
+		}
+		return nil
+	})
+
+	if len(elfWants) > 0 {
+		have := bottle.SonamesUnder(prefixes)
+		for _, w := range elfWants {
+			if have[w.soname] || bottle.SonameComesFromOutside(w.soname) {
 				continue
 			}
-			// One line per (file, reference): the same reference from forty
-			// binaries is forty occurrences of ONE defect, and printing all of
-			// them buries the count that matters.
-			key := owner + "\x00" + ref
+			key := w.owner + "\x00" + w.soname
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			out[owner] = append(out[owner], ref)
+			out[w.owner] = append(out[w.owner], w.soname)
 		}
-		return nil
-	})
+	}
 	for k := range out {
 		sort.Strings(out[k])
 	}
