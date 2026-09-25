@@ -154,6 +154,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runClosure(rest[1:], stdout, stderr)
 	case "depgaps":
 		return runDepgaps(rest[1:], stdout, stderr)
+	case "undeclared":
+		return runUndeclared(rest[1:], stdout, stderr)
 	case "builder":
 		return runBuilder(rest[1:], stdout, stderr)
 	case "factory":
