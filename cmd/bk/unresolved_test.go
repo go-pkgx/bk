@@ -174,3 +174,115 @@ func TestRunUnresolvedWithNothingToDo(t *testing.T) {
 		t.Fatalf("rc = %d, want 2", rc)
 	}
 }
+
+// Reached through the dispatch, like an operator would.
+func TestRunUnresolvedThroughTheDispatch(t *testing.T) {
+	oldI := unresolvedInstall
+	defer func() { unresolvedInstall = oldI }()
+	store := t.TempDir()
+	unresolvedInstall = func(roots map[string]string, dir string) ([]bottle.Resolved, error) {
+		writeMachOAt(t, filepath.Join(dir, "a.org/v1/bin/tool"), "@rpath/gone.org/v2/lib/libgone.2.dylib")
+		return nil, nil
+	}
+	code, out, _ := run2(t, "unresolved", "--store", store, "a.org")
+	if code != 1 {
+		t.Errorf("exit = %d, want 1 when a reference does not resolve", code)
+	}
+	if !strings.Contains(out, "libgone.2.dylib") {
+		t.Errorf("output:\n%s", out)
+	}
+}
+
+// --quiet drops the per-reference lines and keeps the counts, for a sweep
+// whose output is going to be diffed.
+func TestRunUnresolvedQuiet(t *testing.T) {
+	oldI := unresolvedInstall
+	defer func() { unresolvedInstall = oldI }()
+	store := t.TempDir()
+	unresolvedInstall = func(roots map[string]string, dir string) ([]bottle.Resolved, error) {
+		writeMachOAt(t, filepath.Join(dir, "a.org/v1/bin/tool"), "@rpath/gone.org/v2/lib/libgone.2.dylib")
+		return nil, nil
+	}
+	var out bytes.Buffer
+	runUnresolved([]string{"--quiet", "--store", store, "a.org"}, &out, &out)
+	if strings.Contains(out.String(), "@rpath/gone.org") {
+		t.Errorf("--quiet still printed the references:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "1 unresolvable") {
+		t.Errorf("--quiet dropped the count too:\n%s", out.String())
+	}
+}
+
+// A flag it does not know is a usage error, not a sweep of zero projects.
+func TestRunUnresolvedWithABadFlag(t *testing.T) {
+	var out bytes.Buffer
+	if rc := runUnresolved([]string{"--nope"}, &out, &out); rc != 2 {
+		t.Fatalf("rc = %d, want 2", rc)
+	}
+}
+
+// A list that cannot be READ is not an empty list: saying "no projects" there
+// would report a usage mistake for someone else's broken pipe.
+func TestRunUnresolvedWhenTheListCannotBeRead(t *testing.T) {
+	old := unresolvedStdin
+	defer func() { unresolvedStdin = old }()
+	unresolvedStdin = errReader{}
+	var out bytes.Buffer
+	if rc := runUnresolved(nil, &out, &out); rc != 1 {
+		t.Fatalf("rc = %d, want 1", rc)
+	}
+	if !strings.Contains(out.String(), "unresolved:") {
+		t.Errorf("the failure was not reported:\n%s", out.String())
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("pipe broke") }
+
+// No store to work in is fatal rather than skipped: every later answer would
+// be "nothing found", which reads as success.
+func TestRunUnresolvedWhenTheStoreCannotBeMade(t *testing.T) {
+	old := unresolvedTempDir
+	defer func() { unresolvedTempDir = old }()
+	unresolvedTempDir = func(string, string) (string, error) { return "", errors.New("no space") }
+	var out bytes.Buffer
+	if rc := runUnresolved([]string{"a.org"}, &out, &out); rc != 1 {
+		t.Fatalf("rc = %d, want 1", rc)
+	}
+}
+
+// A store holds directories and files that are not under any version
+// directory. Neither is a reference, and neither is an error.
+func TestUnresolvedByOwnerSkipsWhatIsNotAPackagedFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "a.org/v1/share/doc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("not in a package"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := unresolvedByOwner(dir)
+	if len(got) != 0 {
+		t.Errorf("unresolvedByOwner = %v, want nothing", got)
+	}
+}
+
+// A store is MOSTLY text, and most of that text sits inside a version
+// directory — a man page, a pkg-config file, a header. None of it loads
+// anything, and none of it is a finding.
+func TestUnresolvedByOwnerSkipsTextInsideAPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeMachOAt(t, filepath.Join(dir, "a.org/v1/bin/tool"), "@rpath/gone.org/v2/lib/libgone.2.dylib")
+	man := filepath.Join(dir, "a.org/v1/share/man/man1/tool.1")
+	if err := os.MkdirAll(filepath.Dir(man), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(man, []byte(".TH TOOL 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := unresolvedByOwner(dir)
+	if len(got["a.org"]) != 1 {
+		t.Errorf("a.org = %v, want only the binary's reference", got["a.org"])
+	}
+}
