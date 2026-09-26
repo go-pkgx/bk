@@ -114,7 +114,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|closure|tools|depgaps|builder|factory|source> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|closure|tools|tohcl|depgaps|builder|factory|source> [args]")
 		return 2
 	}
 
@@ -158,6 +158,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUndeclared(rest[1:], stdout, stderr)
 	case "unresolved":
 		return runUnresolved(rest[1:], stdout, stderr)
+	case "tohcl":
+		return runToHCL(rest[1:], stdout, stderr)
 	case "tools":
 		return runTools(rest[1:], stdout, stderr)
 	case "weather":
