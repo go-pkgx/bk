@@ -185,9 +185,10 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	// deps + tokens + script
 	deps := EvalLinkDeps(recipe.Dependencies, tgt)
 	bd := buildDeps(recipe)
+	var fromHost []string
 	if r.Bootstrap {
 		bd = WithoutSelfDep(project, bd)
-		bd = WithoutUnresolvable(bd, tgt, r.ResolveDep, func(s string) { logf("%s", s) })
+		bd, fromHost = WithoutUnresolvable(bd, tgt, r.ResolveDep, func(s string) { logf("%s", s) })
 	}
 	toolDeps := EvalToolDeps(project, recipe.Dependencies, bd, tgt)
 	if r.Bootstrap {
@@ -246,6 +247,22 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 
 	// run (sanitized env), stage, fix-up
 	if err := r.Run(res.ScriptPath, SanitizedEnv(paths.Home, config.PkgxDir())); err != nil {
+		// Name what the host was asked to supply. Twice now a seed build has
+		// died with `exit status 127` -- command not found -- because a tool
+		// bootstrap left to the machine was not on the machine either:
+		// facebook.com/zstd wanted cmake and ninja, and this Ubuntu had
+		// neither. The drop is logged when it happens, but by the time the
+		// failure prints, that line is hundreds of lines back and belongs to a
+		// different recipe half the time.
+		//
+		// Attached to EVERY bootstrap failure, not only a 127, because reading
+		// the exit code out of this error means matching on its text -- which
+		// is how a transient failure quietly becomes a different diagnosis.
+		// One extra clause on a failure that is already being read is cheap.
+		if len(fromHost) > 0 {
+			return res, fmt.Errorf("run: %w; bootstrap took these from the host, and one of them may not be there: %s",
+				err, strings.Join(fromHost, ", "))
+		}
 		return res, fmt.Errorf("run: %w", err)
 	}
 	// Stage the completed +brewing tree onto the final versioned prefix. The
