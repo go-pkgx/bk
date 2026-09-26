@@ -166,3 +166,34 @@ func TestClosureGraphNamesAMissingRecipe(t *testing.T) {
 		t.Errorf("and must not be in the order, which is a build plan:\n%s", out.String())
 	}
 }
+
+// TestClosureReadsTheOverlay, end to end: the edge that exists only in our
+// overlay must appear in the order.
+//
+// Measured on the real trees before this was written — the overlay adds
+// github.com/besser82/libxcrypt and github.com/google/brotli to the s390x
+// seed closure, which are exactly the two projects that stopped a build
+// today, each discovered several steps downstream of the recipe that names
+// them.
+func TestClosureReadsTheOverlay(t *testing.T) {
+	pan, ov := t.TempDir(), t.TempDir()
+	writeClosureRecipe(t, pan, "perl.org", "build: make\n")
+	writeClosureRecipe(t, ov, "perl.org", "dependencies:\n  crypt.org: '*'\nbuild: make\n")
+	writeClosureRecipe(t, pan, "crypt.org", "build: make\n")
+
+	var out, errb bytes.Buffer
+	if code := runClosure([]string{"--pantry", pan, "--platform", "linux/x86-64", "--build", "perl.org"}, &out, &errb); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if strings.Contains(out.String(), "crypt.org") {
+		t.Fatalf("premise wrong: upstream alone should not see it:\n%s", out.String())
+	}
+
+	out.Reset()
+	if code := runClosure([]string{"--pantry", pan, "--overlay", ov, "--platform", "linux/x86-64", "--build", "perl.org"}, &out, &errb); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if !strings.Contains(out.String(), "crypt.org") {
+		t.Errorf("the overlay's edge must be walked:\n%s", out.String())
+	}
+}
