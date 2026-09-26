@@ -467,10 +467,11 @@ func WithoutSelfDep(project string, buildDeps map[string]any) map[string]any {
 // build refuses instead — see the unresolved-{{deps.…}} check in Runner.Build.
 // That guard is why this can be a blunt rule without being a reckless one.
 func WithoutUnresolvable(buildDeps map[string]any, tgt target.Target,
-	resolve func(project, constraint string) (string, error), log func(string)) map[string]any {
+	resolve func(project, constraint string) (string, error), log func(string)) (map[string]any, []string) {
 	if resolve == nil || len(buildDeps) == 0 {
-		return buildDeps
+		return buildDeps, nil
 	}
+	var dropped []string
 	// reduceDepMap, exactly as DepTokens does it, and NOT DepSpecs.
 	//
 	// DepSpecs renders a pkgx WIRE FORM -- `gnu.org/m4@1`, `cmake.org^3` -- and
@@ -489,11 +490,13 @@ func WithoutUnresolvable(buildDeps map[string]any, tgt target.Target,
 			if log != nil {
 				log(fmt.Sprintf("bootstrap: no %s here — taking it from the host (%v)", proj, err))
 			}
+			dropped = append(dropped, proj)
 			continue
 		}
 		keep[proj] = cons
 	}
-	return keep
+	sort.Strings(dropped)
+	return keep, dropped
 }
 
 // Deprecated: the build now composes two closures — EvalLinkDeps and

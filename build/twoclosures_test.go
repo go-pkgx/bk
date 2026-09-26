@@ -193,7 +193,7 @@ func TestWithoutUnresolvableKeepsWhatTheRegistryHas(t *testing.T) {
 		}
 		return "4.4.1", nil
 	}
-	got := WithoutUnresolvable(in, lin(), resolve, func(s string) { logged = append(logged, s) })
+	got, dropped := WithoutUnresolvable(in, lin(), resolve, func(s string) { logged = append(logged, s) })
 	if _, ok := got["curl.se"]; ok {
 		t.Error("an unresolvable tool must be left to the host")
 	}
@@ -205,6 +205,11 @@ func TestWithoutUnresolvableKeepsWhatTheRegistryHas(t *testing.T) {
 	if len(logged) != 1 || !strings.Contains(logged[0], "curl.se") {
 		t.Errorf("the drop must be named in the log, got %v", logged)
 	}
+	// And RETURNED, so a failure later can name it. The log line is hundreds
+	// of lines back by then, and half the time belongs to another recipe.
+	if len(dropped) != 1 || dropped[0] != "curl.se" {
+		t.Errorf("dropped = %v, want [curl.se]", dropped)
+	}
 }
 
 // Without a resolver there is nothing to ask, so nothing may be dropped — a
@@ -212,10 +217,10 @@ func TestWithoutUnresolvableKeepsWhatTheRegistryHas(t *testing.T) {
 // such test agree with anything.
 func TestWithoutUnresolvableNeedsAResolver(t *testing.T) {
 	in := map[string]any{"curl.se": "*"}
-	if got := WithoutUnresolvable(in, lin(), nil, nil); len(got) != 1 {
+	if got, _ := WithoutUnresolvable(in, lin(), nil, nil); len(got) != 1 {
 		t.Errorf("no resolver must mean no change, got %v", got)
 	}
-	if got := WithoutUnresolvable(nil, lin(), func(string, string) (string, error) { return "", nil }, nil); len(got) != 0 {
+	if got, _ := WithoutUnresolvable(nil, lin(), func(string, string) (string, error) { return "", nil }, nil); len(got) != 0 {
 		t.Errorf("nothing in, nothing out, got %v", got)
 	}
 }
@@ -239,7 +244,7 @@ func TestWithoutUnresolvableAsksTheConstraintDepTokensAsks(t *testing.T) {
 	in := map[string]any{"gnu.org/m4": "1", "cmake.org": "^3", "acme.org/x": "=1.2.3"}
 	got := map[string]string{}
 	resolve := func(p, c string) (string, error) { got[p] = c; return "9.9.9", nil }
-	WithoutUnresolvable(in, lin(), resolve, nil)
+	_, _ = WithoutUnresolvable(in, lin(), resolve, nil)
 
 	for p, want := range map[string]string{"gnu.org/m4": "1", "cmake.org": "^3", "acme.org/x": "=1.2.3"} {
 		if got[p] != want {
@@ -267,7 +272,7 @@ func TestWithoutUnresolvableReducesPlatformKeys(t *testing.T) {
 		}
 		return "4.4.1", nil
 	}
-	got := WithoutUnresolvable(in, lin(), resolve, nil)
+	got, _ := WithoutUnresolvable(in, lin(), resolve, nil)
 	if _, ok := got["llvm.org"]; ok {
 		t.Error("the unresolvable one must go")
 	}

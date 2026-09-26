@@ -875,3 +875,62 @@ func TestBuildBootstrapLeavesAnUnresolvableToolToTheHost(t *testing.T) {
 		t.Error("an ordinary build must still fail on a tool with no bottle")
 	}
 }
+
+// TestBuildBootstrapFailureNamesWhatCameFromTheHost.
+//
+// Twice a seed build died with `exit status 127` — command not found —
+// because a tool bootstrap left to the machine was not on the machine either:
+// facebook.com/zstd wanted cmake and ninja, and that Ubuntu had neither.
+//
+// The drop IS logged when it happens. By the time the failure prints, that
+// line is hundreds of lines back and half the time belongs to another recipe,
+// so the two have to be read together at the point of failure.
+func TestBuildBootstrapFailureNamesWhatCameFromTheHost(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "s390x"}
+	rec := okRecipe()
+	rec.Build = map[string]any{
+		"script":       []any{"cmake ."},
+		"dependencies": map[string]any{"cmake.org": "*", "ninja-build.org": "*", "gnu.org/make": "*"},
+	}
+	r := okRunner("acme.org/tool", tgt)
+	r.Bootstrap = true
+	// Only the two TOOLS are missing. The recipe's link dependency must still
+	// resolve — a bootstrap never touches the link closure, and a stub that
+	// failed it too would make this test pass for the wrong reason.
+	r.ResolveDep = func(p, _ string) (string, error) {
+		if p == "cmake.org" || p == "ninja-build.org" {
+			return "", errors.New("no bottle for linux/s390x")
+		}
+		return "1.0.0", nil
+	}
+	r.Run = func(string, []string) error { return errors.New("exit status 127") }
+
+	_, err := r.Build(rec, "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err == nil {
+		t.Fatal("want the build to fail")
+	}
+	for _, want := range []string{"127", "cmake.org", "ninja-build.org"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must carry %q: %v", want, err)
+		}
+	}
+	// A tool that RESOLVED is not a suspect and must not be listed — a list
+	// naming everything names nothing.
+	if strings.Contains(err.Error(), "gnu.org/make") {
+		t.Errorf("a resolved dependency must not be blamed: %v", err)
+	}
+}
+
+// And an ORDINARY build's failure gains nothing: there is no host substitution
+// to explain, and the extra clause would be noise on every real defect.
+func TestBuildOrdinaryFailureIsUnchanged(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	r := okRunner("acme.org/tool", tgt)
+	r.Run = func(string, []string) error { return errors.New("exit status 1") }
+	_, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err == nil || strings.Contains(err.Error(), "from the host") {
+		t.Errorf("an ordinary failure must stay plain: %v", err)
+	}
+}
