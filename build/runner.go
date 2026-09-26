@@ -219,8 +219,9 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		UserScript: user, Deps: deps, ToolDeps: toolDeps, Target: tgt, Host: host,
 		Home: paths.Home, SrcRoot: paths.Build, PkgxDir: config.PkgxDir(), Install: paths.Install, Project: project,
 		PkgxBin: r.PkgxBin, BashPath: r.BashPath, BrewkitPath: libexecDir,
-		LibcPkgx: r.LibcMode == "pkgx",
-		Glibc:    r.Glibc,
+		LibcPkgx:  r.LibcMode == "pkgx",
+		Glibc:     r.Glibc,
+		Bootstrap: r.Bootstrap,
 	})
 	res.ScriptPath = paths.Build + ".sh"
 	if err := osWriteFile(res.ScriptPath, []byte(script), 0o755); err != nil {
