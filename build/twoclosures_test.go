@@ -139,3 +139,36 @@ func TestBaseToolchainHasNoEntryPoint(t *testing.T) {
 		}
 	}
 }
+
+// TestWithoutSelfDepRemovesOnlyTheSelfEdge.
+//
+// gnu.org/gcc build-depends on gnu.org/gcc, and its comment explains why that
+// is right: ">=14 lets the newest gcc WE have build the older one, so the seed
+// comes from our own chain instead of an upstream binary." On an architecture
+// with no chain yet, the same edge means nothing can be first -- and
+// gnu.org/glibc build-depends on gcc 14, so the entire toolchain sits behind
+// it.
+func TestWithoutSelfDepRemovesOnlyTheSelfEdge(t *testing.T) {
+	in := map[string]any{
+		"gnu.org/gcc":  ">=14",
+		"gnu.org/make": "*",
+		"perl.org":     "^5.6.1",
+	}
+	got := WithoutSelfDep("gnu.org/gcc", in)
+	if _, ok := got["gnu.org/gcc"]; ok {
+		t.Error("the self edge survived")
+	}
+	if got["gnu.org/make"] != "*" || got["perl.org"] != "^5.6.1" {
+		t.Errorf("the other edges must be untouched, got %v", got)
+	}
+	// And the input is not mutated: the caller still holds the recipe's map.
+	if _, ok := in["gnu.org/gcc"]; !ok {
+		t.Error("WithoutSelfDep mutated its argument")
+	}
+	// A recipe with no self edge is returned as-is rather than copied, which is
+	// the common case by far.
+	same := map[string]any{"gnu.org/make": "*"}
+	if out := WithoutSelfDep("acme.org/thing", same); len(out) != 1 {
+		t.Errorf("a recipe without a self edge must come back whole, got %v", out)
+	}
+}
