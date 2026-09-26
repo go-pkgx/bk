@@ -85,6 +85,19 @@ func Wrap(o WrapOptions) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "#!%s\n\nset -eo pipefail\n\n", bash)
 	b.WriteString("export PKGX_HOME=\"$HOME\"\n")
+	if o.Bootstrap {
+		// The last of the implicit injections a first fill runs into, and the
+		// one that stops everything rather than one thing: bottle adds
+		// gnu.org/glibc to EVERY linux closure, so on an architecture with no
+		// glibc bottle, `pkgx +anything` fails -- including a bottle this
+		// factory has just built and published.
+		//
+		// Written into the SCRIPT rather than passed in the process
+		// environment, so the reason a seed build differs is visible in the
+		// artefact that ran it.
+		b.WriteString("# bootstrap: this machine has a libc; the registry does not yet\n")
+		b.WriteString("export PKGX_IMPLICIT_ROOTS=none\n")
+	}
 
 	pkgxBin := o.PkgxBin
 	if pkgxBin == "" {
