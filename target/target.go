@@ -32,8 +32,29 @@ import (
 type Target struct {
 	Platform string // darwin | linux | windows
 	Arch     string // x86-64 | aarch64 | s390x
-	// Triple is the compiler/host triple. For Windows this is the llvm-mingw
-	// cross triple; otherwise the native triple.
+	// Triple is the compiler triple — and for every target but windows it is
+	// the triple of the machine bk RUNS ON, not the one named here.
+	//
+	//	$ BREWKIT_TARGET=linux/s390x bk target        # on a Mac
+	//	linux/s390x triple=aarch64-apple-darwin cross=true
+	//
+	// That is correct today and reads as a bug, which is why it is written
+	// down rather than left to be rediscovered. bk cross-compiles to windows
+	// and nowhere else: a unix target is always built natively or under
+	// emulation, so host and target coincide and the value is right. The
+	// windows branch of Resolve computes a real cross triple because windows
+	// is the case where they differ.
+	//
+	// It matters because the value does not stay here. It names the compiler
+	// shims autoconf probes for, and it reaches every recipe as {{hw.target}}
+	// — a name that promises the target. A recipe author reading that name
+	// will believe it, and one of ours did: rust-lang.org/cargo picks its
+	// bootstrap archive by this triple, which is right only while the two
+	// coincide, and the comment there says so.
+	//
+	// A unix→unix cross build would need this computed from Platform/Arch.
+	// Changing it before then is a fix to a case that cannot arise, and the
+	// test below pins the current answer deliberately.
 	Triple string
 }
 
