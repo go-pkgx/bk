@@ -1542,3 +1542,45 @@ func TestRunFactoryReportsAToolchainPerlDrift(t *testing.T) {
 		t.Error("a toolchain warning must not stop the run")
 	}
 }
+
+// TestRunFactoryBootstrapReachesTheRunnerAndSaysSo.
+//
+// Two things, and the second matters as much as the first. The flag has to
+// reach the Runner, or it changes nothing. And it has to be in the RUN'S OWN
+// LOG, because a bottle built this way was driven by whatever tools the host
+// had, and six months later the log is the only place that fact still lives.
+func TestRunFactoryBootstrapReachesTheRunnerAndSaysSo(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	var runner *build.Runner
+	buildFactory = func(string) *build.Runner { runner = &build.Runner{}; return runner }
+
+	if code := h.run(t, "--recipes", "lib.org", "--max-versions", "1", "--bootstrap"); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	if !runner.Bootstrap {
+		t.Error("--bootstrap did not reach the Runner")
+	}
+	if !strings.Contains(h.out.String(), "BOOTSTRAP:") {
+		t.Errorf("a run that changes what a bottle IS must say so:\n%s", h.out.String())
+	}
+}
+
+// And the default: ordinary runs must neither set it nor print the warning,
+// or the warning stops meaning anything.
+func TestRunFactoryIsNotBootstrapByDefault(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	var runner *build.Runner
+	buildFactory = func(string) *build.Runner { runner = &build.Runner{}; return runner }
+
+	if code := h.run(t, "--recipes", "lib.org", "--max-versions", "1"); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	if runner.Bootstrap {
+		t.Error("Bootstrap must be off unless asked for")
+	}
+	if strings.Contains(h.out.String(), "BOOTSTRAP:") {
+		t.Errorf("an ordinary run must not claim to be a seed:\n%s", h.out.String())
+	}
+}
