@@ -93,6 +93,13 @@ func TestOverrideWindows(t *testing.T) {
 	}
 }
 
+// TestOverrideNonWindowsTripleFallsBackToNative pins a limitation, not a
+// design: for every target but windows, Triple describes the machine bk RUNS
+// on. See the field's own comment — bk cross-compiles to windows and nowhere
+// else, so a unix target is always built where host and target coincide.
+//
+// It is asserted so that a unix→unix cross build has to come here and say what
+// it is doing, rather than inheriting an answer about the wrong machine.
 func TestOverrideNonWindowsTripleFallsBackToNative(t *testing.T) {
 	t.Setenv("BREWKIT_TARGET", "linux/aarch64")
 	tgt, err := Resolve()
