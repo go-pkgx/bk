@@ -13,6 +13,7 @@ import (
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/overrides"
 	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bottle"
 )
@@ -124,7 +125,7 @@ func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string
 	root := filepath.Join(pantryDir, "projects")
 	out, absent = map[string][]string{}, map[string][]string{}
 	err = filepathWalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil || d.IsDir() || d.Name() != "package.yml" {
+		if walkErr != nil || d.IsDir() || !recipefile.IsRecipe(d.Name()) {
 			return nil
 		}
 		rel, relErr := filepath.Rel(root, filepath.Dir(p))

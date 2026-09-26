@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/overrides"
 	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bk/versions"
 	"github.com/go-pkgx/bottle"
@@ -280,17 +282,20 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 			}
 			continue
 		}
-		recPath := filepath.Join(*pantryDir, "projects", proj, "package.yml")
-		data, err := os.ReadFile(recPath)
-		if err != nil {
+		rec, err := recipefile.Load(*pantryDir, proj)
+		switch {
+		case errors.Is(err, recipefile.ErrNoRecipe):
+			// A pantry need not be complete: the closure walk names projects
+			// that resolve from upstream and have no recipe here.
 			fmt.Fprintf(stdout, "SKIP %s (no recipe)\n", proj)
 			continue
-		}
-		rec, err := pantry.Parse(data)
-		if err != nil {
+		case err != nil:
+			// A recipe that exists and does not parse is a failure worth
+			// recording, not a gap worth skipping.
 			f.fail(proj, "", "recipe", err)
 			continue
 		}
+		recDir := recipefile.Dir(*pantryDir, proj)
 		// `platforms:` was parsed and consulted by nobody, so a darwin run
 		// attempted every linux-only recipe and collected the failures. Of the
 		// 81 recipes whose platforms: excludes darwin, seven do have a darwin
@@ -306,7 +311,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 			f.fail(proj, "", "versions", err)
 			continue
 		}
-		runner.RecipeDir = filepath.Dir(recPath)
+		runner.RecipeDir = recDir
 		for _, v := range vers {
 			f.buildOne(rec, proj, v)
 		}

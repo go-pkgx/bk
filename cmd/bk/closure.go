@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
 )
 
@@ -88,11 +88,7 @@ var closureOf = func(pantryDir string, tgt target.Target, want []string, warn fu
 func depName(spec string) string { return build.SpecProject(spec) }
 
 func loadClosureRecipe(pantryDir, proj string) (*pantry.Recipe, error) {
-	b, err := os.ReadFile(filepath.Join(pantryDir, "projects", proj, "package.yml"))
-	if err != nil {
-		return nil, err
-	}
-	return pantry.Parse(b)
+	return recipefile.Load(pantryDir, proj)
 }
 
 func envOr(k, def string) string {
