@@ -64,11 +64,12 @@ func runWeather(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	gaps := 0
+	gaps, skews := 0, 0
 	for _, spec := range projects {
 		project, cons := splitConstraint(spec)
 		var cells []string
 		got := map[string][]bool{}
+		picked := map[string][]string{}
 		for _, pl := range platforms {
 			v, err := weatherPick(project, cons, pl.os, pl.arch)
 			key := pl.os + "/" + pl.arch
@@ -79,21 +80,58 @@ func runWeather(args []string, stdout, stderr io.Writer) int {
 			}
 			cells = append(cells, key+"="+v.Raw)
 			got[pl.os] = append(got[pl.os], true)
+			picked[pl.os] = append(picked[pl.os], v.Raw)
 		}
 		mark := ""
-		if asymmetric(got) {
+		switch {
+		case asymmetric(got):
 			mark = "   <- ASYMMETRIC"
 			gaps++
+		case skewed(picked):
+			mark = "   <- SKEW"
+			skews++
 		}
 		if mark != "" || !*quiet {
 			fmt.Fprintf(stdout, "%-36s %s%s\n", spec, strings.Join(cells, "  "), mark)
 		}
 	}
-	fmt.Fprintf(stdout, "\n%d project(s), %d asymmetric within an OS\n", len(projects), gaps)
+	fmt.Fprintf(stdout, "\n%d project(s), %d asymmetric within an OS, %d version-skewed\n",
+		len(projects), gaps, skews)
+	// Only an asymmetry fails. A skew is a weaker finding and this exit status
+	// already gates things; making it fail on the weaker one too would turn a
+	// report into a refusal for callers that never asked for the stricter test.
 	if gaps > 0 {
 		return 1
 	}
 	return 0
+}
+
+// skewed reports whether the architectures of one OS that DO have the project
+// resolved to different versions.
+//
+// asymmetric works on presence, so it cannot see this, and the blind spot is
+// the gawk failure one level down. gnupg.org/gpgme resolves on both darwin
+// arches -- 2.2.0 on aarch64, 2.1.2 on x86-64 -- and the report said "0
+// asymmetric". Ask the same pair for `@^2.2` and one of them answers none.
+//
+// So a skew is a bottle that exists for one architecture and not its sibling,
+// seen from the side where the older one still satisfies an open constraint.
+// It is weaker than an asymmetry -- everything installable stays installable
+// -- and it is the state an asymmetry passes through, which is the useful
+// moment to see it.
+//
+// Versions are compared as the registry spells them, not parsed: two spellings
+// of one version would be a different defect, and calling them equal here
+// would hide it.
+func skewed(byOS map[string][]string) bool {
+	for _, vs := range byOS {
+		for _, v := range vs[1:] {
+			if v != vs[0] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // asymmetric reports whether some architecture of an OS has the project and
