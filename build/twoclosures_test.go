@@ -275,3 +275,27 @@ func TestWithoutUnresolvableReducesPlatformKeys(t *testing.T) {
 		t.Errorf("the other must survive the reduction, got %v", got)
 	}
 }
+
+// TestReduceDeps is the one reduction everything asks through.
+//
+// It is exported because a caller deriving a constraint from DepSpecs gets a
+// pkgx WIRE form — `gnu.org/m4@1` — and trimming the project off that yields
+// "@1", which nothing can resolve. One caller did exactly that and dropped a
+// bottle it had just built.
+func TestReduceDeps(t *testing.T) {
+	got := ReduceDeps(map[string]any{
+		"gnu.org/m4": "1",
+		"cmake.org":  "^3",
+		"linux":      map[string]any{"llvm.org": "<19"},
+		"darwin":     map[string]any{"gnu.org/gettext": "*"},
+	}, lin())
+	want := map[string]string{"gnu.org/m4": "1", "cmake.org": "^3", "llvm.org": "<19"}
+	if len(got) != len(want) {
+		t.Fatalf("ReduceDeps = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("ReduceDeps[%q] = %q, want %q — the recipe's own spelling", k, got[k], v)
+		}
+	}
+}
