@@ -471,24 +471,27 @@ func WithoutUnresolvable(buildDeps map[string]any, tgt target.Target,
 	if resolve == nil || len(buildDeps) == 0 {
 		return buildDeps
 	}
+	// reduceDepMap, exactly as DepTokens does it, and NOT DepSpecs.
+	//
+	// DepSpecs renders a pkgx WIRE FORM -- `gnu.org/m4@1`, `cmake.org^3` -- and
+	// the first version of this took the constraint by trimming the project off
+	// that, which yields "@1". resolve was then asked a question nobody can
+	// answer, said no, and the dependency was dropped as unavailable:
+	//
+	//	bootstrap: no gnu.org/m4 here — taking it from the host
+	//	           (no version of gnu.org/m4 satisfies "@1" (available: 1))
+	//
+	// "available: 1" is the tell — the bottle WAS there, freshly built, and
+	// 1.4.21 satisfies "1". The judge has to ask what the subject asks.
 	keep := map[string]any{}
-	for _, spec := range DepSpecs(buildDeps, tgt) {
-		proj := SpecProject(spec)
-		cons := strings.TrimPrefix(spec, proj)
+	for proj, cons := range reduceDepMap(buildDeps, tgt) {
 		if _, err := resolve(proj, cons); err != nil {
 			if log != nil {
 				log(fmt.Sprintf("bootstrap: no %s here — taking it from the host (%v)", proj, err))
 			}
 			continue
 		}
-		// Keep the recipe's own spelling of the constraint, not DepSpecs'
-		// rendering of it: the map is handed to DepTokens too, and the two must
-		// agree about what was asked for.
-		for k, v := range buildDeps {
-			if k == proj {
-				keep[k] = v
-			}
-		}
+		keep[proj] = cons
 	}
 	return keep
 }

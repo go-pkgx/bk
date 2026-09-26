@@ -219,3 +219,59 @@ func TestWithoutUnresolvableNeedsAResolver(t *testing.T) {
 		t.Errorf("nothing in, nothing out, got %v", got)
 	}
 }
+
+// TestWithoutUnresolvableAsksTheConstraintDepTokensAsks.
+//
+// The defect this pins was found in a build LOG, not in a test: the first
+// version derived the constraint from DepSpecs' pkgx wire form and passed
+// "@1" where the recipe said "1". resolve cannot answer that, said no, and a
+// bottle we had just built was dropped as missing —
+//
+//	bootstrap: no gnu.org/m4 here — taking it from the host
+//	           (no version of gnu.org/m4 satisfies "@1" (available: 1))
+//
+// "available: 1" is the tell. It was there.
+//
+// So this asserts the STRING resolve receives, for the three shapes that
+// render differently on the wire: a bare number (@1), a range (^3, appended
+// with no @) and an exact pin (=1.2.3).
+func TestWithoutUnresolvableAsksTheConstraintDepTokensAsks(t *testing.T) {
+	in := map[string]any{"gnu.org/m4": "1", "cmake.org": "^3", "acme.org/x": "=1.2.3"}
+	got := map[string]string{}
+	resolve := func(p, c string) (string, error) { got[p] = c; return "9.9.9", nil }
+	WithoutUnresolvable(in, lin(), resolve, nil)
+
+	for p, want := range map[string]string{"gnu.org/m4": "1", "cmake.org": "^3", "acme.org/x": "=1.2.3"} {
+		if got[p] != want {
+			t.Errorf("resolve(%q) got constraint %q, want %q — the recipe's own spelling", p, got[p], want)
+		}
+	}
+	// And the same question DepTokens would ask, from the same input.
+	viaTokens := map[string]string{}
+	_, _ = DepTokens(nil, in, lin(), "/pkgx", func(p, c string) (string, error) { viaTokens[p] = c; return "9.9.9", nil })
+	for p := range in {
+		if got[p] != viaTokens[p] {
+			t.Errorf("%s: this check asks %q, DepTokens asks %q — they must agree", p, got[p], viaTokens[p])
+		}
+	}
+}
+
+// A platform-keyed build dependency must be reduced the same way too: perl.org
+// declares llvm.org under `linux:`, and that is where the second real drop of
+// the seed run came from.
+func TestWithoutUnresolvableReducesPlatformKeys(t *testing.T) {
+	in := map[string]any{"linux": map[string]any{"llvm.org": "<19", "gnu.org/make": "*"}}
+	resolve := func(p, _ string) (string, error) {
+		if p == "llvm.org" {
+			return "", errors.New("no bottle here")
+		}
+		return "4.4.1", nil
+	}
+	got := WithoutUnresolvable(in, lin(), resolve, nil)
+	if _, ok := got["llvm.org"]; ok {
+		t.Error("the unresolvable one must go")
+	}
+	if got["gnu.org/make"] != "*" {
+		t.Errorf("the other must survive the reduction, got %v", got)
+	}
+}
