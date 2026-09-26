@@ -20,10 +20,28 @@ import (
 )
 
 var (
-	platforms   = map[string]bool{"darwin": true, "linux": true, "windows": true}
-	arches      = map[string]bool{"x86-64": true, "aarch64": true}
-	osArchDepRE = regexp.MustCompile(`^(darwin|linux|windows)/(aarch64|x86-64)$`)
+	platforms = map[string]bool{"darwin": true, "linux": true, "windows": true}
+	arches    = map[string]bool{"x86-64": true, "aarch64": true, "s390x": true}
+	// Derived from the two maps rather than restated beside them. A recipe key
+	// is read through BOTH -- the regex for `linux/s390x`, the map for a bare
+	// `s390x` -- so a literal here that fell behind would make one spelling of
+	// the same key legal and the other unknown. An unknown key is not an error:
+	// platformKey returns ok=false, reduceDepMap copies it through as a project
+	// name, and the recipe acquires a dependency on a project called "s390x".
+	osArchDepRE = regexp.MustCompile(`^(` + alternation(platforms) + `)/(` + alternation(arches) + `)$`)
 )
+
+// alternation renders a set as a regex alternation. Sorted for a stable
+// pattern; the expression it goes into is anchored and separated by a slash,
+// so the order carries no meaning beyond that.
+func alternation(set map[string]bool) string {
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, regexp.QuoteMeta(k))
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, "|")
+}
 
 // reduceDepMap flattens a recipe dependency map (project → constraint, with
 // optional platform-keyed sub-maps) to project → constraint for the target,

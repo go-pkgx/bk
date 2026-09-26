@@ -259,3 +259,25 @@ func TestWriteLibexecForLibtoolErrors(t *testing.T) {
 		}
 	})
 }
+
+// s390x's config.guess answer is measured, not patterned. The two entries
+// beside it disagree about the vendor field -- x86_64-PC-linux-gnu against
+// aarch64-UNKNOWN-linux-gnu -- so there was no rule to extend, and upstream
+// config.guess run on the LinuxONE machine gives a third: ibm.
+func TestConfigGuessTripleS390x(t *testing.T) {
+	if got := configGuessTriple("linux", "s390x"); got != "s390x-ibm-linux-gnu" {
+		t.Errorf("configGuessTriple(linux, s390x) = %q, want s390x-ibm-linux-gnu", got)
+	}
+	// And it must reach the shims, which is the only reason the triple exists:
+	// autoconf looks up <triple>-gcc before gcc.
+	names := compilerShimsFor("s390x-unknown-linux-gnu", "linux", "s390x")
+	var found bool
+	for _, n := range names {
+		if n == "s390x-ibm-linux-gnu-gcc" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no s390x-ibm-linux-gnu-gcc shim among %v", names)
+	}
+}

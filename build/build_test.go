@@ -493,3 +493,39 @@ func TestARecipeMayStillNameItself(t *testing.T) {
 		t.Errorf("a recipe's own explicit build dep was dropped: %v", got)
 	}
 }
+
+// TestPlatformKeyReadsEveryArchBothWays pins the invariant that made
+// osArchDepRE derived rather than written out.
+//
+// A recipe key reaches platformKey in two spellings -- `linux/s390x` through
+// the regex, bare `s390x` through the map -- and the two used to be written
+// separately a line apart. Falling behind in one of them does not raise
+// anything: platformKey returns ok=false, reduceDepMap treats the key as a
+// project name, and the recipe acquires a dependency on a project called after
+// an architecture. This walks the maps, so it fails the moment a new arch is
+// legal in one door and not the other.
+func TestPlatformKeyReadsEveryArchBothWays(t *testing.T) {
+	for arch := range arches {
+		if _, got, ok := platformKey(arch); !ok || got != arch {
+			t.Errorf("platformKey(%q) = %q, %v; want the arch, true", arch, got, ok)
+		}
+		for plat := range platforms {
+			k := plat + "/" + arch
+			gotOS, gotArch, ok := platformKey(k)
+			if !ok || gotOS != plat || gotArch != arch {
+				t.Errorf("platformKey(%q) = %q, %q, %v; want %q, %q, true", k, gotOS, gotArch, ok, plat, arch)
+			}
+		}
+	}
+}
+
+// TestPlatformKeyRejectsAnArchItDoesNotHave: the derived pattern must still
+// refuse, or every unknown key would read as a platform key instead of a
+// project name.
+func TestPlatformKeyRejectsAnArchItDoesNotHave(t *testing.T) {
+	for _, k := range []string{"linux/riscv64", "riscv64", "linux/", "/s390x", "linux/s390x/extra"} {
+		if _, _, ok := platformKey(k); ok {
+			t.Errorf("platformKey(%q) = ok; want it read as a project name", k)
+		}
+	}
+}

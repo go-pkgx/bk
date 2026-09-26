@@ -263,11 +263,28 @@ func tmpdirLine(host target.Target) string {
 
 // glibcLoader is the arch-specific ELF interpreter (PT_INTERP) filename glibc
 // ships. It lives in the bottle's lib/glibc-<ver>/ dir.
-func glibcLoader(arch string) string {
-	if arch == "aarch64" || arch == "arm64" {
-		return "ld-linux-aarch64.so.1"
+//
+// It reports ok=false for an arch it has not been told about, where it used to
+// fall through to the x86-64 name. That default was the dangerous kind: nothing
+// checks a --dynamic-linker path, the linker just writes it into PT_INTERP, so
+// the build succeeds and every binary it produced dies at the first exec with
+// "No such file or directory" naming a loader for the wrong machine.
+//
+// s390x is the reason this is a lookup and not a pattern. Its loader is
+// ld64.so.1 -- not named after the architecture at all, unlike the other two --
+// so a name derived from them would have been wrong in exactly that silent way.
+func glibcLoader(arch string) (string, bool) {
+	switch arch {
+	case "aarch64", "arm64":
+		return "ld-linux-aarch64.so.1", true
+	case "x86-64", "amd64", "x86_64":
+		return "ld-linux-x86-64.so.2", true
+	case "s390x":
+		// readelf -l /bin/true on the LinuxONE runner: [Requesting program
+		// interpreter: /lib/ld64.so.1]
+		return "ld64.so.1", true
 	}
-	return "ld-linux-x86-64.so.2"
+	return "", false
 }
 
 // darwinRpaths returns the -rpath flags a darwin link needs: the relative ones
@@ -463,8 +480,17 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 		//   'iconv_ostream_create' failed: symbol not defined
 		// because libtextstyle's script exports symbols its configure left out.
 		// Distros switching to lld restore the permissive behaviour the same way.
-		glibcLD = `-Wl,--dynamic-linker="${BK_GLIBC_LIB}` + glibcLoader(tgt.Arch) +
-			`" -Wl,-rpath,"$BK_GLIBC_LIB" ${BK_LIBCXX_PREFIX:+-L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib"} -Wl,--disable-new-dtags -Wl,--undefined-version`
+		glibcLD = `-Wl,-rpath,"$BK_GLIBC_LIB" ${BK_LIBCXX_PREFIX:+-L"${BK_LIBCXX_PREFIX}lib" -Wl,-rpath,"${BK_LIBCXX_PREFIX}lib"} -Wl,--disable-new-dtags -Wl,--undefined-version`
+		if loader, ok := glibcLoader(tgt.Arch); ok {
+			glibcLD = `-Wl,--dynamic-linker="${BK_GLIBC_LIB}` + loader + `" ` + glibcLD
+		}
+		// No --dynamic-linker for an arch glibcLoader does not know: the link
+		// then keeps lld's own default, which for the native build this always
+		// is names the HOST's loader. That is the host's glibc rather than the
+		// bottle's -- a weaker guarantee, and visible in the resulting binary --
+		// where naming another machine's loader produces one that cannot start
+		// at all. A new arch belongs in glibcLoader; this is what happens until
+		// someone puts it there.
 		ld = append(ld, glibcLD)
 		// Pin the compiler to the pkgx llvm one AND carry the whole driver
 		// configuration inside it.
