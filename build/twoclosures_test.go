@@ -1,6 +1,7 @@
 package build
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -170,5 +171,51 @@ func TestWithoutSelfDepRemovesOnlyTheSelfEdge(t *testing.T) {
 	same := map[string]any{"gnu.org/make": "*"}
 	if out := WithoutSelfDep("acme.org/thing", same); len(out) != 1 {
 		t.Errorf("a recipe without a self edge must come back whole, got %v", out)
+	}
+}
+
+// TestWithoutUnresolvableKeepsWhatTheRegistryHas.
+//
+// The last shape of the s390x first fill, and the reason it is safe is a
+// sentence already in this file: EvalToolDeps is "the set a build RUNS", and
+// "Nothing here is linked into the artefact." A build dependency is a tool.
+//
+// The two real cases, both two-cycles or compiler pins rather than self edges:
+// curl.se/ca-certs declares curl.se so its script can run `curl` to fetch a
+// cert bundle, while curl.se needs ca-certs; and perl.org declares
+// `llvm.org: <19` on linux, a compiler named by bottle.
+func TestWithoutUnresolvableKeepsWhatTheRegistryHas(t *testing.T) {
+	in := map[string]any{"curl.se": "*", "gnu.org/make": "*"}
+	var logged []string
+	resolve := func(p, _ string) (string, error) {
+		if p == "curl.se" {
+			return "", errors.New("no bottle for linux/s390x")
+		}
+		return "4.4.1", nil
+	}
+	got := WithoutUnresolvable(in, lin(), resolve, func(s string) { logged = append(logged, s) })
+	if _, ok := got["curl.se"]; ok {
+		t.Error("an unresolvable tool must be left to the host")
+	}
+	if got["gnu.org/make"] != "*" {
+		t.Errorf("a tool the registry HAS must stay a bottle, got %v", got)
+	}
+	// Reported, not silent: a seed bottle built without a declared tool is a
+	// fact that outlives the run.
+	if len(logged) != 1 || !strings.Contains(logged[0], "curl.se") {
+		t.Errorf("the drop must be named in the log, got %v", logged)
+	}
+}
+
+// Without a resolver there is nothing to ask, so nothing may be dropped — a
+// test Runner has none, and silently emptying its build deps would make every
+// such test agree with anything.
+func TestWithoutUnresolvableNeedsAResolver(t *testing.T) {
+	in := map[string]any{"curl.se": "*"}
+	if got := WithoutUnresolvable(in, lin(), nil, nil); len(got) != 1 {
+		t.Errorf("no resolver must mean no change, got %v", got)
+	}
+	if got := WithoutUnresolvable(nil, lin(), func(string, string) (string, error) { return "", nil }, nil); len(got) != 0 {
+		t.Errorf("nothing in, nothing out, got %v", got)
 	}
 }

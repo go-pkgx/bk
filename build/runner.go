@@ -187,6 +187,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	bd := buildDeps(recipe)
 	if r.Bootstrap {
 		bd = WithoutSelfDep(project, bd)
+		bd = WithoutUnresolvable(bd, tgt, r.ResolveDep, func(s string) { logf("%s", s) })
 	}
 	toolDeps := EvalToolDeps(project, recipe.Dependencies, bd, tgt)
 	if r.Bootstrap {

@@ -444,6 +444,55 @@ func WithoutSelfDep(project string, buildDeps map[string]any) map[string]any {
 	return out
 }
 
+// WithoutUnresolvable drops the build dependencies this registry cannot
+// provide for the target, asking `resolve` about each one.
+//
+// Only in bootstrap mode, and the reason it is safe is written a few functions
+// above: EvalToolDeps is "the set a build RUNS", and "Nothing here is linked
+// into the artefact." A build dependency is a TOOL. The link closure --
+// EvalLinkDeps, what the bottle actually carries -- is untouched.
+//
+// It is what the remaining s390x seed failures all were, each differently:
+//
+//   - curl.se/ca-certs declares curl.se so its script can run
+//     `curl -k https://curl.se/ca/… -o cert.pem`. curl.se in turn needs
+//     ca-certs, so neither can be first. The host has a curl.
+//   - perl.org declares `llvm.org: <19` on linux: a compiler, named by bottle.
+//     The host has a compiler; that is the whole premise of --bootstrap.
+//
+// A drop is reported, not silent: a seed bottle built without a tool somebody
+// declared is a fact that outlives the run.
+//
+// If the recipe needed that dependency's PATH rather than its binaries, the
+// build refuses instead — see the unresolved-{{deps.…}} check in Runner.Build.
+// That guard is why this can be a blunt rule without being a reckless one.
+func WithoutUnresolvable(buildDeps map[string]any, tgt target.Target,
+	resolve func(project, constraint string) (string, error), log func(string)) map[string]any {
+	if resolve == nil || len(buildDeps) == 0 {
+		return buildDeps
+	}
+	keep := map[string]any{}
+	for _, spec := range DepSpecs(buildDeps, tgt) {
+		proj := SpecProject(spec)
+		cons := strings.TrimPrefix(spec, proj)
+		if _, err := resolve(proj, cons); err != nil {
+			if log != nil {
+				log(fmt.Sprintf("bootstrap: no %s here — taking it from the host (%v)", proj, err))
+			}
+			continue
+		}
+		// Keep the recipe's own spelling of the constraint, not DepSpecs'
+		// rendering of it: the map is handed to DepTokens too, and the two must
+		// agree about what was asked for.
+		for k, v := range buildDeps {
+			if k == proj {
+				keep[k] = v
+			}
+		}
+	}
+	return keep
+}
+
 // Deprecated: the build now composes two closures — EvalLinkDeps and
 // EvalToolDeps. This is kept as the CONTROL for that split: a test asserts that
 // it still puts a link constraint and a build tool in ONE list, which is what
