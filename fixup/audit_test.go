@@ -464,3 +464,37 @@ func TestCheckRefExistsReportsAnUnreadableFile(t *testing.T) {
 		t.Error("want an error for a file that is not a Mach-O")
 	}
 }
+
+// TestCheckRefExistsAcceptsAReferenceThatResolves covers the loop's `continue`
+// for a reference whose target IS in the store.
+//
+// It was reached only through a darwin-gated path, so on the linux runner that
+// judges coverage the line was never executed -- and the gate did not say so,
+// because the TOTAL still rounded to 100.0%. Reaching checkRefExists directly
+// makes the case host-independent, which is what a line that has nothing to do
+// with the host deserves.
+func TestCheckRefExistsAcceptsAReferenceThatResolves(t *testing.T) {
+	pkgx := t.TempDir()
+	dep := "acme.org/v1.2.3/lib/libfoo.dylib"
+	write(t, filepath.Join(pkgx, filepath.FromSlash(dep)), "x")
+	p := filepath.Join(pkgx, "other.org", "v2.0.0", "bin", "bar")
+	place(t, p, machoCmd{lcLoadDylib, "@rpath/" + dep})
+	if err := checkRefExists(p, Options{PkgxDir: pkgx}); err != nil {
+		t.Errorf("checkRefExists = %v, want nil for a reference the store answers", err)
+	}
+}
+
+// And the staging half of the same condition: during a build the package's own
+// files are still under <prefix>+brewing, so a reference into its own tree
+// resolves only through staged().
+func TestCheckRefExistsAcceptsAReferenceUnderTheStagingPrefix(t *testing.T) {
+	pkgx := t.TempDir()
+	prefix := filepath.Join(pkgx, "acme.org", "v1.0.0")
+	dep := "acme.org/v1.0.0/lib/libself.dylib"
+	write(t, staged(filepath.Join(pkgx, filepath.FromSlash(dep)), Options{Prefix: prefix, PkgxDir: pkgx}), "x")
+	p := filepath.Join(prefix, "bin", "acme")
+	place(t, p, machoCmd{lcLoadDylib, "@rpath/" + dep})
+	if err := checkRefExists(p, Options{PkgxDir: pkgx, Prefix: prefix}); err != nil {
+		t.Errorf("checkRefExists = %v, want nil while the file is still staged", err)
+	}
+}
