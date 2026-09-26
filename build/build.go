@@ -417,6 +417,33 @@ func BootstrapToolDeps(buildDeps map[string]any, tgt target.Target) []string {
 	return sortedSpecs(DepSpecs(buildDeps, tgt))
 }
 
+// WithoutSelfDep removes a recipe's build dependency on ITSELF.
+//
+// Four recipes in the bootstrap set declare one: gnu.org/gcc, gnu.org/sed,
+// gnu.org/grep and rust-lang.org/cargo. It is the right declaration almost
+// always -- gcc's own comment says ">=14 lets the newest gcc WE have build the
+// older one, so the seed comes from our own chain instead of an upstream
+// binary" -- and it is exactly wrong when the chain does not exist yet. On an
+// architecture with no bottles, a project that needs itself can never be
+// first, and nothing downstream of it can either: gnu.org/glibc build-depends
+// on gcc 14, so the whole toolchain sits behind that one edge.
+//
+// Only in bootstrap mode, and only the self-edge. Every other build dependency
+// stays a bottle, because every other one CAN be built in order.
+func WithoutSelfDep(project string, buildDeps map[string]any) map[string]any {
+	if _, ok := buildDeps[project]; !ok {
+		return buildDeps
+	}
+	out := make(map[string]any, len(buildDeps))
+	for k, v := range buildDeps {
+		if k == project {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // Deprecated: the build now composes two closures — EvalLinkDeps and
 // EvalToolDeps. This is kept as the CONTROL for that split: a test asserts that
 // it still puts a link constraint and a build tool in ONE list, which is what

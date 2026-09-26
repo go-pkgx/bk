@@ -184,9 +184,13 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 
 	// deps + tokens + script
 	deps := EvalLinkDeps(recipe.Dependencies, tgt)
-	toolDeps := EvalToolDeps(project, recipe.Dependencies, buildDeps(recipe), tgt)
+	bd := buildDeps(recipe)
 	if r.Bootstrap {
-		toolDeps = BootstrapToolDeps(buildDeps(recipe), tgt)
+		bd = WithoutSelfDep(project, bd)
+	}
+	toolDeps := EvalToolDeps(project, recipe.Dependencies, bd, tgt)
+	if r.Bootstrap {
+		toolDeps = BootstrapToolDeps(bd, tgt)
 	}
 	toks := moustache.Prefix(paths.BuildInstall)
 	toks = append(toks, moustache.Version(version, "version")...)
@@ -198,7 +202,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		moustache.Token{From: "pkgx.prefix", To: config.PkgxDir()},
 	)
 	if r.ResolveDep != nil {
-		dt, err := DepTokens(recipe.Dependencies, buildDeps(recipe), tgt, config.PkgxDir(), r.ResolveDep)
+		dt, err := DepTokens(recipe.Dependencies, bd, tgt, config.PkgxDir(), r.ResolveDep)
 		if err != nil {
 			return res, fmt.Errorf("resolve deps: %w", err)
 		}
@@ -207,6 +211,17 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	user, err := buildscript.Generate(recipe.Build, buildscript.Options{Target: tgt, PkgVersion: version, Tokens: toks})
 	if err != nil {
 		return res, fmt.Errorf("generate: %w", err)
+	}
+	// A token we dropped a dependency for is left verbatim in the script, and a
+	// literal {{deps.…}} reaching the shell fails somewhere unrecognisable.
+	// gnu.org/sed builds with {{deps.gnu.org/sed.prefix}}, so dropping ITS
+	// self-edge would do exactly that.
+	//
+	// Checked as a SYMPTOM rather than against a list of the recipes known to
+	// do it: the list would be right today and silently short later.
+	if r.Bootstrap && strings.Contains(user, "{{deps.") {
+		return res, fmt.Errorf("bootstrap: %s builds from a dependency prefix we cannot provide here "+
+			"(an unresolved {{deps.…}} remains); it needs a bottle of its own build dependency first", project)
 	}
 	// Materialise the build-shim helpers (fix-shebangs.ts, …) into a per-build
 	// libexec dir alongside the generated script, and prepend it to PATH via

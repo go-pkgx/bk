@@ -770,3 +770,64 @@ func TestBuildBootstrapOmitsTheToolchainFromTheScript(t *testing.T) {
 		t.Errorf("bootstrap must take the compiler from the host too:\n%s", boot)
 	}
 }
+
+// TestBuildBootstrapDropsTheSelfEdge: end to end, because the point is what
+// the build asks pkgx for, not what a helper returns.
+func TestBuildBootstrapDropsTheSelfEdge(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "s390x"}
+	rec := okRecipe()
+	// The gcc shape: a build dependency on itself, beside an ordinary one.
+	rec.Build = map[string]any{
+		"script": []any{"make install"},
+		"dependencies": map[string]any{
+			"acme.org/tool": ">=14",
+			"gnu.org/make":  "*",
+		},
+	}
+	r := okRunner("acme.org/tool", tgt)
+	r.Bootstrap = true
+	res, err := r.Build(rec, "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(res.ScriptPath)
+	s := string(b)
+	if strings.Contains(s, `"+acme.org/tool`) {
+		t.Errorf("a build must not be handed a bottle of itself here:\n%s", s)
+	}
+	if !strings.Contains(s, `"+gnu.org/make"`) {
+		t.Errorf("the other build dependency must survive:\n%s", s)
+	}
+}
+
+// TestBuildBootstrapRefusesAnUnresolvedDepToken.
+//
+// gnu.org/sed builds with {{deps.gnu.org/sed.prefix}}. Dropping its self edge
+// leaves that token unsubstituted, and a literal {{deps.…}} reaching the shell
+// fails somewhere that names neither sed nor bootstrap. Refusing here names
+// both.
+func TestBuildBootstrapRefusesAnUnresolvedDepToken(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "s390x"}
+	rec := okRecipe()
+	rec.Build = map[string]any{
+		"script":       []any{"{{deps.acme.org/tool.prefix}}/bin/tool --version"},
+		"dependencies": map[string]any{"acme.org/tool": ">=14"},
+	}
+	r := okRunner("acme.org/tool", tgt)
+	r.Bootstrap = true
+	_, err := r.Build(rec, "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err == nil {
+		t.Fatal("want a refusal naming the project")
+	}
+	if !strings.Contains(err.Error(), "acme.org/tool") || !strings.Contains(err.Error(), "bootstrap") {
+		t.Errorf("err = %v; want it to name the project and the mode", err)
+	}
+	// And the same recipe builds fine in the ORDINARY mode, where the bottle of
+	// its dependency is expected to exist.
+	r2 := okRunner("acme.org/tool", tgt)
+	if _, err := r2.Build(rec, "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist")); err != nil {
+		t.Errorf("the refusal must be bootstrap-only, got %v", err)
+	}
+}
