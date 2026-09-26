@@ -6,6 +6,7 @@
 package build
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 	"time"
 
 	"github.com/go-pkgx/bk/moustache"
-	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
 )
 
@@ -203,12 +204,14 @@ var perlXSToolchainProjects = []string{"gnu.org/texinfo", "gnu.org/help2man"}
 func CheckToolchainPerl(pantryDir string) []error {
 	var problems []error
 	for _, proj := range perlXSToolchainProjects {
-		raw, err := os.ReadFile(filepath.Join(pantryDir, "projects", filepath.FromSlash(proj), "package.yml"))
-		if err != nil {
+		r, err := recipefile.Load(pantryDir, proj)
+		switch {
+		case errors.Is(err, recipefile.ErrNoRecipe):
+			// Absent is not a disagreement: a pantry need not be complete.
 			continue
-		}
-		r, err := pantry.Parse(raw)
-		if err != nil {
+		case err != nil:
+			// A recipe that EXISTS and does not parse is one, and saying so is
+			// the whole job of this check.
 			problems = append(problems, fmt.Errorf("%s: %w", proj, err))
 			continue
 		}
