@@ -2,6 +2,7 @@ package target
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -117,6 +118,65 @@ func TestOverrideErrors(t *testing.T) {
 		}
 		if _, err := IsCross(); err == nil {
 			t.Errorf("%q: IsCross expected error", bad)
+		}
+	}
+}
+
+// TestOverrideS390x: naming an arch must not be stricter than running on it.
+//
+// Host() has no allowlist -- pkgxArch passes an unmapped GOARCH straight
+// through -- so before s390x was added here, bk could build natively on a
+// machine whose platform it refused to be told about. The factory always tells
+// it (--platform linux/s390x), so the lane failed on a runner that was working.
+func TestOverrideS390x(t *testing.T) {
+	t.Setenv("BREWKIT_TARGET", "linux/s390x")
+	tgt, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve() = %v", err)
+	}
+	if tgt.Slug() != "linux/s390x" {
+		t.Errorf("Slug() = %q, want linux/s390x", tgt.Slug())
+	}
+}
+
+// TestOverrideGoSpellingIsDiagnosed: amd64 and arm64 are Go's names for two of
+// the arches in the list, and the only arch names here that differ from Go's.
+// A bare refusal sends the reader looking for a port that is already present.
+func TestOverrideGoSpellingIsDiagnosed(t *testing.T) {
+	for goName, pkgxName := range map[string]string{"amd64": "x86-64", "arm64": "aarch64"} {
+		t.Setenv("BREWKIT_TARGET", "linux/"+goName)
+		_, _, _, err := Override()
+		if err == nil {
+			t.Fatalf("Override() accepted linux/%s", goName)
+		}
+		if !strings.Contains(err.Error(), pkgxName) {
+			t.Errorf("Override() for linux/%s = %v; want it to name %q", goName, err, pkgxName)
+		}
+	}
+}
+
+// TestWindowsArchWithoutTripleRefuses: windowsTriples is narrower than
+// supportedArches now, and a map miss yields "" rather than failing. An empty
+// triple does not stop anything here -- it travels to whichever build step
+// first needs a compiler name, a long way from the decision that produced it.
+func TestWindowsArchWithoutTripleRefuses(t *testing.T) {
+	t.Setenv("BREWKIT_TARGET", "windows/s390x")
+	tgt, err := Resolve()
+	if err == nil {
+		t.Fatalf("Resolve() = %+v, nil; want a refusal (triple was %q)", tgt, tgt.Triple)
+	}
+	if !strings.Contains(err.Error(), "s390x") {
+		t.Errorf("Resolve() = %v; want the arch named", err)
+	}
+}
+
+// TestEveryWindowsTripleIsASupportedArch is the other direction: a triple for
+// an arch the allowlist rejects can never be reached, so it is dead weight
+// that reads as support.
+func TestEveryWindowsTripleIsASupportedArch(t *testing.T) {
+	for arch := range windowsTriples {
+		if !supportedArches[arch] {
+			t.Errorf("windowsTriples has %q, which supportedArches refuses", arch)
 		}
 	}
 }

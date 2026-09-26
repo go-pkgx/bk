@@ -24,13 +24,14 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 )
 
 // Target is the resolved build target.
 type Target struct {
 	Platform string // darwin | linux | windows
-	Arch     string // x86-64 | aarch64
+	Arch     string // x86-64 | aarch64 | s390x
 	// Triple is the compiler/host triple. For Windows this is the llvm-mingw
 	// cross triple; otherwise the native triple.
 	Triple string
@@ -47,7 +48,19 @@ func (t Target) Slug() string { return t.Platform + "/" + t.Arch }
 
 var (
 	supportedPlatforms = map[string]bool{"darwin": true, "linux": true, "windows": true}
-	supportedArches    = map[string]bool{"x86-64": true, "aarch64": true}
+	// s390x joined this list when a LinuxONE runner came online. An arch with
+	// no machine behind it is a guess, and this is the one place that should
+	// not hold one.
+	//
+	// Host() has never had a list -- it passes GOARCH through pkgxArch -- so
+	// until now the same architecture was legal natively and refused the
+	// moment a build NAMED it. That asymmetry is how `--platform linux/s390x`
+	// reached
+	//
+	//	factory: unsupported target arch: "s390x"
+	//
+	// on a runner that had already checked the repo out and installed bk.
+	supportedArches = map[string]bool{"x86-64": true, "aarch64": true, "s390x": true}
 	// llvm.org/mingw-w64 cross triples (see the go-pkgx/packages Windows
 	// factories: x86_64-w64-mingw32-clang / aarch64-w64-mingw32-clang).
 	windowsTriples = map[string]string{
@@ -113,6 +126,13 @@ func Override() (platform, arch string, ok bool, err error) {
 		return "", "", false, fmt.Errorf("unsupported target platform: %q", platform)
 	}
 	if !supportedArches[arch] {
+		// amd64 and arm64 are Go's spellings for two of these machines and the
+		// mistake actually made, since every other arch name here is shared.
+		// Refusing without saying so sends the reader looking for a missing
+		// port rather than at the two characters that differ.
+		if pkgx := pkgxArch(arch); pkgx != arch && supportedArches[pkgx] {
+			return "", "", false, fmt.Errorf("unsupported target arch: %q (pkgx spells it %q)", arch, pkgx)
+		}
 		return "", "", false, fmt.Errorf("unsupported target arch: %q", arch)
 	}
 	return platform, arch, true, nil
@@ -135,9 +155,28 @@ func Resolve() (Target, error) {
 	}
 	triple := nativeTriple()
 	if platform == "windows" {
-		// arch is already validated against supportedArches by Override, and
-		// every supported arch has a windows triple, so this is total.
-		triple = windowsTriples[arch]
+		// This used to read `triple = windowsTriples[arch]` under a comment
+		// saying every supported arch had an entry, so the lookup was total.
+		// Widening supportedArches ended that, and a map miss does not fail:
+		// it yields "", and a build carries an empty triple to whichever step
+		// first needs a compiler, which is a long way from here.
+		t, ok := windowsTriples[arch]
+		if !ok {
+			return Target{}, fmt.Errorf("no windows cross triple for arch %q (llvm-mingw targets %s)", arch, tripleArches())
+		}
+		triple = t
 	}
 	return Target{Platform: platform, Arch: arch, Triple: triple}, nil
+}
+
+// tripleArches lists the arches llvm-mingw can be targeted at, for the error
+// above. Read from the table rather than restated, so it cannot describe a
+// table it no longer matches.
+func tripleArches() string {
+	out := make([]string, 0, len(windowsTriples))
+	for a := range windowsTriples {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
 }

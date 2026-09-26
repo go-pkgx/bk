@@ -917,6 +917,14 @@ func setCodec(name string) error {
 // siblingArches are the architectures the factory publishes for a given OS.
 // Capping a mirror needs a platform-independent version list, and this is the
 // set to union over.
+//
+// It is NOT "the arches bk can target" -- target.supportedArches is that, and
+// it is wider. This list asks a different question: whose UPSTREAM version
+// list do we cap against? s390x is deliberately absent. Upstream publishes no
+// s390x bottles at all, so every entry would cost one fetch per project and
+// contribute nothing, and unionWithSiblingArches prints a line per project
+// when a list cannot be read. Add it here when there is an upstream list to
+// read, not when there is a runner.
 var siblingArches = map[string][]string{
 	"linux":  {"x86-64", "aarch64"},
 	"darwin": {"x86-64", "aarch64"},

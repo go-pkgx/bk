@@ -254,10 +254,19 @@ func TestGlibcLoader(t *testing.T) {
 		{"x86-64", "ld-linux-x86-64.so.2"},
 		{"aarch64", "ld-linux-aarch64.so.1"},
 		{"arm64", "ld-linux-aarch64.so.1"},
+		// Not ld-linux-s390x.so.*: measured on the machine.
+		{"s390x", "ld64.so.1"},
 	} {
-		if got := glibcLoader(c.arch); got != c.want {
-			t.Errorf("glibcLoader(%q)=%q want %q", c.arch, got, c.want)
+		got, ok := glibcLoader(c.arch)
+		if !ok || got != c.want {
+			t.Errorf("glibcLoader(%q)=%q,%v want %q,true", c.arch, got, ok, c.want)
 		}
+	}
+	// An arch nobody has measured must REFUSE rather than hand back x86-64's
+	// loader, which is what this function used to do for everything it did not
+	// recognise.
+	if got, ok := glibcLoader("riscv64"); ok {
+		t.Errorf("glibcLoader(riscv64) = %q, true; want an admission that it does not know", got)
 	}
 }
 

@@ -85,6 +85,12 @@ func configGuessTriple(platform, arch string) string {
 		return "x86_64-pc-linux-gnu"
 	case "aarch64", "arm64":
 		return "aarch64-unknown-linux-gnu"
+	case "s390x":
+		// Measured, not patterned: the two entries above disagree about the
+		// vendor field (`pc` against `unknown`), so there is no rule here to
+		// extend. Upstream config.guess run on the LinuxONE machine answers
+		// s390x-ibm-linux-gnu -- a third vendor again.
+		return "s390x-ibm-linux-gnu"
 	}
 	return ""
 }
