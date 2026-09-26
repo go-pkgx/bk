@@ -831,3 +831,47 @@ func TestBuildBootstrapRefusesAnUnresolvedDepToken(t *testing.T) {
 		t.Errorf("the refusal must be bootstrap-only, got %v", err)
 	}
 }
+
+// TestBuildBootstrapLeavesAnUnresolvableToolToTheHost, end to end and both
+// ways: the tool must be absent from the script a seed build runs, and an
+// ORDINARY build must still fail on it, because there the missing bottle is a
+// real gap rather than something the machine can cover.
+func TestBuildBootstrapLeavesAnUnresolvableToolToTheHost(t *testing.T) {
+	tgt := target.Target{Platform: "linux", Arch: "s390x"}
+	rec := okRecipe()
+	rec.Build = map[string]any{
+		"script": []any{"make install"},
+		// The ca-certs shape: a tool used to FETCH, plus one we do have.
+		"dependencies": map[string]any{"curl.se": "*", "gnu.org/make": "*"},
+	}
+	mk := func(boot bool) *Runner {
+		r := okRunner("acme.org/tool", tgt)
+		r.Bootstrap = boot
+		r.ResolveDep = func(p, _ string) (string, error) {
+			if p == "curl.se" {
+				return "", errors.New("no bottle for linux/s390x")
+			}
+			return "1.0.0", nil
+		}
+		return r
+	}
+
+	tenv(t)
+	res, err := mk(true).Build(rec, "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err != nil {
+		t.Fatalf("bootstrap build = %v", err)
+	}
+	b, _ := os.ReadFile(res.ScriptPath)
+	s := string(b)
+	if strings.Contains(s, `"+curl.se`) {
+		t.Errorf("an unresolvable tool must be left to the host:\n%s", s)
+	}
+	if !strings.Contains(s, `"+gnu.org/make"`) {
+		t.Errorf("a tool the registry HAS must stay a bottle:\n%s", s)
+	}
+
+	tenv(t)
+	if _, err := mk(false).Build(rec, "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist")); err == nil {
+		t.Error("an ordinary build must still fail on a tool with no bottle")
+	}
+}
