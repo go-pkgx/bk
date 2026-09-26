@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/go-pkgx/bk/build"
+	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bottle"
 )
@@ -34,6 +35,7 @@ type closureGraph struct {
 	demands  map[string]map[string][]string
 	seen     map[string]bool
 	pantry   string
+	overlay  string
 	tgt      target.Target
 	withBuil bool
 	warn     func(string)
@@ -55,7 +57,7 @@ func (g *closureGraph) visit(proj string) {
 		return
 	}
 	g.seen[proj] = true
-	rec, err := loadClosureRecipe(g.pantry, proj)
+	rec, err := recipefile.LoadOverlay(g.overlay, g.pantry, proj)
 	if err != nil {
 		g.missing = append(g.missing, proj)
 		if g.warn != nil {

@@ -22,6 +22,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("closure", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	pantryDir := fs.String("pantry", envOr("PANTRY", "pantry"), "pantry checkout dir")
+	overlayDir := fs.String("overlay", envOr("PANTRY_OVERLAY_DIR", ""), "an overlay checkout consulted BEFORE the pantry, as the factory consults PKGX_PANTRY_OVERLAY. Without it this describes a build nobody performs")
 	platform := fs.String("platform", envOr("PLATFORM", "linux/x86-64"), "target os/arch")
 	withBuild := fs.Bool("build", false, "follow BUILD dependencies as well as runtime ones. The runtime closure is a DAG and is what a consumer needs; adding build dependencies makes it a graph with cycles, and is what FILLING an architecture from nothing actually requires")
 	constraints := fs.Bool("constraints", false, "instead of the order, list every project a dependent pins to a version line, and who asks for what. `max_versions=1` builds the newest, and the newest is not always what a dependent can use")
@@ -42,6 +43,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	g := newClosureGraph(*pantryDir, tgt, *withBuild, func(s string) { fmt.Fprintln(stderr, s) })
+	g.overlay = *overlayDir
 	for _, p := range fs.Args() {
 		g.visit(p)
 	}

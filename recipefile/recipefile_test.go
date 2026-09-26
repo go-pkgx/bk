@@ -114,3 +114,45 @@ func TestLoadFile(t *testing.T) {
 		t.Error("a missing path must fail")
 	}
 }
+
+// TestLoadOverlayPrefersTheOverlay.
+//
+// The factory consults PKGX_PANTRY_OVERLAY before the pantry, so a tool that
+// reads only the pantry describes a build nobody performs. The s390x seed
+// order was computed that way and missed two projects — both of which were
+// then discovered by a failed build, three steps downstream.
+func TestLoadOverlayPrefersTheOverlay(t *testing.T) {
+	pan, ov := t.TempDir(), t.TempDir()
+	write(t, Dir(pan, "perl.org"), "package.yml", "build: make\n")
+	write(t, Dir(ov, "perl.org"), "package.yml", "dependencies:\n  x.org/crypt: '*'\nbuild: make\n")
+	write(t, Dir(pan, "only-upstream.org"), "package.yml", "dependencies:\n  a.org: ^1\nbuild: make\n")
+
+	r, err := LoadOverlay(ov, pan, "perl.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.Dependencies["x.org/crypt"]; !ok {
+		t.Errorf("the overlay's recipe must win, got %v", r.Dependencies)
+	}
+	// A project the overlay does not carry falls through.
+	u, err := LoadOverlay(ov, pan, "only-upstream.org")
+	if err != nil || u.Dependencies["a.org"] != "^1" {
+		t.Errorf("fall through to the pantry: %+v, %v", u, err)
+	}
+	// No overlay at all is the pantry-only case, so callers need not branch.
+	if _, err := LoadOverlay("", pan, "perl.org"); err != nil {
+		t.Errorf("an empty overlay must mean pantry-only: %v", err)
+	}
+}
+
+// An overlay recipe that does not parse must FAIL, not fall through. Falling
+// through would build what upstream says while the overlay says otherwise —
+// silently, and the overlay exists precisely because upstream is wrong there.
+func TestLoadOverlayDoesNotFallThroughAMalformedOverride(t *testing.T) {
+	pan, ov := t.TempDir(), t.TempDir()
+	write(t, Dir(pan, "a.org"), "package.yml", "build: make\n")
+	write(t, Dir(ov, "a.org"), "package.yml", "provides: 123\n")
+	if _, err := LoadOverlay(ov, pan, "a.org"); err == nil {
+		t.Error("a broken override must be an error, not a silent fall-through")
+	}
+}
