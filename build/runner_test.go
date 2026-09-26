@@ -760,4 +760,13 @@ func TestBuildBootstrapOmitsTheToolchainFromTheScript(t *testing.T) {
 	if !strings.Contains(boot, `"+openssl.org^1.1"`) {
 		t.Errorf("bootstrap must not touch the LINK closure:\n%s", boot)
 	}
+	// And the compiler, which is injected separately from the toolchain and was
+	// the next wall --bootstrap hit: pkgx +llvm.org against a registry that has
+	// no s390x, and an upstream that has none either.
+	if !strings.Contains(ordinary, `"+llvm.org"`) {
+		t.Fatalf("premise wrong: an ordinary linux build no longer adds llvm.org:\n%s", ordinary)
+	}
+	if strings.Contains(boot, `"+llvm.org"`) {
+		t.Errorf("bootstrap must take the compiler from the host too:\n%s", boot)
+	}
 }

@@ -3,6 +3,8 @@ package buildscript
 import (
 	"strings"
 	"testing"
+
+	"github.com/go-pkgx/bk/target"
 )
 
 // Two `pkgx +…` invocations, not one — and the TOOL one first, because every
@@ -54,5 +56,51 @@ func TestWrapWithNoToolDepsEmitsOneEval(t *testing.T) {
 	}
 	if !strings.Contains(s, `"+zlib.net"`) {
 		t.Errorf("the link closure is missing:\n%s", s)
+	}
+}
+
+// TestBootstrapTakesTheCompilerFromTheHost.
+//
+// The base toolchain was only half the injection. bk adds "+llvm.org" to every
+// linux build that has no compiler dependency of its own, so --bootstrap
+// without this moved the failure one step and no further:
+//
+//	pkgx: GET https://dist.pkgx.dev/llvm.org/linux/s390x/versions.txt: Not Found
+//
+// A compiler is a tool that RUNS the build. It belongs on the host side of the
+// line --bootstrap draws, exactly like make and m4.
+func TestBootstrapTakesTheCompilerFromTheHost(t *testing.T) {
+	opts := func(boot bool) WrapOptions {
+		return WrapOptions{
+			UserScript: "make\n",
+			Target:     target.Target{Platform: "linux", Arch: "s390x"},
+			Host:       target.Target{Platform: "linux", Arch: "s390x"},
+			Bootstrap:  boot,
+		}
+	}
+	ordinary := Wrap(opts(false))
+	if !strings.Contains(ordinary, `"+llvm.org"`) {
+		t.Fatalf("premise wrong: an ordinary linux build no longer adds llvm.org:\n%s", ordinary)
+	}
+	boot := Wrap(opts(true))
+	if strings.Contains(boot, `"+llvm.org"`) {
+		t.Errorf("bootstrap must leave the compiler to the host:\n%s", boot)
+	}
+}
+
+// And the existing guard still stands on its own: a build that already carries
+// a compiler does not get a second one, bootstrap or not. HasCompiler and
+// Bootstrap mean different things -- one says the closure HAS a compiler, the
+// other says the host does -- and folding them together would lose that.
+func TestHasCompilerAndBootstrapAreSeparateReasons(t *testing.T) {
+	base := WrapOptions{
+		UserScript: "make\n",
+		Target:     target.Target{Platform: "linux", Arch: "x86-64"},
+		Host:       target.Target{Platform: "linux", Arch: "x86-64"},
+	}
+	hasComp := base
+	hasComp.HasCompiler = true
+	if strings.Contains(Wrap(hasComp), `"+llvm.org"`) {
+		t.Error("HasCompiler must still suppress the implicit compiler on its own")
 	}
 }

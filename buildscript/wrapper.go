@@ -40,7 +40,24 @@ type WrapOptions struct {
 	PkgxBin     string        // path to the pkgx binary (for the deps eval + $PKGX)
 	BashPath    string        // shebang interpreter (default /bin/bash)
 	HasCompiler bool          // a compiler (llvm.org / gnu.org/gcc) is already a dep
-	HasBinutils bool          // gnu.org/binutils is a dep (darwin AR/RANLIB workaround)
+	// Bootstrap takes the compiler from the HOST instead of adding the llvm.org
+	// bottle, for the first generation on an architecture no registry has. It
+	// travels with build.Runner.Bootstrap, which drops the base toolchain for
+	// the same reason: a compiler is a tool that RUNS the build, not something
+	// the artefact carries.
+	//
+	// Without it --bootstrap stops one step further along than it used to and
+	// no further:
+	//
+	//	pkgx: GET https://dist.pkgx.dev/llvm.org/linux/s390x/versions.txt: Not Found
+	//	bk: the dependency environment failed: pkgx +llvm.org
+	//
+	// which reads as a network fault and is not one. bottle falls back to the
+	// upstream dist for a project our registry does not carry -- right for
+	// llvm.org on x86-64, where upstream HAS it -- and upstream carries no
+	// s390x at all.
+	Bootstrap   bool
+	HasBinutils bool // gnu.org/binutils is a dep (darwin AR/RANLIB workaround)
 	// LibcPkgx targets the pkgx gnu.org/glibc bottle instead of the build
 	// container's system glibc (linux only): the output links its crt objects,
 	// libc and dynamic linker from the bottle, so the bottle owes nothing to the
@@ -146,7 +163,7 @@ func (o WrapOptions) depPlus() string {
 	for _, d := range o.Deps {
 		parts = append(parts, `"+`+d+`"`)
 	}
-	if !o.HasCompiler && o.Target.Platform != "windows" && o.Host.Platform != "darwin" {
+	if !o.HasCompiler && !o.Bootstrap && o.Target.Platform != "windows" && o.Host.Platform != "darwin" {
 		parts = append(parts, `"+llvm.org"`)
 	}
 	// pkgx-libc mode needs the gnu.org/glibc bottle present in the eval so its
