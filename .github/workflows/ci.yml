@@ -26,8 +26,20 @@ jobs:
           go test ./... -race -covermode=atomic -coverprofile=cov.out
           total=$(go tool cover -func=cov.out | awk '/^total:/{print $3}')
           echo "total coverage: $total"
-          if [ "$total" != "100.0%" ]; then
-            echo "coverage below 100%"; go tool cover -func=cov.out | awk '$3!="100.0%"'
+          # Count uncovered BLOCKS. This used to compare $total against the
+          # string "100.0%", and `go tool cover -func` rounds to one decimal,
+          # so the gate's real threshold was 99.95%. Two lines in fixup lived
+          # under it -- the package printed 99.8% on a green main -- and were
+          # only reported when a third arrived and tipped the rounding to
+          # 99.9%. A gate named "100% coverage" should not have a tolerance
+          # nobody chose, sized by the codebase.
+          #
+          # The per-function listing below is rounded the same way, so it is
+          # kept for reading and not for deciding.
+          uncovered=$(awk 'NR>1 && $NF==0' cov.out | wc -l | tr -d ' ')
+          if [ "$uncovered" != "0" ]; then
+            echo "$uncovered uncovered block(s)"
+            go tool cover -func=cov.out | awk '$3!="100.0%"'
             echo "== uncovered blocks =="; awk 'NR>1 && $NF==0' cov.out
             exit 1
           fi
