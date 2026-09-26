@@ -46,6 +46,20 @@ func alternation(set map[string]bool) string {
 // reduceDepMap flattens a recipe dependency map (project → constraint, with
 // optional platform-keyed sub-maps) to project → constraint for the target,
 // dropping non-matching platform keys and merging matching ones.
+// ReduceDeps flattens a recipe dependency map to project → constraint for the
+// target, as the RECIPE spells the constraint.
+//
+// Exported because a caller that needs the constraint must not derive it from
+// DepSpecs. That renders a pkgx WIRE form — `gnu.org/m4@1`, `cmake.org^3` —
+// and trimming the project off it yields "@1", a string nothing can resolve.
+// One caller already did that and dropped a bottle it had just built.
+//
+// So there is one reduction, and everything that asks a question about a
+// dependency asks it the same way.
+func ReduceDeps(deps map[string]any, tgt target.Target) map[string]string {
+	return reduceDepMap(deps, tgt)
+}
+
 func reduceDepMap(deps map[string]any, tgt target.Target) map[string]string {
 	flat := map[string]string{}
 	for k, v := range deps {

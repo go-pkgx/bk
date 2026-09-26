@@ -23,15 +23,29 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	pantryDir := fs.String("pantry", envOr("PANTRY", "pantry"), "pantry checkout dir")
 	platform := fs.String("platform", envOr("PLATFORM", "linux/x86-64"), "target os/arch")
+	withBuild := fs.Bool("build", false, "follow BUILD dependencies as well as runtime ones. The runtime closure is a DAG and is what a consumer needs; adding build dependencies makes it a graph with cycles, and is what FILLING an architecture from nothing actually requires")
+	constraints := fs.Bool("constraints", false, "instead of the order, list every project a dependent pins to a version line, and who asks for what. `max_versions=1` builds the newest, and the newest is not always what a dependent can use")
+	implicit := fs.Bool("implicit", false, "also name the soname providers this walk cannot reach — dependencies that exist only in the compiled artefact, which no recipe declares")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	osn, arch, _ := strings.Cut(*platform, "/")
 	tgt := target.Target{Platform: osn, Arch: arch}
 
-	for _, p := range closureOf(*pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) }) {
-		fmt.Fprintln(stdout, p)
+	// The plain runtime walk keeps going through closureOf, which the factory
+	// also calls: one path, so `bk closure` cannot describe an order the
+	// factory would not build.
+	if !*withBuild && !*constraints && !*implicit {
+		for _, p := range closureOf(*pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) }) {
+			fmt.Fprintln(stdout, p)
+		}
+		return 0
 	}
+	g := newClosureGraph(*pantryDir, tgt, *withBuild, func(s string) { fmt.Fprintln(stderr, s) })
+	for _, p := range fs.Args() {
+		g.visit(p)
+	}
+	printGraph(g, *constraints, *implicit, stdout)
 	return 0
 }
 
