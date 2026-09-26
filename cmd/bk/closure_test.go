@@ -118,3 +118,16 @@ func TestClosureDispatch(t *testing.T) {
 		t.Errorf("dispatch closure out=%q", out)
 	}
 }
+
+// writeClosureRecipeNamed writes a recipe under a chosen filename, for tests
+// that care which front-end reads it.
+func writeClosureRecipeNamed(t *testing.T, pantry, proj, name, body string) {
+	t.Helper()
+	dir := filepath.Join(pantry, "projects", proj)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
