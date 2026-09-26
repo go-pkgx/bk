@@ -721,3 +721,43 @@ func TestVerifyDeclaredChecksum(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildBootstrapOmitsTheToolchainFromTheSCRIPT.
+//
+// The point of the flag is what the build RUNS, and that is the generated
+// script, not a function's return value. A field wired to nothing would pass a
+// test of BootstrapToolDeps and change no build at all -- so this reads the
+// script bk actually writes, both ways, from one recipe.
+func TestBuildBootstrapOmitsTheToolchainFromTheScript(t *testing.T) {
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	read := func(t *testing.T, boot bool) string {
+		tenv(t)
+		r := okRunner("acme.org/tool", tgt)
+		r.Bootstrap = boot
+		res, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(res.ScriptPath)
+		return string(b)
+	}
+
+	ordinary := read(t, false)
+	if !strings.Contains(ordinary, `"+gnu.org/autoconf"`) {
+		t.Fatalf("premise wrong: an ordinary build no longer carries the toolchain:\n%s", ordinary)
+	}
+
+	boot := read(t, true)
+	if strings.Contains(boot, `"+gnu.org/autoconf"`) {
+		t.Errorf("bootstrap must not inject the base toolchain:\n%s", boot)
+	}
+	// What the recipe declares for itself is NOT the toolchain and must stay:
+	// the seed still links against real bottles, only the tools driving the
+	// build come from the host.
+	if !strings.Contains(boot, `"+freedesktop.org/pkg-config^0.29"`) {
+		t.Errorf("bootstrap dropped the recipe's OWN build dependency:\n%s", boot)
+	}
+	if !strings.Contains(boot, `"+openssl.org^1.1"`) {
+		t.Errorf("bootstrap must not touch the LINK closure:\n%s", boot)
+	}
+}

@@ -388,6 +388,35 @@ func sortedSpecs(specs []string) []string {
 	return out
 }
 
+// BootstrapToolDeps is EvalToolDeps WITHOUT the base toolchain: only what the
+// recipe itself declares as a build dependency.
+//
+// It exists because the base toolchain is a CYCLE with no entry point, and
+// that is invisible until an architecture has no bottles at all. Every build
+// gets the fifteen projects BaseToolchain names injected into its pkgx
+// environment, as BOTTLES -- so on linux/s390x, where neither this registry
+// nor dist.pkgx.dev publishes anything, gnu.org/m4 fails on
+//
+//	pkgx: no version of freedesktop.org/pkg-config satisfies  AND is
+//	      published for linux/s390x
+//
+// although m4's recipe declares no build dependencies at all. Building
+// pkg-config asks for the other fourteen in turn. Nothing can be first.
+//
+// --libc=pkgx does not help and neither does its absence: the build container's
+// distribution supplies a COMPILER fallback, never a declared dependency, so
+// both modes go through pkgx and both demand a bottle.
+//
+// So one generation has to be made with the host's own tools, into a registry
+// that generation never leaves. This is that escape, and it is deliberately
+// the smallest one that works: the recipe's own build dependencies still
+// resolve as bottles, and the LINK closure is untouched, because what a
+// bottle links against is what it ships -- only the tools that RUN the build
+// come from outside.
+func BootstrapToolDeps(buildDeps map[string]any, tgt target.Target) []string {
+	return sortedSpecs(DepSpecs(buildDeps, tgt))
+}
+
 // Deprecated: the build now composes two closures — EvalLinkDeps and
 // EvalToolDeps. This is kept as the CONTROL for that split: a test asserts that
 // it still puts a link constraint and a build tool in ONE list, which is what

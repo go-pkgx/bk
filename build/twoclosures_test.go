@@ -91,3 +91,51 @@ func TestARecipesOwnToolchainPinStillReplacesTheBaseOne(t *testing.T) {
 		t.Error("a project's own published bottle joined the toolchain of its build")
 	}
 }
+
+// TestBootstrapToolDepsDropsTheToolchainAndNothingElse.
+//
+// The base toolchain is what makes a first fill on a new architecture
+// impossible: m4 declares no build dependencies and still fails on
+// freedesktop.org/pkg-config, because BaseToolchain is injected into every
+// build. Bootstrap mode drops exactly that, and must drop nothing else -- the
+// recipe's OWN build dependencies are still bottles, deliberately.
+func TestBootstrapToolDepsDropsTheToolchainAndNothingElse(t *testing.T) {
+	// The real case: a recipe with no build dependencies of its own.
+	if got := BootstrapToolDeps(nil, lin()); len(got) != 0 {
+		t.Errorf("a recipe declaring nothing must ask for nothing, got %v", got)
+	}
+	// The control, same inputs, ordinary mode: the whole toolchain arrives.
+	full := EvalToolDeps("gnu.org/m4", nil, nil, lin())
+	if !contains(full, "freedesktop.org/pkg-config") {
+		t.Fatalf("premise wrong: the toolchain no longer brings pkg-config: %v", full)
+	}
+
+	// And what the recipe names for itself survives.
+	got := BootstrapToolDeps(map[string]any{"nodejs.org": "*"}, lin())
+	if len(got) != 1 || SpecProject(got[0]) != "nodejs.org" {
+		t.Errorf("BootstrapToolDeps = %v, want nodejs.org alone", got)
+	}
+}
+
+// TestBaseToolchainHasNoEntryPoint is the finding itself, asserted rather than
+// described: EVERY member of the base toolchain is handed the others, so there
+// is no member that can be built first. A future toolchain with an entry point
+// would make --bootstrap unnecessary, and this test is how that would be
+// noticed rather than assumed.
+func TestBaseToolchainHasNoEntryPoint(t *testing.T) {
+	for _, spec := range BaseToolchain() {
+		proj := SpecProject(spec)
+		// Built in the ordinary way, with no recipe-declared deps at all.
+		tools := EvalToolDeps(proj, nil, nil, lin())
+		var others []string
+		for _, s := range tools {
+			if SpecProject(s) != proj {
+				others = append(others, SpecProject(s))
+			}
+		}
+		if len(others) == 0 {
+			t.Errorf("%s needs nothing else: the toolchain HAS an entry point now, "+
+				"so --bootstrap may no longer be the only way in", proj)
+		}
+	}
+}

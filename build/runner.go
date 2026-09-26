@@ -56,6 +56,12 @@ type Runner struct {
 	// Glibc pins the exact pkgx glibc version to link against in LibcMode "pkgx"
 	// (a chosen HPC floor, e.g. "2.27.0"); empty = newest.
 	Glibc string
+	// Bootstrap runs the build WITHOUT the base toolchain in its environment,
+	// taking those tools from the host instead. It is for the first generation
+	// on an architecture no registry has: see BootstrapToolDeps for why nothing
+	// can otherwise be built first. It must not be set for an ordinary build --
+	// a bottle made this way was driven by tools nobody pinned.
+	Bootstrap bool
 }
 
 // SourceRef identifies the bytes a build was actually made from: which of the
@@ -179,6 +185,9 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	// deps + tokens + script
 	deps := EvalLinkDeps(recipe.Dependencies, tgt)
 	toolDeps := EvalToolDeps(project, recipe.Dependencies, buildDeps(recipe), tgt)
+	if r.Bootstrap {
+		toolDeps = BootstrapToolDeps(buildDeps(recipe), tgt)
+	}
 	toks := moustache.Prefix(paths.BuildInstall)
 	toks = append(toks, moustache.Version(version, "version")...)
 	toks = append(toks, moustache.Token{From: "version.tag", To: tag})
