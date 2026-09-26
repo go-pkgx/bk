@@ -54,6 +54,8 @@ github.com/go-pkgx/bottle v0.23.1-0.20260926104951-589bdc5d4914 h1:iQdaepD/SywIH
 github.com/go-pkgx/bottle v0.23.1-0.20260926104951-589bdc5d4914/go.mod h1:+DW5NjRC7PUcvE7QeJGcILouhokJ91JnZLkVuos6kto=
 github.com/go-pkgx/bottle v0.23.1-0.20260926150821-678421434d60 h1:yZhdDMB56YpNzznUjvAszc9mnag0/j825SwXMmkLuZs=
 github.com/go-pkgx/bottle v0.23.1-0.20260926150821-678421434d60/go.mod h1:+DW5NjRC7PUcvE7QeJGcILouhokJ91JnZLkVuos6kto=
+github.com/go-pkgx/bottle v0.23.1-0.20260926210838-acec3ab83030 h1:vnZkLy1QevvM6kkeRrl2M3gFoY7iS1zRc17O5WxxuUo=
+github.com/go-pkgx/bottle v0.23.1-0.20260926210838-acec3ab83030/go.mod h1:bV5s9P3uHuJmIrk5OX74S6RIWLEZKkFfy2YVDIPZU6Y=
 github.com/go-quicktest/qt v1.102.0 h1:HSQxCeh5YZH3EL3W39ixjtyaEhcWSXQHtHnMBzSs474=
 github.com/go-quicktest/qt v1.102.0/go.mod h1:p4lGIVX+8Wa6ZPNDvqcxq36XpUDLh42FLetFU7odllI=
 github.com/go-regexp/engine v0.1.3 h1:0U5DrrBEYjNX/f0yFESpQDWmJOtXmmZqluNAUBXjfxY=

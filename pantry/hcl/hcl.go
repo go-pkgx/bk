@@ -20,102 +20,27 @@
 package hcl
 
 import (
-	"fmt"
-
 	"github.com/go-pkgx/bk/pantry"
-	"github.com/hashicorp/hcl/v2"
-	"github.com/hashicorp/hcl/v2/hclsyntax"
-	"github.com/zclconf/go-cty/cty"
-	"gopkg.in/yaml.v3"
+	"github.com/go-pkgx/bottle"
 )
 
 // Parse decodes a package.hcl into a validated pantry.Recipe.
 func Parse(src []byte, filename string) (*pantry.Recipe, error) {
-	doc, err := ToMap(src, filename)
+	// bottle converts HCL to the YAML the schema validates, because the CLIENT
+	// has to read these files too — the overlay is fetched at install time.
+	// Keeping a second converter here would be two readings of one format,
+	// and the day they disagreed the factory and the installer would build
+	// different things from the same recipe.
+	y, err := bottle.HCLToYAML(src, filename)
 	if err != nil {
 		return nil, err
 	}
-	// round-trip through YAML so the exact same schema validation + struct
-	// decode used for package.yml applies unchanged. ToMap only ever yields
-	// JSON-safe values (string/float64/bool/nil/slice/map), which always
-	// marshal, so the error is unreachable here.
-	y, _ := yaml.Marshal(doc)
 	return pantry.Parse(y)
 }
 
 // ToMap parses package.hcl into the generic map[string]any document shape that
-// a package.yml decodes to.
+// a package.yml decodes to. It is bottle's reading, re-exported so a caller
+// here need not know where the parser lives.
 func ToMap(src []byte, filename string) (map[string]any, error) {
-	f, diags := hclsyntax.ParseConfig(src, filename, hcl.InitialPos)
-	if diags.HasErrors() {
-		return nil, fmt.Errorf("hcl: parse: %s", diags.Error())
-	}
-	return bodyToMap(f.Body.(*hclsyntax.Body))
-}
-
-// bodyToMap converts an HCL body's attributes and nested blocks into a map.
-func bodyToMap(body *hclsyntax.Body) (map[string]any, error) {
-	out := make(map[string]any, len(body.Attributes)+len(body.Blocks))
-	for name, attr := range body.Attributes {
-		v, diags := attr.Expr.Value(nil)
-		if diags.HasErrors() {
-			return nil, fmt.Errorf("hcl: %s: %s", name, diags.Error())
-		}
-		g, err := ctyToGo(v)
-		if err != nil {
-			return nil, fmt.Errorf("hcl: %s: %w", name, err)
-		}
-		out[name] = g
-	}
-	for _, block := range body.Blocks {
-		if _, exists := out[block.Type]; exists {
-			return nil, fmt.Errorf("hcl: duplicate key %q (block and/or attribute)", block.Type)
-		}
-		m, err := bodyToMap(block.Body)
-		if err != nil {
-			return nil, err
-		}
-		out[block.Type] = m
-	}
-	return out, nil
-}
-
-// ctyToGo converts a cty.Value into the plain Go value a YAML decode would
-// yield: string, float64, bool, nil, []any, map[string]any.
-func ctyToGo(v cty.Value) (any, error) {
-	if v.IsNull() {
-		return nil, nil
-	}
-	t := v.Type()
-	switch {
-	case t == cty.String:
-		return v.AsString(), nil
-	case t == cty.Bool:
-		return v.True(), nil
-	case t == cty.Number:
-		f, _ := v.AsBigFloat().Float64()
-		return f, nil
-	case t.IsTupleType(), t.IsListType(), t.IsSetType():
-		var out []any
-		for _, e := range v.AsValueSlice() {
-			g, err := ctyToGo(e)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, g)
-		}
-		return out, nil
-	case t.IsObjectType(), t.IsMapType():
-		out := make(map[string]any)
-		for k, e := range v.AsValueMap() {
-			g, err := ctyToGo(e)
-			if err != nil {
-				return nil, err
-			}
-			out[k] = g
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("unsupported HCL value type %s", t.FriendlyName())
-	}
+	return bottle.HCLToMap(src, filename)
 }
