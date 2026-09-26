@@ -158,3 +158,81 @@ func TestWeatherThroughTheDispatch(t *testing.T) {
 		t.Errorf("output:\n%s", out)
 	}
 }
+
+// TestSkewedSeesWhatAsymmetricCannot.
+//
+// asymmetric works on presence, so a project published on both arches of an OS
+// at DIFFERENT versions is invisible to it. That is not a curiosity: it is the
+// state an asymmetry passes through. gnupg.org/gpgme resolved 2.2.0 on
+// darwin/aarch64 and 2.1.2 on darwin/x86-64, the report said "0 asymmetric",
+// and asking the same pair for `@^2.2` answered `none` on x86-64.
+func TestSkewedSeesWhatAsymmetricCannot(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		have map[string][]string
+		want bool
+	}{
+		{"the gpgme case", map[string][]string{"darwin": {"2.2.0", "2.1.2"}}, true},
+		{"level within each OS, different between them", map[string][]string{
+			"darwin": {"1.12.2", "1.12.2"}, "linux": {"1.12.3", "1.12.3"}}, false},
+		{"level everywhere", map[string][]string{"darwin": {"1.8", "1.8"}, "linux": {"1.8", "1.8"}}, false},
+		{"only one arch has it at all", map[string][]string{"darwin": {"2.2.0"}}, false},
+		{"no arch has it", map[string][]string{}, false},
+	} {
+		if got := skewed(tc.have); got != tc.want {
+			t.Errorf("%s: skewed = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// End to end: the same registry that reports 0 asymmetric must now say SKEW,
+// and must NOT say ASYMMETRIC -- the two counts mean different things and
+// inflating the stronger one would cost it its meaning.
+func TestWeatherReportsASkewWithoutCallingItAGap(t *testing.T) {
+	old := weatherPick
+	defer func() { weatherPick = old }()
+	weatherPick = func(_ string, _ []string, osn, arch string) (bottle.Ver, error) {
+		if osn == "darwin" && arch == "x86-64" {
+			return bottle.ParseVer("2.1.2"), nil
+		}
+		return bottle.ParseVer("2.2.0"), nil
+	}
+	var out, errb bytes.Buffer
+	code := runWeather([]string{"--platforms", "darwin/aarch64,darwin/x86-64", "gnupg.org/gpgme"}, &out, &errb)
+	s := out.String()
+	if !strings.Contains(s, "SKEW") {
+		t.Errorf("want a SKEW mark:\n%s", s)
+	}
+	if strings.Contains(s, "ASYMMETRIC") {
+		t.Errorf("a skew is not an asymmetry:\n%s", s)
+	}
+	if !strings.Contains(s, "1 version-skewed") {
+		t.Errorf("want the skew counted:\n%s", s)
+	}
+	// A skew must not fail the command: this exit status already gates callers
+	// that asked for the presence test, and nothing asked them for this one.
+	if code != 0 {
+		t.Errorf("runWeather = %d, want 0 for a skew alone", code)
+	}
+}
+
+// A project that is genuinely absent on one arch is an ASYMMETRIC, not a SKEW,
+// even though its version cells also differ. The stronger finding wins.
+func TestWeatherPrefersTheStrongerFinding(t *testing.T) {
+	old := weatherPick
+	defer func() { weatherPick = old }()
+	weatherPick = func(_ string, _ []string, osn, arch string) (bottle.Ver, error) {
+		if osn == "darwin" && arch == "x86-64" {
+			return bottle.Ver{}, errors.New("no bottle")
+		}
+		return bottle.ParseVer("2.2.0"), nil
+	}
+	var out, errb bytes.Buffer
+	if code := runWeather([]string{"--platforms", "darwin/aarch64,darwin/x86-64", "p"}, &out, &errb); code != 1 {
+		t.Errorf("runWeather = %d, want 1", code)
+	}
+	s := out.String()
+	if !strings.Contains(s, "ASYMMETRIC") || strings.Contains(s, "SKEW") {
+		t.Errorf("want ASYMMETRIC and not SKEW:\n%s", s)
+	}
+}
