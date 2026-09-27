@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bk/build"
+	"github.com/go-pkgx/bk/config"
 	"github.com/go-pkgx/bk/overrides"
 	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/target"
@@ -1749,5 +1750,56 @@ func TestFactoryPinsARequestedProjectToItsDependents(t *testing.T) {
 	free := &factory{demands: demands, pinToDependents: true, stdout: io.Discard}
 	if v, err := free.versionsFor(rec, "other.org", true, 1); err != nil || v[0] != "16.2.0" {
 		t.Errorf("unconstrained = %v %v", v, err)
+	}
+}
+
+// TestFactoryDropsAPublishedBuildTree.
+//
+// The Runner clears a tree at the start of that project's own build, which is
+// enough for one build and nothing for a run of seventy-six. The s390x seed
+// filled its disk on the fifty-seventh — `no space left on device`, fetching
+// the kernel headers, with every earlier tree still there and gcc's among them.
+func TestFactoryDropsAPublishedBuildTree(t *testing.T) {
+	old := factoryRemoveAll
+	t.Cleanup(func() { factoryRemoveAll = old })
+	var removed []string
+	factoryRemoveAll = func(p string) error {
+		removed = append(removed, p)
+		return nil
+	}
+
+	tgt := target.Target{Platform: "linux", Arch: "s390x"}
+	f := &factory{tgt: tgt, stderr: io.Discard}
+	f.dropBuildTree("acme.org/tool", "1.2.3")
+	if len(removed) != 2 {
+		t.Fatalf("removed = %v, want the build tree and its staged install", removed)
+	}
+	p := config.Compute("acme.org/tool", "1.2.3", tgt)
+	if removed[0] != p.Build || removed[1] != p.BuildInstall {
+		t.Errorf("removed = %v, want [%s %s]", removed, p.Build, p.BuildInstall)
+	}
+	// The INSTALL prefix is not swept: that is the bottle's own content, and
+	// the Runner already owns its lifetime.
+	for _, r := range removed {
+		if r == p.Install {
+			t.Errorf("the install prefix must not be removed here: %v", removed)
+		}
+	}
+
+	// --keep-build-trees leaves everything, for the operator who wants to look.
+	removed = nil
+	keep := &factory{tgt: tgt, keepBuildTrees: true, stderr: io.Discard}
+	keep.dropBuildTree("acme.org/tool", "1.2.3")
+	if len(removed) != 0 {
+		t.Errorf("nothing must be removed: %v", removed)
+	}
+
+	// A removal that fails is REPORTED. Silence would leave the disk filling
+	// and the next failure would name a different project.
+	var errb bytes.Buffer
+	factoryRemoveAll = func(string) error { return errors.New("device busy") }
+	(&factory{tgt: tgt, stderr: &errb}).dropBuildTree("acme.org/tool", "1.2.3")
+	if !strings.Contains(errb.String(), "could not remove") || !strings.Contains(errb.String(), "device busy") {
+		t.Errorf("stderr = %q", errb.String())
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bk/bottlepkg"
 	"github.com/go-pkgx/bk/build"
+	"github.com/go-pkgx/bk/config"
 	"github.com/go-pkgx/bk/overrides"
 	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/recipefile"
@@ -64,6 +65,7 @@ var (
 		return r.Build(rec, project, constraint, tgt, host, out)
 	}
 	factoryUpstreamVersions = bottle.VersionsFor
+	factoryRemoveAll        = os.RemoveAll
 	factoryDownload         = bottle.DownloadBottle
 	factoryHasPlatform      = func(dist, project, ver, osn, arch string) (bool, error) {
 		c, err := bottle.NewOCIClient(dist)
@@ -105,6 +107,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	bootstrap := fs.Bool("bootstrap", false, "FIRST FILL ONLY on an architecture no registry has: build without the base toolchain in the environment, taking those tools from the host. The base toolchain is a cycle with no entry point (see build.BootstrapToolDeps), so without this nothing can be built first. Bottles made this way were driven by unpinned host tools: publish them to a throwaway registry, use them to stage the sovereign rootfs, and rebuild everything inside it")
 	jobs := fs.Int("jobs", envInt("JOBS"), "parallelism handed to each recipe build (`hw.concurrency`); 0 = one per CPU. Lower it when the target is emulated.")
 	pinToDependents := fs.Bool("pin-to-dependents", os.Getenv("PIN_TO_DEPENDENTS") != "", "hold a REQUESTED project to the constraints its dependents place on it, as a closure-only one already is. For a SEED, where every project is named and none would otherwise be held to anything: gnu.org/glibc asks for gnu.org/gcc 14 and a seed naming gcc built 16.2.0. OFF by default, because naming a project is how you say \"this version, whatever else wants\" — a repair run must not be talked out of it. An explicit project@constraint still wins")
+	keepBuildTrees := fs.Bool("keep-build-trees", os.Getenv("KEEP_BUILD_TREES") != "", "leave each PUBLISHED build tree on disk. By default a tree is removed once its bottle is published, because a run of seventy-six keeps all seventy-six otherwise and the s390x seed filled its disk on the fifty-seventh. A FAILED build's tree is always kept: it is the only copy of what went wrong")
 	force := fs.Bool("force", os.Getenv("FORCE") != "", "rebuild and republish even when the bottle is already in the registry — the projects you REQUESTED only, never the dependency closure behind them")
 	compress := fs.String("compress", envOr("COMPRESS", "zstd"), "codec for NEW bottles: zstd or gzip. Already-published bottles are never rewritten, so gzip stays readable; this only governs what we create")
 	signKey := fs.String("sign", "", "sign published bottles with this go-attest/sign secret key file (else $SIGNING_KEY)")
@@ -265,6 +268,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		wantPer:          pins,
 		demands:          demands,
 		pinToDependents:  *pinToDependents,
+		keepBuildTrees:   *keepBuildTrees,
 		skippedOverrides: skippedOverrides,
 		requested:        requested,
 		stdout:           stdout, stderr: stderr,
@@ -364,6 +368,8 @@ type factory struct {
 	// pinToDependents holds a REQUESTED project to what depends on it, which is
 	// what a SEED wants and a repair run does not. See versionsFor.
 	pinToDependents bool
+	// keepBuildTrees leaves a published build tree on disk. See dropBuildTree.
+	keepBuildTrees bool
 	// wantPer overrides want for one project, from a `project@constraint` word
 	// in --recipes. Closing an index gap needs ONE named version of ONE project,
 	// and --versions applies to every requested project at once.
@@ -546,6 +552,37 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 	fmt.Fprintf(f.stdout, "✅ OK %s %s %s\n", proj, flavoredTag(proj, res.Version, f.glibc), f.platform)
 	f.ok++
 	f.pushed = append(f.pushed, published{project: proj, tag: tag, desc: desc})
+	f.dropBuildTree(proj, res.Version)
+}
+
+// dropBuildTree removes a build tree once its bottle is PUBLISHED.
+//
+// The Runner clears a tree at the start of that project's own build, which is
+// enough for one build and nothing for a run of seventy-six. The s390x seed
+// filled its disk on the fifty-seventh:
+//
+//	kernel.org/linux-headers 7.2.8: fetch: write …/gc_9_2_1_sh_mask.h:
+//	no space left on device
+//
+// — with every earlier tree still sitting there, gcc's among them.
+//
+// Only on SUCCESS, and that asymmetry is the point: a failed build's tree is
+// the only copy of what went wrong, and a factory that swept it away would
+// make every failure unreproducible. Publishing is the moment the tree stops
+// being the artefact and starts being litter.
+//
+// Reported, not silent: a removal that fails leaves the disk filling, and the
+// next failure would name a different project.
+func (f *factory) dropBuildTree(proj, ver string) {
+	if f.keepBuildTrees {
+		return
+	}
+	p := config.Compute(proj, ver, f.tgt)
+	for _, d := range []string{p.Build, p.BuildInstall} {
+		if err := factoryRemoveAll(d); err != nil {
+			fmt.Fprintf(f.stderr, "factory: could not remove %s: %v\n", d, err)
+		}
+	}
 }
 
 // mirrorVersionsFor lists the versions to copy for a project: what the UPSTREAM
