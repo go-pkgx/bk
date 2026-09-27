@@ -41,10 +41,19 @@ type Runner struct {
 	WriteBottle func(installDir, project, version, osn, arch, outDir string) (string, error)
 	// ResolveDep, when set, resolves each dependency to a version so the build
 	// gets {{deps.<project>.prefix}}/{{deps.<project>.version}} tokens.
-	ResolveDep  func(project, constraint string) (string, error)
-	Concurrency int
-	PkgxBin     string
-	BashPath    string
+	ResolveDep func(project, constraint string) (string, error)
+	// ToolInstallable answers whether a BUILD dependency can actually be
+	// installed here — its whole closure, not just a version of itself. Only
+	// bootstrap asks, and only to decide what to leave to the host; nil falls
+	// back to ResolveDep, which is the weaker question.
+	//
+	// The two differ. perl.org was in the s390x seed registry, so ResolveDep
+	// said yes, and the build died installing it: perl needs libcrypt and the
+	// soname map answers that with the project being built.
+	ToolInstallable func(project, constraint string) (string, error)
+	Concurrency     int
+	PkgxBin         string
+	BashPath        string
 	// RecipeDir is the pantry project directory holding the recipe (package.yml)
 	// and its sibling files. It is copied into the build tree as `props/` so
 	// recipes can reference those files as `props/foo` or via the {{props}}
@@ -70,6 +79,16 @@ type Runner struct {
 	// to have installed — /usr/bin/sed exists on every developer's laptop and
 	// on none of the scratch images.
 	LookPath func(string) (string, error)
+}
+
+// toolInstallable is the stronger question when the caller can answer it, and
+// the weaker one otherwise. A Runner wired with only ResolveDep keeps exactly
+// the behaviour it had.
+func (r *Runner) toolInstallable() func(project, constraint string) (string, error) {
+	if r.ToolInstallable != nil {
+		return r.ToolInstallable
+	}
+	return r.ResolveDep
 }
 
 func (r *Runner) lookPath() func(string) (string, error) {
@@ -205,7 +224,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	if r.Bootstrap {
 		_, selfDropped = bd[project]
 		bd = WithoutSelfDep(project, bd)
-		bd, fromHost = WithoutUnresolvable(bd, tgt, r.ResolveDep, func(s string) { logf("%s", s) })
+		bd, fromHost = WithoutUnresolvable(bd, tgt, r.toolInstallable(), func(s string) { logf("%s", s) })
 		if selfDropped {
 			fromHost = append(fromHost, project)
 		}
