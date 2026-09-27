@@ -1684,3 +1684,70 @@ func TestClosureOfCollectsDemands(t *testing.T) {
 		t.Errorf("a root nobody depends on must not appear: %v", demands)
 	}
 }
+
+// TestFactoryPinsARequestedProjectToItsDependents.
+//
+// A REQUESTED project is not held to what depends on it, because naming a
+// project is how an operator says "this version, whatever else wants". A SEED
+// is the other case: there every project is named, so nothing is held to
+// anything — which is how gnu.org/gcc came out at 16.2.0 after twenty-five
+// minutes of compiling, while gnu.org/glibc asks for 14.
+func TestFactoryPinsARequestedProjectToItsDependents(t *testing.T) {
+	old := factoryList
+	t.Cleanup(func() { factoryList = old })
+	factoryList = func(any) ([]versions.VersionTag, error) {
+		return []versions.VersionTag{
+			{Version: "16.2.0"}, {Version: "15.1.0"}, {Version: "14.4.0"}, {Version: "14.1.0"},
+		}, nil
+	}
+	rec := &pantry.Recipe{}
+	demands := map[string][]string{"gnu.org/gcc": {"14"}}
+
+	// OFF: the newest, as before. A repair run keeps its answer.
+	off := &factory{demands: demands, stdout: io.Discard}
+	if v, err := off.versionsFor(rec, "gnu.org/gcc", true, 1); err != nil || v[0] != "16.2.0" {
+		t.Errorf("off = %v %v, want [16.2.0]", v, err)
+	}
+
+	// ON: the newest its dependents can use.
+	var out bytes.Buffer
+	on := &factory{demands: demands, pinToDependents: true, stdout: &out}
+	v, err := on.versionsFor(rec, "gnu.org/gcc", true, 1)
+	if err != nil || len(v) != 1 || v[0] != "14.4.0" {
+		t.Fatalf("on = %v %v, want [14.4.0]", v, err)
+	}
+	// Said out loud, and naming the constraint: an operator reading "2 dropped"
+	// has to know which knob moved.
+	if !strings.Contains(out.String(), "dropped by its dependents") || !strings.Contains(out.String(), "14") {
+		t.Errorf("the drop must be reported with its reason: %q", out.String())
+	}
+
+	// An explicit pin still WINS: the operator was specific, and a recipe
+	// elsewhere in the pantry does not get to overrule that.
+	pinned := &factory{
+		demands: demands, pinToDependents: true,
+		wantPer: map[string]string{"gnu.org/gcc": "=16.2.0"},
+		stdout:  io.Discard,
+	}
+	if v, err := pinned.versionsFor(rec, "gnu.org/gcc", true, 1); err != nil || v[0] != "16.2.0" {
+		t.Errorf("an explicit pin must win: %v %v", v, err)
+	}
+
+	// Nothing left is an ERROR naming the constraints, not an empty build set
+	// that would look like "already published".
+	none := &factory{
+		demands:         map[string][]string{"gnu.org/gcc": {"~5.42", "~5.44"}},
+		pinToDependents: true, stdout: io.Discard,
+	}
+	if _, err := none.versionsFor(rec, "gnu.org/gcc", true, 1); err == nil {
+		t.Error("want a refusal")
+	} else if !strings.Contains(err.Error(), "~5.42") || !strings.Contains(err.Error(), "~5.44") {
+		t.Errorf("the refusal must name them: %v", err)
+	}
+
+	// A project nothing constrains is untouched, with the flag on.
+	free := &factory{demands: demands, pinToDependents: true, stdout: io.Discard}
+	if v, err := free.versionsFor(rec, "other.org", true, 1); err != nil || v[0] != "16.2.0" {
+		t.Errorf("unconstrained = %v %v", v, err)
+	}
+}

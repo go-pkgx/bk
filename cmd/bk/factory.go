@@ -104,6 +104,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
 	bootstrap := fs.Bool("bootstrap", false, "FIRST FILL ONLY on an architecture no registry has: build without the base toolchain in the environment, taking those tools from the host. The base toolchain is a cycle with no entry point (see build.BootstrapToolDeps), so without this nothing can be built first. Bottles made this way were driven by unpinned host tools: publish them to a throwaway registry, use them to stage the sovereign rootfs, and rebuild everything inside it")
 	jobs := fs.Int("jobs", envInt("JOBS"), "parallelism handed to each recipe build (`hw.concurrency`); 0 = one per CPU. Lower it when the target is emulated.")
+	pinToDependents := fs.Bool("pin-to-dependents", os.Getenv("PIN_TO_DEPENDENTS") != "", "hold a REQUESTED project to the constraints its dependents place on it, as a closure-only one already is. For a SEED, where every project is named and none would otherwise be held to anything: gnu.org/glibc asks for gnu.org/gcc 14 and a seed naming gcc built 16.2.0. OFF by default, because naming a project is how you say \"this version, whatever else wants\" — a repair run must not be talked out of it. An explicit project@constraint still wins")
 	force := fs.Bool("force", os.Getenv("FORCE") != "", "rebuild and republish even when the bottle is already in the registry — the projects you REQUESTED only, never the dependency closure behind them")
 	compress := fs.String("compress", envOr("COMPRESS", "zstd"), "codec for NEW bottles: zstd or gzip. Already-published bottles are never rewritten, so gzip stays readable; this only governs what we create")
 	signKey := fs.String("sign", "", "sign published bottles with this go-attest/sign secret key file (else $SIGNING_KEY)")
@@ -263,6 +264,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		want:             strings.TrimSpace(*versionSpec),
 		wantPer:          pins,
 		demands:          demands,
+		pinToDependents:  *pinToDependents,
 		skippedOverrides: skippedOverrides,
 		requested:        requested,
 		stdout:           stdout, stderr: stderr,
@@ -359,6 +361,9 @@ type factory struct {
 	// closure walk. A closure-only dependency is resolved against it instead of
 	// against "*", so the factory stops building a version nobody can use.
 	demands map[string][]string
+	// pinToDependents holds a REQUESTED project to what depends on it, which is
+	// what a SEED wants and a repair run does not. See versionsFor.
+	pinToDependents bool
 	// wantPer overrides want for one project, from a `project@constraint` word
 	// in --recipes. Closing an index gap needs ONE named version of ONE project,
 	// and --versions applies to every requested project at once.
@@ -430,6 +435,37 @@ func (f *factory) versionsFor(rec *pantry.Recipe, proj string, requested bool, m
 	}
 	if out = f.matching(proj, out); len(out) == 0 {
 		return nil, fmt.Errorf("no version matches %q", f.constraintFor(proj))
+	}
+	// --pin-to-dependents: a REQUESTED project is held to what depends on it,
+	// the way a closure-only one already is.
+	//
+	// It is off by default because naming a project is how an operator says
+	// "this version, whatever else wants": a repair run closing one index gap
+	// must not be talked out of it by a recipe elsewhere in the pantry.
+	//
+	// A SEED is the other case. There the operator names every project in the
+	// order file, so every project is "requested" and none is held to
+	// anything — which is how gnu.org/gcc came out at 16.2.0, twenty-five
+	// minutes of compiling, while gnu.org/glibc asks for 14. Passing the pins
+	// by hand works and is what `bk closure --pins` is for; doing it by hand
+	// is also how a batch got listed in the wrong order twice in one day.
+	//
+	// An explicit `project@constraint` still wins: the operator was specific.
+	if f.pinToDependents {
+		if _, pinned := f.wantPer[proj]; !pinned {
+			if cs := f.demands[proj]; len(cs) > 0 {
+				kept := satisfyingAll(out, cs)
+				if len(kept) == 0 {
+					return nil, fmt.Errorf("no version satisfies every dependent: %s (%d candidate(s))",
+						strings.Join(cs, " and "), len(out))
+				}
+				if n := len(out) - len(kept); n > 0 {
+					fmt.Fprintf(f.stdout, "versions %s: %d dropped by its dependents (%s)\n",
+						proj, n, strings.Join(cs, " and "))
+				}
+				out = kept
+			}
+		}
 	}
 	if max > 0 && len(out) > max {
 		out = out[:max]
@@ -1023,8 +1059,28 @@ func (f *factory) newestSatisfying(rec *pantry.Recipe, proj string, cs []string)
 	if err != nil {
 		return "", err
 	}
+	all := make([]string, 0, len(vts))
 	for _, vt := range vts {
-		v := bottle.ParseVer(vt.Version)
+		all = append(all, vt.Version)
+	}
+	if kept := satisfyingAll(all, cs); len(kept) > 0 {
+		return kept[0], nil // newest first, as factoryList returns them
+	}
+	return "", fmt.Errorf("no version of %s satisfies every dependent: %s (%d candidate(s))",
+		proj, strings.Join(cs, " and "), len(vts))
+}
+
+// satisfyingAll keeps the versions that satisfy EVERY constraint, in the order
+// given — newest first, as factoryList returns them.
+//
+// Every one, not the first: python.org is asked for `>=3<3.12`, `~3.11` and
+// `>=3<3.15` by three different dependents, and only a 3.11.x satisfies all
+// three. One filter serves both callers, so a requested project and a
+// closure-only one cannot come to different answers about the same demands.
+func satisfyingAll(vers, cs []string) []string {
+	kept := make([]string, 0, len(vers))
+	for _, s := range vers {
+		v := bottle.ParseVer(s)
 		ok := true
 		for _, c := range cs {
 			if !v.Satisfies(c) {
@@ -1033,9 +1089,8 @@ func (f *factory) newestSatisfying(rec *pantry.Recipe, proj string, cs []string)
 			}
 		}
 		if ok {
-			return vt.Version, nil
+			kept = append(kept, s)
 		}
 	}
-	return "", fmt.Errorf("no version of %s satisfies every dependent: %s (%d candidate(s))",
-		proj, strings.Join(cs, " and "), len(vts))
+	return kept
 }
