@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -258,7 +259,75 @@ func TestPickVersion(t *testing.T) {
 func TestRealBuildRunner(t *testing.T) {
 	r := realBuildRunner("/opt/pkgx/bin/pkgx")
 	if r.PickVersion == nil || r.ResolveVersion == nil || r.Fetch == nil || r.FetchGit == nil || r.Touch == nil ||
-		r.Run == nil || r.FixUp == nil || r.WriteBottle == nil || r.ResolveDep == nil || r.PkgxBin == "" || r.BashPath == "" {
+		r.Run == nil || r.FixUp == nil || r.WriteBottle == nil || r.ResolveDep == nil ||
+		// Unwired, this field silently disables the whole closure question
+		// and bootstrap goes back to asking the weaker one.
+		r.ToolInstallable == nil || r.PkgxBin == "" || r.BashPath == "" {
 		t.Errorf("realBuildRunner not fully wired: %+v", r)
+	}
+}
+
+// toolInstallable asks whether the build can actually GET the tool, which is a
+// different question from whether a version of it exists — and the difference
+// is what stopped the s390x seed. libxcrypt build-depends on perl.org, perl.org
+// was in the seed registry, and installing it needs libcrypt, which the soname
+// map answers with libxcrypt: the project being built.
+func TestToolInstallableAsksAboutTheClosure(t *testing.T) {
+	var recipes map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/versions.txt") {
+			// Every project this serves a recipe for has a bottle; anything
+			// else does not, which is how a closure comes up short.
+			for p := range recipes {
+				if strings.Contains(r.URL.Path, "/"+p+"/") {
+					w.Write([]byte("1.0.0\n"))
+					return
+				}
+			}
+			http.NotFound(w, r)
+			return
+		}
+		for p, body := range recipes {
+			if strings.HasSuffix(r.URL.Path, "/"+p+"/package.yml") {
+				fmt.Fprint(w, body)
+				return
+			}
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	sd, so, sp := bottle.DistBase, bottle.PantryOverlay, bottle.PantryBase
+	defer func() { bottle.DistBase, bottle.PantryOverlay, bottle.PantryBase = sd, so, sp }()
+	bottle.DistBase, bottle.PantryOverlay, bottle.PantryBase = srv.URL, "", srv.URL
+
+	// A tool whose closure is satisfiable.
+	recipes = map[string]string{"acme.org": "dependencies:\n  zlib.net: '*'\n", "zlib.net": "{}\n"}
+	if v, err := toolInstallable("acme.org", "*"); err != nil || v != "1.0.0" {
+		t.Errorf("a satisfiable closure must resolve: %q %v", v, err)
+	}
+
+	// The same tool, with a dependency no bottle satisfies. A version check
+	// alone still says yes — which is the bug this replaces.
+	recipes = map[string]string{"acme.org": "dependencies:\n  absent.org: '*'\n"}
+	if v, err := pickVersion("acme.org", "*"); err != nil || v != "1.0.0" {
+		t.Fatalf("precondition: the version alone resolves: %q %v", v, err)
+	}
+	_, err := toolInstallable("acme.org", "*")
+	if err == nil {
+		t.Fatal("a tool whose closure cannot be installed is not a tool we have")
+	}
+	// The message must say WHICH of the two failed: "absent" and "here but
+	// unusable" send a reader to different places.
+	if !strings.Contains(err.Error(), "closure is not") || !strings.Contains(err.Error(), "acme.org") {
+		t.Errorf("err = %v", err)
+	}
+
+	// And a tool with no bottle at all fails on the version, before any
+	// closure walk — the message then names that, not a closure.
+	recipes = map[string]string{}
+	if _, err := toolInstallable("nowhere.org", "*"); err == nil {
+		t.Error("want a version failure")
+	} else if strings.Contains(err.Error(), "closure is not") {
+		t.Errorf("an absent tool is not a closure failure: %v", err)
 	}
 }

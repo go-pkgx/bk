@@ -538,6 +538,19 @@ func providedBins(provides any) []string {
 //   - perl.org declares `llvm.org: <19` on linux: a compiler, named by bottle.
 //     The host has a compiler; that is the whole premise of --bootstrap.
 //
+// `resolve` is asked whether the tool can be INSTALLED, not merely whether a
+// version of it exists. The two differ, and the difference stopped the seed:
+// github.com/besser82/libxcrypt build-depends on perl.org, perl.org WAS in the
+// seed registry, and the build still died —
+//
+//	bk: the tool environment failed: pkgx +freedesktop.org/pkg-config~0.29 +perl.org
+//	pkgx: GET …/github.com/besser82/libxcrypt/linux/s390x/versions.txt: Not Found
+//
+// because perl's closure needs libcrypt and the soname map answers that with
+// github.com/besser82/libxcrypt, which is the project being built. A tool you
+// cannot install is not a tool you have, so the question has to be about the
+// closure.
+//
 // A drop is reported, not silent: a seed bottle built without a tool somebody
 // declared is a fact that outlives the run.
 //
@@ -565,8 +578,12 @@ func WithoutUnresolvable(buildDeps map[string]any, tgt target.Target,
 	keep := map[string]any{}
 	for proj, cons := range reduceDepMap(buildDeps, tgt) {
 		if _, err := resolve(proj, cons); err != nil {
+			// "cannot install", not "no X here": perl.org WAS in the seed
+			// registry and still could not be installed, and a message that
+			// said it was absent would send a reader looking for the wrong
+			// thing. The error in the parentheses says which it is.
 			if log != nil {
-				log(fmt.Sprintf("bootstrap: no %s here — taking it from the host (%v)", proj, err))
+				log(fmt.Sprintf("bootstrap: cannot install %s here — taking it from the host (%v)", proj, err))
 			}
 			dropped = append(dropped, proj)
 			continue

@@ -2,6 +2,7 @@ package build
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -996,5 +997,66 @@ func TestBuildBootstrapTakesItsOwnPrefixFromTheHost(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(res3.ScriptPath); strings.Contains(string(b), `"/usr/bin:$PATH"`) {
 		t.Errorf("an ordinary build must not take a prefix from the host:\n%s", b)
+	}
+}
+
+// TestBuildBootstrapDropsAToolWhoseClosureIsNotHere.
+//
+// ResolveDep says perl.org is here; ToolInstallable says installing it is
+// another matter. Bootstrap must believe the second, because a tool it cannot
+// install is a tool it does not have — the build otherwise dies in `pkgx
+// +perl.org` with a 404 for the project it is building.
+func TestBuildBootstrapDropsAToolWhoseClosureIsNotHere(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "s390x"}
+	rec := okRecipe()
+	rec.Build = map[string]any{
+		"script":       []any{"make install"},
+		"dependencies": map[string]any{"perl.org": "*", "gnu.org/make": "*"},
+	}
+
+	var log strings.Builder
+	r := okRunner("acme.org/tool", tgt)
+	r.Bootstrap = true
+	// The weaker question answers yes for everything, as it did in the seed.
+	r.ResolveDep = func(string, string) (string, error) { return "1.0.0", nil }
+	r.ToolInstallable = func(project, _ string) (string, error) {
+		if project == "perl.org" {
+			return "", errors.New("perl.org 5.44.0 is here but its closure is not")
+		}
+		return "1.0.0", nil
+	}
+	oldLog := logf
+	logf = func(f string, a ...any) { fmt.Fprintf(&log, f+"\n", a...) }
+	t.Cleanup(func() { logf = oldLog })
+
+	res, err := r.Build(rec, "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(res.ScriptPath)
+	s := string(b)
+	if strings.Contains(s, `"+perl.org"`) {
+		t.Errorf("a tool that cannot be installed must not be asked for:\n%s", s)
+	}
+	if !strings.Contains(s, `"+gnu.org/make"`) {
+		t.Errorf("the installable tool must survive:\n%s", s)
+	}
+	// Reported, not silent, and saying it is not ABSENT: perl.org was there.
+	if !strings.Contains(log.String(), "cannot install perl.org here") {
+		t.Errorf("the drop must be reported and say what it means: %q", log.String())
+	}
+
+	// With no ToolInstallable wired, the weaker question decides and nothing is
+	// dropped — a Runner that does not know how to ask keeps its old behaviour.
+	r2 := okRunner("acme.org/tool", tgt)
+	r2.Bootstrap = true
+	r2.ResolveDep = func(string, string) (string, error) { return "1.0.0", nil }
+	res2, err := r2.Build(rec, "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(res2.ScriptPath); !strings.Contains(string(b), `"+perl.org"`) {
+		t.Errorf("without the stronger question, nothing changes:\n%s", b)
 	}
 }

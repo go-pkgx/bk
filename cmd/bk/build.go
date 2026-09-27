@@ -39,6 +39,30 @@ func pickVersion(project, constraint string) (string, error) {
 	return v.Raw, err
 }
 
+// toolInstallable answers the question bootstrap actually has: can this
+// registry give the build this TOOL — not "does a version of it exist".
+//
+// The two differ, and the difference stopped the s390x seed.
+// github.com/besser82/libxcrypt build-depends on perl.org; perl.org was in the
+// seed registry, so a version check said yes; and the build died because
+// installing perl needs libcrypt, which the soname map answers with
+// github.com/besser82/libxcrypt — the project being built.
+//
+// Resolved for the HOST's platform, because a build dependency is something
+// that RUNS here. The link closure, which is built for the target, goes
+// through pickVersion and is untouched by this.
+func toolInstallable(project, constraint string) (string, error) {
+	osn, arch := bottle.HostSlug()
+	v, err := bottle.PickVersionFor(project, constraint, osn, arch)
+	if err != nil {
+		return "", err
+	}
+	if _, err := bottle.ResolveClosureFor(map[string]string{project: constraint}, osn, arch); err != nil {
+		return "", fmt.Errorf("%s %s is here but its closure is not: %w", project, v.Raw, err)
+	}
+	return v.Raw, nil
+}
+
 // runBash executes the generated build script under the sanitized env using
 // mvdan.cc/sh's pure-Go interpreter — no `/bin/bash` binary. External build
 // tools (gcc/make/cmake/pkgx) are still exec'd (that is the pkgx toolchain, not
@@ -76,18 +100,19 @@ func runBashTo(out, errOut io.Writer) func(string, []string) error {
 // field but pickVersion/runBash is a direct package function of matching shape.
 func realBuildRunner(pkgxBin string) *build.Runner {
 	return &build.Runner{
-		PickVersion:    pickVersion,
-		ResolveVersion: versions.Resolve,
-		Fetch:          fetch.Fetch,
-		FetchGit:       fetch.FetchGit,
-		FetchSHA:       fetch.DeclaredSHA256,
-		Touch:          build.TouchAutotools,
-		Run:            runBash,
-		FixUp:          fixup.FixUp,
-		WriteBottle:    bottlepkg.WriteBottle,
-		ResolveDep:     pickVersion,
-		PkgxBin:        pkgxBin,
-		BashPath:       "/bin/bash",
+		PickVersion:     pickVersion,
+		ResolveVersion:  versions.Resolve,
+		Fetch:           fetch.Fetch,
+		FetchGit:        fetch.FetchGit,
+		FetchSHA:        fetch.DeclaredSHA256,
+		Touch:           build.TouchAutotools,
+		Run:             runBash,
+		FixUp:           fixup.FixUp,
+		WriteBottle:     bottlepkg.WriteBottle,
+		ResolveDep:      pickVersion,
+		ToolInstallable: toolInstallable,
+		PkgxBin:         pkgxBin,
+		BashPath:        "/bin/bash",
 	}
 }
 
