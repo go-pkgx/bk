@@ -48,8 +48,9 @@ type Runner struct {
 	// back to ResolveDep, which is the weaker question.
 	//
 	// The two differ. perl.org was in the s390x seed registry, so ResolveDep
-	// said yes, and the build died installing it: perl needs libcrypt and the
-	// soname map answers that with the project being built.
+	// said yes, and the build died installing it: our overlay declares
+	// github.com/besser82/libxcrypt as a linux dependency of perl, and that is
+	// the project being built.
 	ToolInstallable func(project, constraint string) (string, error)
 	Concurrency     int
 	PkgxBin         string
