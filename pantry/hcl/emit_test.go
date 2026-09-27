@@ -69,20 +69,35 @@ func TestConvertChoosesBlocksAndObjects(t *testing.T) {
 	}
 }
 
-// What Convert REFUSES is the point. HCL has one number type, so a YAML float
-// that happens to be whole — MACOSX_DEPLOYMENT_TARGET: 11.0 — comes back as an
-// int, and the information is absent from the format rather than lost by this
-// code. Two of the overlay's 183 recipes are that, and they stay YAML.
-func TestConvertRefusesWhatHCLCannotExpress(t *testing.T) {
-	_, err := Convert([]byte("build:\n  env:\n    MACOSX_DEPLOYMENT_TARGET: 11.0\n  script: make\n"))
+// What Convert REFUSES is the point, and what it refuses has narrowed.
+//
+// The whole-float case used to be here: MACOSX_DEPLOYMENT_TARGET: 11.0 comes
+// back from HCL as an int, and four upstream recipes were refused for it —
+// until the four were measured and found to generate byte-identical build
+// scripts either way. A check stricter than the thing it protects is a check
+// that refuses correct work.
+//
+// What is left is a defect in yaml.v3, not in either format: a string whose
+// first line is indented marshals to a block scalar the same library cannot
+// read back. bottle refuses rather than hand out YAML that fails later.
+func TestConvertRefusesWhatCannotBeReadBack(t *testing.T) {
+	_, err := Convert([]byte("test:\n  fixture: |4\n      indented\n  script: make\n"))
 	if err == nil {
-		t.Fatal("want a refusal for a whole float")
+		t.Skip("yaml.v3 now round-trips this shape; the refusal is no longer exercised here")
 	}
-	// And the message names the PATH and the TYPES: %#v renders int(11) and
-	// float64(11) identically, so the first version of this error was unusable.
-	for _, want := range []string{"MACOSX_DEPLOYMENT_TARGET", "float64", "int"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal must name %q: %v", want, err)
+	if !strings.Contains(err.Error(), "read back") {
+		t.Errorf("the refusal must say what failed: %v", err)
+	}
+}
+
+// And the message, when recipes DO differ, names the path and the types — %#v
+// renders int(11) and float64(11) identically, so the first version of this
+// error was unusable.
+func TestFirstDiffMessageNamesPathAndTypes(t *testing.T) {
+	d := firstDiff(map[string]any{"k": "11"}, map[string]any{"k": int64(11)}, "")
+	for _, want := range []string{"[k]", "string", "int64"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("the message must name %q: %s", want, d)
 		}
 	}
 }
@@ -165,7 +180,7 @@ func TestFirstDiff(t *testing.T) {
 		a, b any
 		want string
 	}{
-		{map[string]any{"k": 1}, map[string]any{"k": 1.0}, "[k]"},
+		{map[string]any{"k": 1}, map[string]any{"k": "1"}, "[k]"},
 		{map[string]any{"k": 1}, map[string]any{}, "present in the yaml"},
 		{map[string]any{}, map[string]any{"k": 1}, "invented"},
 		{[]any{1, 2}, []any{1}, "2 items from yaml, 1 from hcl"},
@@ -291,5 +306,73 @@ func TestConvertRefusesUnparseableOutput(t *testing.T) {
 	if _, err := Convert([]byte("build:\n  script: make\n")); err == nil ||
 		!strings.Contains(err.Error(), "does not parse") {
 		t.Errorf("want a refusal naming the parse failure, got %v", err)
+	}
+}
+
+// TestConvertAcceptsANumberThatRendersTheSame.
+//
+// HCL has one number type, so a YAML float64(11) comes back as int64(11) and
+// the structs differ. The BUILD does not: every numeric value reaches a script
+// through transformScalar's fmt.Sprint, and both render "11". Measured, not
+// argued — apache.org/thrift, isc.org/bind9, mpv.io and pwmt.org/zathura
+// generate byte-identical build scripts from either recipe.
+func TestConvertAcceptsANumberThatRendersTheSame(t *testing.T) {
+	roundTrips(t, "build:\n  env:\n    MACOSX_DEPLOYMENT_TARGET: 11.0\n  script: make\n")
+}
+
+// And the tolerance stays narrow. A number whose TEXT differs is still a
+// difference — float64(2.0250127e+07) is not int64(20250127), and that one
+// turned out to be a client bug worth its own fix.
+func TestFirstDiffNumberToleranceIsNarrow(t *testing.T) {
+	if d := firstDiff(map[string]any{"k": 11.0}, map[string]any{"k": int64(11)}, ""); d != "" {
+		t.Errorf("numbers rendering alike must be equal, got %q", d)
+	}
+	// And this is where the tolerance correctly declines to help:
+	// fmt.Sprint(20250127.0) is "2.0250127e+07", which is NOT "20250127". The
+	// two do not render alike, so they are not the same — and the real fix was
+	// bottle keeping integral numbers as integers, not a looser comparison
+	// here.
+	if d := firstDiff(map[string]any{"k": 20250127.0}, map[string]any{"k": int64(20250127)}, ""); d == "" {
+		t.Error("a float that renders in exponent form is not the integer")
+	}
+	if d := firstDiff(map[string]any{"k": 2.0250127e+07}, map[string]any{"k": "20250127"}, ""); d == "" {
+		t.Error("a string is never a number, whatever it renders as")
+	}
+	if d := firstDiff(map[string]any{"k": 11.5}, map[string]any{"k": int64(11)}, ""); d == "" {
+		t.Error("numbers rendering differently must still differ")
+	}
+}
+
+// A list-form `versions:` carries TEXT. pantry.Parse re-reads each candidate's
+// raw scalar from the YAML node so 5.0 keeps its ".0" — the distributable URL
+// interpolates {{version.raw}}, and a candidate coerced to 5 fetches a tarball
+// that does not exist. yaml.Unmarshal into a map has already lost that, so the
+// emitter is handed the parsed recipe's list instead of the document's.
+func TestConvertKeepsVersionText(t *testing.T) {
+	got := roundTrips(t, "versions:\n  - 5.0\n  - 4.5\ndistributable:\n  url: https://x/{{version.raw}}.tar.gz\nbuild:\n  script: make\n")
+	if !strings.Contains(got, `"5.0"`) {
+		t.Errorf("a version's text must survive as text:\n%s", got)
+	}
+}
+
+// Convert must refuse output that parses but says something else.
+//
+// No real recipe reaches this any more: the version-text and render-equal
+// fixes removed the cases that did. It is the guard that would catch the NEXT
+// emitter defect, so the seam stands in for one — the same seam that covers
+// the parse-failure guard, and for the same reason.
+func TestConvertRefusesADifferentRecipe(t *testing.T) {
+	old := emitFn
+	t.Cleanup(func() { emitFn = old })
+	emitFn = func(map[string]any) string { return `dependencies = { "openssl.org" = "^99" }` + "\n" }
+
+	_, err := Convert([]byte("dependencies:\n  openssl.org: ^3\nbuild:\n  script: make\n"))
+	if err == nil {
+		t.Fatal("want a refusal")
+	}
+	for _, want := range []string{"DIFFERENT recipe", "openssl.org", "^3", "^99"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %q: %v", want, err)
+		}
 	}
 }

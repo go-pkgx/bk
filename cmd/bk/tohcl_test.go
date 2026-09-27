@@ -10,9 +10,14 @@ import (
 
 const goodYML = "dependencies:\n  openssl.org: ^3\nbuild:\n  script: |\n    make PREFIX=${DEST} install\n"
 
-// A recipe HCL cannot express: HCL has one number type, so a whole YAML float
-// comes back as an int. Two of the overlay's 183 are this, and they stay YAML.
-const floatYML = "build:\n  env:\n    MACOSX_DEPLOYMENT_TARGET: 11.0\n  script: make\n"
+// A recipe Convert must refuse. The schema is the simplest such case and the
+// most stable: `provides` is a list of paths, so a number there is not a
+// recipe at all, and no future improvement to the converter will make it one.
+//
+// It used to be MACOSX_DEPLOYMENT_TARGET: 11.0, which the converter has since
+// learned to handle — a test whose subject stops being a failure is a test
+// that silently stops testing.
+const unconvertibleYML = "provides: 123\n"
 
 func writeYML(t *testing.T, dir, proj, body string) string {
 	t.Helper()
@@ -69,12 +74,12 @@ func TestToHCLWriteReplacesTheRecipe(t *testing.T) {
 // a recipe HCL cannot express keeps the file that can express it.
 func TestToHCLRefusalKeepsTheYAML(t *testing.T) {
 	dir := t.TempDir()
-	p := writeYML(t, dir, "float.org", floatYML)
+	p := writeYML(t, dir, "hard.org", unconvertibleYML)
 	var out, errb bytes.Buffer
 	if code := runToHCL([]string{"--write", p}, &out, &errb); code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}
-	if !strings.Contains(errb.String(), "float.org") {
+	if !strings.Contains(errb.String(), "hard.org") {
 		t.Errorf("the refusal must name the recipe: %q", errb.String())
 	}
 	if _, err := os.Stat(p); err != nil {
@@ -91,7 +96,7 @@ func TestToHCLDirConvertsWhatItCan(t *testing.T) {
 	dir := t.TempDir()
 	writeYML(t, dir, "a.org", goodYML)
 	writeYML(t, dir, "b.org", goodYML)
-	writeYML(t, dir, "float.org", floatYML)
+	writeYML(t, dir, "hard.org", unconvertibleYML)
 	var out, errb bytes.Buffer
 	code := runToHCL([]string{"--dir", dir, "--write"}, &out, &errb)
 	if code != 1 {
