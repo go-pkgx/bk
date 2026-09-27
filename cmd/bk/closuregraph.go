@@ -147,7 +147,20 @@ func (g *closureGraph) implicitExtras() []string {
 }
 
 // printGraph writes whichever view the flags asked for.
-func printGraph(g *closureGraph, constraints, implicit bool, stdout io.Writer) {
+func printGraph(g *closureGraph, constraints, pins, implicit bool, stdout io.Writer) {
+	if pins {
+		ps, conflicts := g.pins()
+		for _, p := range ps {
+			fmt.Fprintln(stdout, p)
+		}
+		// Named, not dropped: a project whose dependents disagree needs one
+		// build per line, and a list that silently omitted it would read as
+		// "nothing to do here".
+		for _, c := range conflicts {
+			fmt.Fprintf(stdout, "# NO single version: %s\n", c)
+		}
+		return
+	}
 	if constraints {
 		for _, l := range g.constrained() {
 			fmt.Fprintln(stdout, l)
