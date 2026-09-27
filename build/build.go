@@ -461,6 +461,60 @@ func WithoutSelfDep(project string, buildDeps map[string]any) map[string]any {
 	return out
 }
 
+// HostPrefixTokens gives {{deps.<project>.prefix}} a value for a tool
+// bootstrap left to the machine, when the machine demonstrably provides it.
+//
+// gnu.org/sed build-depends on gnu.org/sed for one line:
+//
+//	export PATH="{{deps.gnu.org/sed.prefix}}/bin:$PATH"
+//
+// — putting a known-good sed in front of whatever the system has. On an
+// architecture with no sed bottle the system's IS the only sed, and the
+// unresolved token stopped the build with the guard Runner.Build added for
+// exactly this shape.
+//
+// The prefix is not invented. The recipe says it provides `bin/sed`, the host
+// says `sed` is at /usr/bin/sed, and the prefix that makes both true is /usr.
+// Where the two do not agree — the binary is somewhere that is not
+// <prefix>/bin, or the host does not have it at all — no token is produced and
+// the build still refuses. A guessed path would send a compiler somewhere
+// nobody chose.
+func HostPrefixTokens(provides any, dropped []string, look func(string) (string, error)) []moustache.Token {
+	if look == nil || len(dropped) == 0 {
+		return nil
+	}
+	var toks []moustache.Token
+	for _, proj := range dropped {
+		for _, rel := range providedBins(provides) {
+			path, err := look(filepath.Base(rel))
+			if err != nil {
+				continue
+			}
+			// <prefix>/bin/<name>, and nothing else counts.
+			if dir := filepath.Dir(path); filepath.Base(dir) == "bin" {
+				toks = append(toks, moustache.Token{From: "deps." + proj + ".prefix", To: filepath.Dir(dir)})
+				break
+			}
+		}
+	}
+	return toks
+}
+
+// providedBins reads a recipe's `provides:` as a list of relative paths.
+func providedBins(provides any) []string {
+	list, ok := provides.([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, v := range list {
+		if s, ok := v.(string); ok && strings.HasPrefix(s, "bin/") {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // WithoutUnresolvable drops the build dependencies this registry cannot
 // provide for the target, asking `resolve` about each one.
 //
