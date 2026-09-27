@@ -416,7 +416,7 @@ func TestRunFactoryFailureStages(t *testing.T) {
 		// closureOf parsed the recipe already; corrupt it before the build loop.
 		closure := closureOf
 		t.Cleanup(func() { closureOf = closure })
-		closureOf = func(dir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
+		closureOf = func(overlayDir, dir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
 			writeClosureRecipe(t, h.pantry, "lib.org", "versions: [\n")
 			return want, nil
 		}
@@ -435,7 +435,7 @@ func TestRunFactorySkipsProjectWithoutRecipe(t *testing.T) {
 	h := newFactoryHarness(t)
 	closure := closureOf
 	t.Cleanup(func() { closureOf = closure })
-	closureOf = func(string, target.Target, []string, func(string)) ([]string, map[string][]string) {
+	closureOf = func(string, string, target.Target, []string, func(string)) ([]string, map[string][]string) {
 		return []string{"ghost.org"}, nil
 	}
 	if code := h.run(t, "--recipes", "ghost.org"); code != 0 {
@@ -1668,7 +1668,7 @@ func TestClosureOfCollectsDemands(t *testing.T) {
 	write("dep.org", "dependencies:\n  free.org: ^1\nbuild: make\n")
 	write("free.org", "build: make\n")
 
-	order, demands := closureOf(dir, target.Target{Platform: "linux", Arch: "x86-64"}, []string{"app.org"}, func(string) {})
+	order, demands := closureOf("", dir, target.Target{Platform: "linux", Arch: "x86-64"}, []string{"app.org"}, func(string) {})
 	if len(order) != 3 || order[len(order)-1] != "app.org" {
 		t.Errorf("order = %v, want deps before app.org", order)
 	}
