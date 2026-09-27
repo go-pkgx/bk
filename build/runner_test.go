@@ -934,3 +934,67 @@ func TestBuildOrdinaryFailureIsUnchanged(t *testing.T) {
 		t.Errorf("an ordinary failure must stay plain: %v", err)
 	}
 }
+
+// TestBuildBootstrapTakesItsOwnPrefixFromTheHost.
+//
+// The other half of the refusal above. gnu.org/sed build-depends on itself for
+// one line — it puts a known-good sed in front of whatever the system has —
+// and on an architecture with no sed bottle the system's IS the only sed. The
+// recipe says it provides bin/sed and the host says sed is at /usr/bin/sed, so
+// /usr is the prefix that makes both statements true.
+//
+// End to end, and asserting on the SCRIPT: a helper returning the right token
+// says nothing about whether the build received it.
+func TestBuildBootstrapTakesItsOwnPrefixFromTheHost(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "s390x"}
+	recipe := func() *pantry.Recipe {
+		rec := okRecipe()
+		rec.Provides = []any{"bin/tool"}
+		rec.Build = map[string]any{
+			"script":       []any{`export PATH="{{deps.acme.org/tool.prefix}}/bin:$PATH"`},
+			"dependencies": map[string]any{"acme.org/tool": ">=14"},
+		}
+		return rec
+	}
+
+	r := okRunner("acme.org/tool", tgt)
+	r.Bootstrap = true
+	r.LookPath = func(name string) (string, error) {
+		if name == "tool" {
+			return "/usr/bin/tool", nil
+		}
+		return "", errors.New("not found")
+	}
+	res, err := r.Build(recipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err != nil {
+		t.Fatalf("the host provides it, so the build must proceed: %v", err)
+	}
+	b, _ := os.ReadFile(res.ScriptPath)
+	if s := string(b); !strings.Contains(s, `export PATH="/usr/bin:$PATH"`) {
+		t.Errorf("want the host's prefix in the script:\n%s", s)
+	}
+
+	// The host does NOT have it: no prefix is invented, and the build refuses
+	// exactly as it did before. A guessed path would send a compiler somewhere
+	// nobody chose.
+	r2 := okRunner("acme.org/tool", tgt)
+	r2.Bootstrap = true
+	r2.LookPath = func(string) (string, error) { return "", errors.New("not found") }
+	if _, err := r2.Build(recipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist")); err == nil {
+		t.Error("with nothing on the host to confirm it, the build must still refuse")
+	}
+
+	// And NOT in the ordinary mode: there the bottle exists, nothing was
+	// dropped, and the recipe's own prefix must come from the registry rather
+	// than from whatever the build machine happens to have installed.
+	r3 := okRunner("acme.org/tool", tgt)
+	r3.LookPath = func(string) (string, error) { return "/usr/bin/tool", nil }
+	res3, err := r3.Build(recipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(res3.ScriptPath); strings.Contains(string(b), `"/usr/bin:$PATH"`) {
+		t.Errorf("an ordinary build must not take a prefix from the host:\n%s", b)
+	}
+}

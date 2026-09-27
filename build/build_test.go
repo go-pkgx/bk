@@ -1,6 +1,7 @@
 package build
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -527,5 +528,72 @@ func TestPlatformKeyRejectsAnArchItDoesNotHave(t *testing.T) {
 		if _, _, ok := platformKey(k); ok {
 			t.Errorf("platformKey(%q) = ok; want it read as a project name", k)
 		}
+	}
+}
+
+// HostPrefixForSelfDep answers only when the recipe and the host AGREE, and
+// the disagreements are the point: a guessed prefix would send a compiler
+// somewhere nobody chose, and every one of these shapes was reachable.
+func TestHostPrefixForSelfDep(t *testing.T) {
+	at := func(m map[string]string) func(string) (string, error) {
+		return func(name string) (string, error) {
+			if p, ok := m[name]; ok {
+				return p, nil
+			}
+			return "", errors.New("not found")
+		}
+	}
+	for name, c := range map[string]struct {
+		provides any
+		host     map[string]string
+		want     string // "" = no token
+	}{
+		"the recipe and the host agree": {
+			[]any{"bin/sed"}, map[string]string{"sed": "/usr/bin/sed"}, "/usr",
+		},
+		"a deeper prefix is still a prefix": {
+			[]any{"bin/sed"}, map[string]string{"sed": "/opt/local/bin/sed"}, "/opt/local",
+		},
+		// The host has it, but not at <prefix>/bin. There is no prefix that
+		// makes both statements true, so there is no answer to give.
+		"the binary is not under a bin/": {
+			[]any{"bin/sed"}, map[string]string{"sed": "/sbin/sed"}, "",
+		},
+		"the host does not have it": {
+			[]any{"bin/sed"}, map[string]string{}, "",
+		},
+		// The first candidate is absent and the second is there: a recipe
+		// providing several binaries is answered by whichever one the host can
+		// actually confirm.
+		"the second provided binary answers": {
+			[]any{"bin/absent", "bin/sed"}, map[string]string{"sed": "/usr/bin/sed"}, "/usr",
+		},
+		// Nothing in `provides:` is a binary, so the recipe never claimed to
+		// put anything on a PATH and the host cannot confirm a thing.
+		"a library provides no binary": {
+			[]any{"lib/libsed.a"}, map[string]string{"sed": "/usr/bin/sed"}, "",
+		},
+		"provides is a platform mapping, not a list": {
+			map[string]any{"linux": []any{"bin/sed"}}, map[string]string{"sed": "/usr/bin/sed"}, "",
+		},
+		"provides holds something that is not a string": {
+			[]any{3}, map[string]string{"sed": "/usr/bin/sed"}, "",
+		},
+		"no provides at all": {nil, map[string]string{"sed": "/usr/bin/sed"}, ""},
+	} {
+		got := HostPrefixForSelfDep("gnu.org/sed", c.provides, at(c.host))
+		if c.want == "" {
+			if len(got) != 0 {
+				t.Errorf("%s: want no token, got %v", name, got)
+			}
+			continue
+		}
+		if len(got) != 1 || got[0].From != "deps.gnu.org/sed.prefix" || got[0].To != c.want {
+			t.Errorf("%s: got %v, want deps.gnu.org/sed.prefix = %s", name, got, c.want)
+		}
+	}
+	// No way to ask is not the same as an answer of "/".
+	if got := HostPrefixForSelfDep("gnu.org/sed", []any{"bin/sed"}, nil); got != nil {
+		t.Errorf("without a lookup there is nothing to confirm: %v", got)
 	}
 }

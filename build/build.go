@@ -461,8 +461,9 @@ func WithoutSelfDep(project string, buildDeps map[string]any) map[string]any {
 	return out
 }
 
-// HostPrefixTokens gives {{deps.<project>.prefix}} a value for a tool
-// bootstrap left to the machine, when the machine demonstrably provides it.
+// HostPrefixForSelfDep gives {{deps.<project>.prefix}} a value when bootstrap
+// dropped a recipe's dependency on ITSELF and the machine demonstrably
+// provides what the recipe says it provides.
 //
 // gnu.org/sed build-depends on gnu.org/sed for one line:
 //
@@ -479,25 +480,31 @@ func WithoutSelfDep(project string, buildDeps map[string]any) map[string]any {
 // <prefix>/bin, or the host does not have it at all — no token is produced and
 // the build still refuses. A guessed path would send a compiler somewhere
 // nobody chose.
-func HostPrefixTokens(provides any, dropped []string, look func(string) (string, error)) []moustache.Token {
-	if look == nil || len(dropped) == 0 {
+//
+// The SELF dependency only, and that restriction is the whole of its
+// justification. `provides:` belongs to the recipe being built; it says what
+// THIS project puts on the machine and nothing about any other. A first
+// version took a list of every dropped dependency and read this recipe's
+// provides for each of them, which would have answered "cmake.org's prefix is
+// /usr" because the recipe in hand ships a bin/ of its own. A dropped
+// dependency that is not the self-edge still leaves its token unresolved, and
+// the build still refuses — loudly, which is the correct outcome for a
+// question this cannot answer.
+func HostPrefixForSelfDep(project string, provides any, look func(string) (string, error)) []moustache.Token {
+	if look == nil {
 		return nil
 	}
-	var toks []moustache.Token
-	for _, proj := range dropped {
-		for _, rel := range providedBins(provides) {
-			path, err := look(filepath.Base(rel))
-			if err != nil {
-				continue
-			}
-			// <prefix>/bin/<name>, and nothing else counts.
-			if dir := filepath.Dir(path); filepath.Base(dir) == "bin" {
-				toks = append(toks, moustache.Token{From: "deps." + proj + ".prefix", To: filepath.Dir(dir)})
-				break
-			}
+	for _, rel := range providedBins(provides) {
+		path, err := look(filepath.Base(rel))
+		if err != nil {
+			continue
+		}
+		// <prefix>/bin/<name>, and nothing else counts.
+		if dir := filepath.Dir(path); filepath.Base(dir) == "bin" {
+			return []moustache.Token{{From: "deps." + project + ".prefix", To: filepath.Dir(dir)}}
 		}
 	}
-	return toks
+	return nil
 }
 
 // providedBins reads a recipe's `provides:` as a list of relative paths.
