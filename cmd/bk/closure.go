@@ -27,6 +27,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	overlayDir := fs.String("overlay", envOr("PANTRY_OVERLAY_DIR", ""), "an overlay checkout consulted BEFORE the pantry, as the factory consults PKGX_PANTRY_OVERLAY. Without it this describes a build nobody performs")
 	platform := fs.String("platform", envOr("PLATFORM", "linux/x86-64"), "target os/arch")
 	withBuild := fs.Bool("build", false, "follow BUILD dependencies as well as runtime ones. The runtime closure is a DAG and is what a consumer needs; adding build dependencies makes it a graph with cycles, and is what FILLING an architecture from nothing actually requires")
+	pins := fs.Bool("pins", false, "instead of the order, emit the `project@constraint` words a `bk factory --recipes` dispatch needs, one per line, so the version a REQUESTED project builds is the one its dependents can use. A project whose dependents cannot agree is reported as a comment rather than decided")
 	constraints := fs.Bool("constraints", false, "instead of the order, list every project a dependent pins to a version line, and who asks for what. `max_versions=1` builds the newest, and the newest is not always what a dependent can use")
 	implicit := fs.Bool("implicit", false, "also name the soname providers this walk cannot reach — dependencies that exist only in the compiled artefact, which no recipe declares")
 	if err := fs.Parse(args); err != nil {
@@ -38,7 +39,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	// The plain runtime walk keeps going through closureOf, which the factory
 	// also calls: one path, so `bk closure` cannot describe an order the
 	// factory would not build.
-	if !*withBuild && !*constraints && !*implicit {
+	if !*withBuild && !*constraints && !*implicit && !*pins {
 		order, _ := closureOf(*pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
 		for _, p := range order {
 			fmt.Fprintln(stdout, p)
@@ -50,7 +51,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	for _, p := range fs.Args() {
 		g.visit(p)
 	}
-	printGraph(g, *constraints, *implicit, stdout)
+	printGraph(g, *constraints, *pins, *implicit, stdout)
 	return 0
 }
 
