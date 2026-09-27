@@ -56,7 +56,25 @@ func Dir(pantryDir, project string) string {
 }
 
 // LoadOverlay reads a project's recipe, consulting an OVERLAY checkout before
-// the pantry — which is what the factory does, through PKGX_PANTRY_OVERLAY.
+// the pantry — which is what a CONSUMER does, through PKGX_PANTRY_OVERLAY, and
+// therefore what planning a build must do.
+//
+// It is NOT what the factory builds from. `bk factory` loads the recipe it
+// compiles with Load, from the pantry with the overrides applied, and never
+// sees the overlay's copy. That division is deliberate and the two halves fix
+// different things: an overrides patch fixes a BUILD, the overlay fixes
+// RESOLUTION. It is measurable — go-pkgx/packages' `overlaycheck --pantry
+// --overlay` compares the two halves of all 183 projects our overlay carries,
+// and on 2026-09-27 25 disagreed: 23 under `build`, which no build and no
+// consumer reads from the overlay, and 2 under `dependencies`, which are the
+// whole point of the overlay carrying them.
+//
+// The factory's CLOSURE is a third thing again, and takes the union of both
+// halves — see closureRecipes in cmd/bk. A dependency only the overlay
+// declares still has to be BUILT, because a consumer will demand it.
+//
+// This comment used to say the factory consulted the overlay, full stop. That
+// was one claim too wide, and the incident below is about the ORDER.
 //
 // A tool that reads only the pantry describes a build nobody performs. The
 // s390x seed order was computed that way and missed

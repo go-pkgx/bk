@@ -2,10 +2,15 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/go-pkgx/bk/recipefile"
+	"github.com/go-pkgx/bk/target"
 )
 
 // writeClosureRecipe drops a package.yml under <pantry>/projects/<proj>/.
@@ -129,5 +134,77 @@ func writeClosureRecipeNamed(t *testing.T, pantry, proj, name, body string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The edge that started this: perl.org NEEDs libcrypt.so.1, our overlay says
+// so and upstream's recipe does not. The factory's own walk read the pantry
+// alone, so the provider was never built — while every consumer resolved it
+// from the overlay and found nothing in the registry.
+func TestClosureOfSeesAnOverlayOnlyDependency(t *testing.T) {
+	pantry, overlay := t.TempDir(), t.TempDir()
+	writeClosureRecipe(t, pantry, "perl.org", "dependencies:\n  gnu.org/gdbm: '*'\n")
+	writeClosureRecipe(t, overlay, "perl.org", "dependencies:\n  github.com/besser82/libxcrypt: '*'\n")
+	writeClosureRecipe(t, pantry, "gnu.org/gdbm", "build: make\n")
+	writeClosureRecipe(t, pantry, "github.com/besser82/libxcrypt", "build: make\n")
+
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	order, _ := closureOf(overlay, pantry, tgt, []string{"perl.org"}, func(string) {})
+	for _, want := range []string{"github.com/besser82/libxcrypt", "gnu.org/gdbm", "perl.org"} {
+		if !slices.Contains(order, want) {
+			t.Errorf("order = %v, missing %s", order, want)
+		}
+	}
+	// Both halves, not the overlay winning: the pantry's own dependency is
+	// what the BUILD will need in its environment.
+	if len(order) != 3 {
+		t.Errorf("order = %v, want exactly the three", order)
+	}
+
+	// Without the overlay this is the walk it replaces, blind spot and all.
+	if order, _ := closureOf("", pantry, tgt, []string{"perl.org"}, func(string) {}); slices.Contains(order, "github.com/besser82/libxcrypt") {
+		t.Errorf("a pantry-only walk cannot see the overlay's edge: %v", order)
+	}
+}
+
+// A constraint in either half is a constraint something will ask for:
+// surrealdb.com asks rust-lang.org for ">=1.60" in the overlay and "~1.95" in
+// the patched pantry, and a version satisfying only one of them leaves the
+// other asking for something nothing built.
+func TestClosureOfCollectsDemandsFromBothHalves(t *testing.T) {
+	pantry, overlay := t.TempDir(), t.TempDir()
+	writeClosureRecipe(t, pantry, "app.org", "dependencies:\n  lib.org: ~1.95\n")
+	writeClosureRecipe(t, overlay, "app.org", "dependencies:\n  lib.org: '>=1.60'\n")
+	writeClosureRecipe(t, pantry, "lib.org", "build: make\n")
+
+	_, demands := closureOf(overlay, pantry, target.Target{Platform: "linux", Arch: "x86-64"},
+		[]string{"app.org"}, func(string) {})
+	got := demands["lib.org"]
+	slices.Sort(got)
+	if len(got) != 2 || got[0] != ">=1.60" || got[1] != "~1.95" {
+		t.Errorf("demands = %v, want both halves", got)
+	}
+}
+
+// A project only the overlay carries is still a project, and a recipe that
+// exists in either half and does not parse is never skipped quietly: the walk
+// would plan a build around a recipe it could not read.
+func TestClosureRecipes(t *testing.T) {
+	pantry, overlay := t.TempDir(), t.TempDir()
+	writeClosureRecipe(t, overlay, "only.example", "build: make\n")
+	if recs, err := closureRecipes(overlay, pantry, "only.example"); err != nil || len(recs) != 1 {
+		t.Errorf("overlay-only: %d recipe(s), %v", len(recs), err)
+	}
+	if _, err := closureRecipes(overlay, pantry, "absent.example"); !errors.Is(err, recipefile.ErrNoRecipe) {
+		t.Errorf("absent everywhere: %v", err)
+	}
+	writeClosureRecipe(t, overlay, "broken.example", "dependencies: [\n")
+	if _, err := closureRecipes(overlay, pantry, "broken.example"); err == nil || errors.Is(err, recipefile.ErrNoRecipe) {
+		t.Errorf("a recipe that exists and does not parse must be reported: %v", err)
+	}
+	// With no overlay it is the pantry-only loader it replaces.
+	writeClosureRecipe(t, pantry, "plain.example", "build: make\n")
+	if recs, err := closureRecipes("", pantry, "plain.example"); err != nil || len(recs) != 1 {
+		t.Errorf("pantry-only: %d recipe(s), %v", len(recs), err)
 	}
 }

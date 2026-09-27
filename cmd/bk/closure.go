@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -40,7 +41,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	// also calls: one path, so `bk closure` cannot describe an order the
 	// factory would not build.
 	if !*withBuild && !*constraints && !*implicit && !*pins {
-		order, _ := closureOf(*pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
+		order, _ := closureOf(*overlayDir, *pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
 		for _, p := range order {
 			fmt.Fprintln(stdout, p)
 		}
@@ -69,7 +70,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 //	satisfies "2" (available: 1)
 //
 // The constraint was in the spec the walk had already read.
-var closureOf = func(pantryDir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
+var closureOf = func(overlayDir, pantryDir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
 	seen := map[string]bool{}
 	var order []string
 	demands := map[string][]string{}
@@ -79,22 +80,24 @@ var closureOf = func(pantryDir string, tgt target.Target, want []string, warn fu
 			return
 		}
 		seen[proj] = true // mark first: breaks dependency cycles
-		rec, err := loadClosureRecipe(pantryDir, proj)
+		recs, err := closureRecipes(overlayDir, pantryDir, proj)
 		if err != nil {
 			// A dependency we have no recipe for can't be built by us — skip it
 			// (it resolves from upstream dist at build time), but note it.
 			warn(fmt.Sprintf("closure: skip %s: %v", proj, err))
 			return
 		}
-		for dep, cons := range build.ReduceDeps(rec.Dependencies, tgt) {
-			// "*" and "" say nothing, and recording them would make every
-			// project look constrained.
-			if cons != "" && cons != "*" && !slices.Contains(demands[dep], cons) {
-				demands[dep] = append(demands[dep], cons)
+		for _, rec := range recs {
+			for dep, cons := range build.ReduceDeps(rec.Dependencies, tgt) {
+				// "*" and "" say nothing, and recording them would make every
+				// project look constrained.
+				if cons != "" && cons != "*" && !slices.Contains(demands[dep], cons) {
+					demands[dep] = append(demands[dep], cons)
+				}
 			}
-		}
-		for _, spec := range build.DepSpecs(rec.Dependencies, tgt) {
-			visit(depName(spec))
+			for _, spec := range build.DepSpecs(rec.Dependencies, tgt) {
+				visit(depName(spec))
+			}
 		}
 		order = append(order, proj) // post-order → deps precede dependents
 	}
@@ -114,8 +117,60 @@ var closureOf = func(pantryDir string, tgt target.Target, want []string, warn fu
 // dependency — so readline was built with no ncurses in its environment.
 func depName(spec string) string { return build.SpecProject(spec) }
 
-func loadClosureRecipe(pantryDir, proj string) (*pantry.Recipe, error) {
-	return recipefile.Load(pantryDir, proj)
+// closureRecipes returns BOTH halves of a project's recipe — the overlay's and
+// the pantry's — because both are real and they say different things.
+//
+// The factory BUILDS from the pantry with the overrides applied; a consumer
+// RESOLVES from the overlay. So a dependency declared in only one of them is
+// still a dependency of something: the overlay's is what a consumer will demand
+// of the registry, the pantry's is what the build itself will need in its
+// environment. A closure that reads one half plans a registry the other half
+// will find incomplete.
+//
+// Reading only the pantry is how github.com/besser82/libxcrypt went missing
+// from the s390x seed: perl.org declares it in OUR overlay, with a comment
+// saying the published perl bottle NEEDs libcrypt.so.1 and glibc dropped it,
+// and upstream's perl.org says nothing about it. recipefile.LoadOverlay was
+// written for that, and `bk closure --build` got it — but closureOf, the walk
+// `bk factory` itself runs, kept reading the pantry alone. The order that
+// worked was computed by hand with the other tool and handed to the factory as
+// an explicit list; a nightly chunked run, which slices recipes.txt, had no
+// such list.
+//
+// Taking the UNION rather than letting the overlay win is deliberate. The
+// overlay wins for a CONSUMER, and LoadOverlay is right for what a consumer
+// sees, but the closure also decides what a BUILD will be able to resolve, and
+// the build reads the pantry. go-pkgx/packages' overlaycheck measured the two
+// halves disagreeing for 25 of the 183 projects our overlay carries —
+// surrealdb.com asks rust-lang.org for ">=1.60" in the overlay and "~1.95" in
+// the patched pantry. Letting the overlay win there would pin rust by a
+// constraint the build does not use, and the build would then ask for a
+// version nothing had built.
+//
+// With no overlay directory this is exactly the pantry-only walk it replaces.
+func closureRecipes(overlayDir, pantryDir, proj string) ([]*pantry.Recipe, error) {
+	var recs []*pantry.Recipe
+	for _, dir := range []string{overlayDir, pantryDir} {
+		if dir == "" {
+			continue
+		}
+		switch r, err := recipefile.Load(dir, proj); {
+		case err == nil:
+			recs = append(recs, r)
+		case errors.Is(err, recipefile.ErrNoRecipe):
+			// Half a project is normal: the overlay carries 183 of several
+			// thousand, and a pantry need not be complete either.
+		default:
+			// A recipe that EXISTS and does not parse is never silently
+			// skipped — the walk would plan a build around a recipe it could
+			// not read.
+			return nil, err
+		}
+	}
+	if len(recs) == 0 {
+		return nil, fmt.Errorf("%w: %s", recipefile.ErrNoRecipe, proj)
+	}
+	return recs, nil
 }
 
 func envOr(k, def string) string {

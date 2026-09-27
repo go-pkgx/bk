@@ -95,6 +95,13 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	recipesFile := fs.String("recipes-file", "recipes.txt", "file listing one project per line (# comments allowed)")
 	noClosure := fs.Bool("no-closure", os.Getenv("NO_CLOSURE") != "", "build ONLY the requested projects, not their dependency closure. For a repair run, where the dependencies are already published and rebuilding them at their newest upstream version starves the targets behind them")
 	pantryDir := fs.String("pantry", envOr("PANTRY", "pantry"), "pantry checkout to build from")
+	// The factory BUILDS from the pantry alone — this does not change that.
+	// It widens the CLOSURE: a dependency only our overlay declares is one a
+	// consumer will demand of the registry, so it has to be built, and until
+	// now nothing in the factory could see it. `bk closure` has had the flag
+	// since the walk it uses was taught about the overlay; the walk the
+	// factory runs was left behind.
+	overlayDir := fs.String("overlay", envOr("PANTRY_OVERLAY_DIR", ""), "an overlay checkout whose dependencies COUNT toward the closure, as a consumer resolves them. The recipe built is still the pantry's")
 	overridesDir := fs.String("overrides", "overrides", `directory of *.patch recipe overrides ("" to skip)`)
 	to := fs.String("to", envOr("DIST", "oci://ghcr.io/go-pkgx/packages"), "oci:// registry to publish to")
 	platform := fs.String("platform", envOr("PLATFORM", ""), "target os/arch, e.g. linux/x86-64 (required)")
@@ -222,7 +229,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	list := want
 	var demands map[string][]string
 	if !*noClosure {
-		list, demands = closureOf(*pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
+		list, demands = closureOf(*overlayDir, *pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
 	}
 	if *mirrorFrom != "" {
 		// Mirroring needs no recipe (no build, and the versions come from the
