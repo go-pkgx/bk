@@ -279,17 +279,36 @@ func Convert(yamlSrc []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the yaml does not parse: %w", err)
 	}
+	// A list-form `versions:` carries text, not numbers. pantry.Parse re-reads
+	// each candidate's raw scalar straight from the YAML node so that `5.0`
+	// keeps its ".0" — the distributable URL interpolates {{version.raw}}, and
+	// a candidate coerced to 5 fetches a tarball that does not exist.
+	//
+	// yaml.Unmarshal into a map has already lost that by the time we get here,
+	// so the emitter is handed the parsed recipe's version list instead of the
+	// document's. Without this, docbook.org and info-zip.org/zip convert into
+	// recipes that ask for version 5 and 3.
+	if vs, ok := want.Versions.([]any); ok {
+		doc["versions"] = vs
+	}
 	out := []byte(emitFn(doc))
 	got, err := Parse(out, "package.hcl")
 	if err != nil {
 		return nil, fmt.Errorf("the hcl this produced does not parse: %w", err)
 	}
-	if !reflect.DeepEqual(want, got) {
+	// The VERDICT and the EXPLANATION are the same comparison.
+	//
+	// They were not: the decision was reflect.DeepEqual and the message came
+	// from firstDiff, so once firstDiff learned that two numbers rendering the
+	// same text are the same, four recipes were refused with an empty
+	// explanation — "is a DIFFERENT recipe:" and nothing after the colon. A
+	// check whose reason disagrees with its answer cannot be acted on.
+	if d := firstDiff(want, got, ""); d != "" {
 		// Naming the PATH, not printing both recipes. The first version dumped
 		// them with %#v and they came out character-identical, because %#v
 		// renders int(1) and float64(1) the same way — the difference was a
 		// type, and the message could not show it.
-		return nil, fmt.Errorf("the hcl this produced is a DIFFERENT recipe: %s", firstDiff(want, got, ""))
+		return nil, fmt.Errorf("the hcl this produced is a DIFFERENT recipe: %s", d)
 	}
 	return out, nil
 }
@@ -334,6 +353,24 @@ func firstDiff(a, b any, path string) string {
 		return ""
 	}
 	if ra.Type() != rb.Type() {
+		// Two numbers that RENDER the same are the same, whatever Go type they
+		// arrived as.
+		//
+		// HCL has one number type, so a YAML float64(11) comes back as
+		// int64(11) and the structs differ. The build does not: every numeric
+		// value reaches a script through transformScalar's fmt.Sprint, and
+		// both render "11". Measured rather than argued — the four recipes
+		// this affects (apache.org/thrift, isc.org/bind9, mpv.io,
+		// pwmt.org/zathura) generate byte-identical build scripts from either
+		// recipe.
+		//
+		// It stays narrow on purpose. Both sides must be numeric, so a string
+		// "11" is still not the number 11; and the texts must match, so
+		// float64(2.0250127e+07) is still not int64(20250127) — which is a
+		// REAL difference, and the one that turned out to be a client bug.
+		if numericKind(ra.Kind()) && numericKind(rb.Kind()) && fmt.Sprint(a) == fmt.Sprint(b) {
+			return ""
+		}
 		return fmt.Sprintf("%s: %T(%v) from yaml, %T(%v) from hcl", path, a, a, b, b)
 	}
 	switch ra.Kind() {
@@ -368,4 +405,16 @@ func firstDiff(a, b any, path string) string {
 		return fmt.Sprintf("%s: %T(%v) from yaml, %T(%v) from hcl", path, a, a, b, b)
 	}
 	return ""
+}
+
+// numericKind reports whether a value is one of Go's numbers, for the
+// render-equal comparison above.
+func numericKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
 }
