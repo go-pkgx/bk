@@ -67,6 +67,17 @@ func (g *closureGraph) pins() (pins, conflicts []string) {
 // A shape constraintRange does not understand yields "" — an unhandled
 // constraint becomes a reported disagreement, never a wrong pin.
 func intersectConstraints(cs []string) string {
+	// One constraint is not an intersection. Pass the AUTHOR'S words through:
+	// pkgx parses them by construction — they came out of a recipe it already
+	// reads — while `>=2<3` is my arithmetic's rendering of `2` and only as
+	// right as constraintRange is.
+	//
+	// 32 of the 49 constrained projects in the s390x seed closure have exactly
+	// one, so this is most of them, and for those the pin is now the recipe's
+	// own text.
+	if len(cs) == 1 {
+		return cs[0]
+	}
 	var lo, hi []int
 	for i, c := range cs {
 		l, h, ok := constraintRange(c)
