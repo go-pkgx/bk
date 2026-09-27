@@ -114,18 +114,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|closure|tools|tohcl|lint|depgaps|builder|factory|source> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|publish|closure|tools|tohcl|lint|overrides|depgaps|builder|factory|source> [args]")
 		return 2
 	}
 
-	tgt, err := target.Resolve()
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 1
-	}
-
+	// The TARGET is resolved by the two subcommands that use one, not before
+	// the switch. Resolving it here meant `bk lint`, `bk overrides` and `bk
+	// tohcl` — none of which builds anything — refused to run on a machine
+	// whose BREWKIT_TARGET named a platform bk does not support:
+	//
+	//	error: unsupported target platform: "plan9"
+	//
+	// The factory SETS that variable, so a CI lane checking recipes beside a
+	// build would inherit it.
 	switch rest[0] {
 	case "target":
+		tgt, err := target.Resolve()
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
 		fmt.Fprintf(stdout, "%s/%s triple=%s cross=%v\n", tgt.Platform, tgt.Arch, tgt.Triple, tgt.Cross())
 		return 0
 	case "fixup":
@@ -133,7 +141,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: bk fixup <prefix>")
 			return 2
 		}
-		err := fixup.FixUp(fixup.Options{
+		tgt, err := target.Resolve()
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		err = fixup.FixUp(fixup.Options{
 			Prefix:   rest[1],
 			Platform: tgt.Platform,
 			PkgxDir:  config.PkgxDir(),
@@ -158,6 +171,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUndeclared(rest[1:], stdout, stderr)
 	case "unresolved":
 		return runUnresolved(rest[1:], stdout, stderr)
+	case "overrides":
+		return runOverrides(rest[1:], stdout, stderr)
 	case "lint":
 		return runLint(rest[1:], stdout, stderr)
 	case "tohcl":
