@@ -546,8 +546,10 @@ func providedBins(provides any) []string {
 //	bk: the tool environment failed: pkgx +freedesktop.org/pkg-config~0.29 +perl.org
 //	pkgx: GET …/github.com/besser82/libxcrypt/linux/s390x/versions.txt: Not Found
 //
-// because perl's closure needs libcrypt and the soname map answers that with
-// github.com/besser82/libxcrypt, which is the project being built. A tool you
+// because perl's closure needs github.com/besser82/libxcrypt — the project
+// being built. OUR OVERLAY declares that edge for linux (upstream's perl.org
+// does not), so it is an ordinary recipe dependency and no soname map is
+// involved; an earlier version of this comment said otherwise. A tool you
 // cannot install is not a tool you have, so the question has to be about the
 // closure.
 //
