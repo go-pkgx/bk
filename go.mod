@@ -7,7 +7,7 @@ require (
 	github.com/go-attest/sbom v0.2.0
 	github.com/go-attest/sign v0.1.0
 	github.com/go-git/go-git/v5 v5.19.2
-	github.com/go-pkgx/bottle v0.23.1-0.20260927090356-0d812279cc50
+	github.com/go-pkgx/bottle v0.23.1-0.20260927131646-63050d56a9cd
 	github.com/go-regexp/engine v0.1.3
 	github.com/go-versions/semver v0.2.0
 	github.com/klauspost/compress v1.20.0
