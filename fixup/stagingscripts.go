@@ -61,6 +61,25 @@ func walkScripts(dir, buildInstall, prefix string, log func(string, ...any)) err
 			}
 			continue
 		}
+		// REGULAR files only, as walkExes next door already does.
+		//
+		// A symlink is not a script, and reading through one is wrong twice
+		// over: a link to a script inside the prefix is rewritten anyway when
+		// the walk reaches the target, and a link pointing outside is not ours
+		// to rewrite.
+		//
+		// A DANGLING one failed the whole build. gnu.org's gcc recipe links
+		// ar, nm and ranlib to `../../../binutils/v*/bin/…`, an unquoted glob
+		// that stays literal when binutils is not installed, and the fix-up
+		// then said
+		//
+		//	fix-up: open …/gnu.org/gcc/v14.4.0/bin/ar: no such file or directory
+		//
+		// after twenty-five minutes of compiling — naming a file the recipe
+		// had created and nothing had asked to read.
+		if !e.Type().IsRegular() {
+			continue
+		}
 		b, err := osReadFile(p)
 		if err != nil {
 			return err

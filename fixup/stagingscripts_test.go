@@ -181,3 +181,58 @@ func TestFixUpPropagatesStagingScriptError(t *testing.T) {
 		t.Fatalf("got %v, want the staging-script write error", err)
 	}
 }
+
+// A DANGLING symlink in bin/ used to fail the whole fix-up, and with it a
+// build that had already compiled.
+//
+// gnu.org's gcc recipe links ar, nm and ranlib to `../../../binutils/v*/bin/…`
+// — an unquoted glob that stays literal when binutils is not installed. The
+// fix-up read every non-directory entry, so it opened the link, and said:
+//
+//	fix-up: open …/gnu.org/gcc/v14.4.0/bin/ar: no such file or directory
+//
+// after twenty-five minutes of compiling, naming a file the recipe had created
+// and nothing had asked to read.
+func TestWalkScriptsSkipsSymlinks(t *testing.T) {
+	prefix := t.TempDir()
+	bin := filepath.Join(prefix, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staging := "/tmp/staging-prefix"
+	script := filepath.Join(bin, "tool")
+	if err := os.WriteFile(script, []byte("#!"+staging+"/bin/sh\necho "+staging+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The one that broke it: a link to something that is not there.
+	if err := os.Symlink("../../../binutils/v*/bin/ar", filepath.Join(bin, "ar")); err != nil {
+		t.Fatal(err)
+	}
+	// And one that resolves, to a script carrying the staging prefix: the
+	// TARGET is rewritten when the walk reaches it, so the link needs no
+	// second visit.
+	if err := os.Symlink("tool", filepath.Join(bin, "tool-alias")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fixStagingScripts(prefix, staging, func(string, ...any) {}); err != nil {
+		t.Fatalf("a dangling symlink must not fail the fix-up: %v", err)
+	}
+	// The real script was still rewritten — skipping links must not skip work.
+	b, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), staging) {
+		t.Errorf("the script was not rewritten: %q", b)
+	}
+	if !strings.Contains(string(b), prefix) {
+		t.Errorf("the script must name the real prefix: %q", b)
+	}
+	// The dangling link is still a link, and still dangling: nothing created a
+	// file to stand in for it.
+	fi, err := os.Lstat(filepath.Join(bin, "ar"))
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link must be left alone: %v %v", fi, err)
+	}
+}
