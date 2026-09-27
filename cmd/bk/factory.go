@@ -106,7 +106,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
 	bootstrap := fs.Bool("bootstrap", false, "FIRST FILL ONLY on an architecture no registry has: build without the base toolchain in the environment, taking those tools from the host. The base toolchain is a cycle with no entry point (see build.BootstrapToolDeps), so without this nothing can be built first. Bottles made this way were driven by unpinned host tools: publish them to a throwaway registry, use them to stage the sovereign rootfs, and rebuild everything inside it")
 	jobs := fs.Int("jobs", envInt("JOBS"), "parallelism handed to each recipe build (`hw.concurrency`); 0 = one per CPU. Lower it when the target is emulated.")
-	pinToDependents := fs.Bool("pin-to-dependents", os.Getenv("PIN_TO_DEPENDENTS") != "", "hold a REQUESTED project to the constraints its dependents place on it, as a closure-only one already is. For a SEED, where every project is named and none would otherwise be held to anything: gnu.org/glibc asks for gnu.org/gcc 14 and a seed naming gcc built 16.2.0. OFF by default, because naming a project is how you say \"this version, whatever else wants\" — a repair run must not be talked out of it. An explicit project@constraint still wins")
+	pinToDependents := fs.Bool("pin-to-dependents", os.Getenv("PIN_TO_DEPENDENTS") != "", "hold a REQUESTED project to the constraints its dependents place on it, as a closure-only one already is. For a SEED, where every project is named and none would otherwise be held to anything: gnu.org/glibc asks for gnu.org/gcc 14 and a seed naming gcc built 16.2.0. OFF by default, because naming a project is how you say \"this version, whatever else wants\" — a repair run must not be talked out of it. An explicit project@constraint still wins. It only sees the dependents IN THIS RUN: a batch that does not reach gnu.org/glibc never learns glibc asks gcc for 14, so for a partial seed use `bk closure --build --pins` over the whole order file and pass the words")
 	keepBuildTrees := fs.Bool("keep-build-trees", os.Getenv("KEEP_BUILD_TREES") != "", "leave each PUBLISHED build tree on disk. By default a tree is removed once its bottle is published, because a run of seventy-six keeps all seventy-six otherwise and the s390x seed filled its disk on the fifty-seventh. A FAILED build's tree is always kept: it is the only copy of what went wrong")
 	force := fs.Bool("force", os.Getenv("FORCE") != "", "rebuild and republish even when the bottle is already in the registry — the projects you REQUESTED only, never the dependency closure behind them")
 	compress := fs.String("compress", envOr("COMPRESS", "zstd"), "codec for NEW bottles: zstd or gzip. Already-published bottles are never rewritten, so gzip stays readable; this only governs what we create")
@@ -457,6 +457,19 @@ func (f *factory) versionsFor(rec *pantry.Recipe, proj string, requested bool, m
 	// is also how a batch got listed in the wrong order twice in one day.
 	//
 	// An explicit `project@constraint` still wins: the operator was specific.
+	//
+	// IT ONLY SEES THE DEPENDENTS IN THIS RUN. The demands come from the
+	// closure walk over the REQUESTED set, so a batch that does not reach
+	// gnu.org/glibc never learns that glibc asks gcc for 14 — and a seed
+	// dispatched as `gnu.org/gcc info-zip.org/zip kernel.org/linux-headers`
+	// with this flag on still built 16.2.0. Measured, after shipping the
+	// flag and believing otherwise.
+	//
+	// So it is a convenience for a run whose closure already contains the
+	// dependents, not a substitute for knowing the pantry. `bk closure
+	// --build --pins` walks whatever set you give it — the whole order
+	// file, for a seed — and emits the words to pass; those are explicit
+	// pins and are not subject to this.
 	if f.pinToDependents {
 		if _, pinned := f.wantPer[proj]; !pinned {
 			if cs := f.demands[proj]; len(cs) > 0 {

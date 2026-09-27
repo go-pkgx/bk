@@ -1803,3 +1803,40 @@ func TestFactoryDropsAPublishedBuildTree(t *testing.T) {
 		t.Errorf("stderr = %q", errb.String())
 	}
 }
+
+// TestPinToDependentsOnlySeesThisRunsDependents.
+//
+// The limitation, held by a test because I shipped the flag believing
+// otherwise. The demands come from the closure walk over the REQUESTED set, so
+// a batch that never reaches gnu.org/glibc never learns that glibc asks gcc
+// for 14 — and a seed dispatched as `gnu.org/gcc info-zip.org/zip
+// kernel.org/linux-headers` with the flag ON still built 16.2.0.
+func TestPinToDependentsOnlySeesThisRunsDependents(t *testing.T) {
+	old := factoryList
+	t.Cleanup(func() { factoryList = old })
+	factoryList = func(any) ([]versions.VersionTag, error) {
+		return []versions.VersionTag{{Version: "16.2.0"}, {Version: "14.4.0"}}, nil
+	}
+	rec := &pantry.Recipe{}
+
+	// The dependent is in the run: the constraint is known and applied.
+	withGlibc := &factory{
+		demands:         map[string][]string{"gnu.org/gcc": {"14"}},
+		pinToDependents: true, stdout: io.Discard,
+	}
+	if v, _ := withGlibc.versionsFor(rec, "gnu.org/gcc", true, 1); v[0] != "14.4.0" {
+		t.Errorf("with the dependent in the closure = %v, want [14.4.0]", v)
+	}
+
+	// The dependent is NOT in the run: nothing was recorded, so nothing is
+	// applied, and the newest is built. That is not a bug in the filter — the
+	// walk never saw the demand — but it is a trap, and the flag's help says
+	// so now.
+	withoutGlibc := &factory{
+		demands:         map[string][]string{}, // glibc was not in this batch
+		pinToDependents: true, stdout: io.Discard,
+	}
+	if v, _ := withoutGlibc.versionsFor(rec, "gnu.org/gcc", true, 1); v[0] != "16.2.0" {
+		t.Errorf("without the dependent = %v — this documents the limit, not an aspiration", v)
+	}
+}
