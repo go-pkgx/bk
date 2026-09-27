@@ -136,3 +136,17 @@ func TestLintSkipsARecipeAtTheRoot(t *testing.T) {
 		t.Errorf("rc = %d, out = %q, stderr = %q", rc, out, errb)
 	}
 }
+
+// Through the top-level dispatch, which is the only thing a CI lane invokes.
+func TestLintDispatch(t *testing.T) {
+	dir := lintTree(t, map[string]string{
+		"a.org/package.hcl": "distributable { url = \"http://x/y.tgz\" }\n",
+	})
+	var out, errb bytes.Buffer
+	if code := run([]string{"lint", "--dir", dir}, &out, &errb); code != 0 {
+		t.Errorf("code = %d, stderr = %q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "1 recipe(s) read") {
+		t.Errorf("want the count on stdout, got %q", out.String())
+	}
+}
