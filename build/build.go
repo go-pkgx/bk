@@ -461,6 +461,67 @@ func WithoutSelfDep(project string, buildDeps map[string]any) map[string]any {
 	return out
 }
 
+// HostPrefixForSelfDep gives {{deps.<project>.prefix}} a value when bootstrap
+// dropped a recipe's dependency on ITSELF and the machine demonstrably
+// provides what the recipe says it provides.
+//
+// gnu.org/sed build-depends on gnu.org/sed for one line:
+//
+//	export PATH="{{deps.gnu.org/sed.prefix}}/bin:$PATH"
+//
+// — putting a known-good sed in front of whatever the system has. On an
+// architecture with no sed bottle the system's IS the only sed, and the
+// unresolved token stopped the build with the guard Runner.Build added for
+// exactly this shape.
+//
+// The prefix is not invented. The recipe says it provides `bin/sed`, the host
+// says `sed` is at /usr/bin/sed, and the prefix that makes both true is /usr.
+// Where the two do not agree — the binary is somewhere that is not
+// <prefix>/bin, or the host does not have it at all — no token is produced and
+// the build still refuses. A guessed path would send a compiler somewhere
+// nobody chose.
+//
+// The SELF dependency only, and that restriction is the whole of its
+// justification. `provides:` belongs to the recipe being built; it says what
+// THIS project puts on the machine and nothing about any other. A first
+// version took a list of every dropped dependency and read this recipe's
+// provides for each of them, which would have answered "cmake.org's prefix is
+// /usr" because the recipe in hand ships a bin/ of its own. A dropped
+// dependency that is not the self-edge still leaves its token unresolved, and
+// the build still refuses — loudly, which is the correct outcome for a
+// question this cannot answer.
+func HostPrefixForSelfDep(project string, provides any, look func(string) (string, error)) []moustache.Token {
+	if look == nil {
+		return nil
+	}
+	for _, rel := range providedBins(provides) {
+		path, err := look(filepath.Base(rel))
+		if err != nil {
+			continue
+		}
+		// <prefix>/bin/<name>, and nothing else counts.
+		if dir := filepath.Dir(path); filepath.Base(dir) == "bin" {
+			return []moustache.Token{{From: "deps." + project + ".prefix", To: filepath.Dir(dir)}}
+		}
+	}
+	return nil
+}
+
+// providedBins reads a recipe's `provides:` as a list of relative paths.
+func providedBins(provides any) []string {
+	list, ok := provides.([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, v := range list {
+		if s, ok := v.(string); ok && strings.HasPrefix(s, "bin/") {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // WithoutUnresolvable drops the build dependencies this registry cannot
 // provide for the target, asking `resolve` about each one.
 //

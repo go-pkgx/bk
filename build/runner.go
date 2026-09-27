@@ -3,6 +3,7 @@ package build
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -62,6 +63,20 @@ type Runner struct {
 	// can otherwise be built first. It must not be set for an ordinary build --
 	// a bottle made this way was driven by tools nobody pinned.
 	Bootstrap bool
+
+	// LookPath finds a host binary, for the one case bootstrap has to ask the
+	// machine what it already has. nil means exec.LookPath. It is a field so a
+	// test can answer without depending on what the machine running it happens
+	// to have installed — /usr/bin/sed exists on every developer's laptop and
+	// on none of the scratch images.
+	LookPath func(string) (string, error)
+}
+
+func (r *Runner) lookPath() func(string) (string, error) {
+	if r.LookPath != nil {
+		return r.LookPath
+	}
+	return exec.LookPath
 }
 
 // SourceRef identifies the bytes a build was actually made from: which of the
@@ -186,9 +201,14 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	deps := EvalLinkDeps(recipe.Dependencies, tgt)
 	bd := buildDeps(recipe)
 	var fromHost []string
+	var selfDropped bool
 	if r.Bootstrap {
+		_, selfDropped = bd[project]
 		bd = WithoutSelfDep(project, bd)
 		bd, fromHost = WithoutUnresolvable(bd, tgt, r.ResolveDep, func(s string) { logf("%s", s) })
+		if selfDropped {
+			fromHost = append(fromHost, project)
+		}
 	}
 	toolDeps := EvalToolDeps(project, recipe.Dependencies, bd, tgt)
 	if r.Bootstrap {
@@ -209,6 +229,13 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 			return res, fmt.Errorf("resolve deps: %w", err)
 		}
 		toks = append(toks, dt...)
+	}
+	// A recipe that build-depends on itself still interpolates its own prefix.
+	// Appended AFTER the resolved tokens so it can only fill a gap, never
+	// displace a real bottle's prefix: on an architecture where the bottle does
+	// exist, nothing was dropped and this produces nothing.
+	if selfDropped {
+		toks = append(toks, HostPrefixForSelfDep(project, recipe.Provides, r.lookPath())...)
 	}
 	user, err := buildscript.Generate(recipe.Build, buildscript.Options{Target: tgt, PkgVersion: version, Tokens: toks})
 	if err != nil {
