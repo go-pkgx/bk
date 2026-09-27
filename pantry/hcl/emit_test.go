@@ -158,21 +158,6 @@ func TestConvertNull(t *testing.T) {
 	}
 }
 
-// ident decides between a bare name and a quoted key, and it is the thing
-// standing between us and HCL that does not parse.
-func TestIdent(t *testing.T) {
-	for _, s := range []string{"build", "strip-components", "_x", "a1"} {
-		if !ident(s) {
-			t.Errorf("ident(%q) = false", s)
-		}
-	}
-	for _, s := range []string{"", "openssl.org", "linux/x86-64", "1abc", "-lead", "a b"} {
-		if ident(s) {
-			t.Errorf("ident(%q) = true", s)
-		}
-	}
-}
-
 // firstDiff is what makes a refusal actionable. %#v renders int(1) and
 // float64(1) identically, so the message has to carry the path and the types.
 func TestFirstDiff(t *testing.T) {
@@ -201,27 +186,6 @@ func TestFirstDiff(t *testing.T) {
 	}
 	if d := firstDiff(nil, 1, ""); d == "" {
 		t.Error("nil against a value must differ")
-	}
-}
-
-// quote's escapes, reached directly: a recipe carrying a tab, a backslash or a
-// carriage return is rare enough that no fixture would hit them all, and a
-// wrong escape here produces HCL that parses into a different string.
-func TestQuoteEscapes(t *testing.T) {
-	got := quote("a\"b\\c\nd\te\rf")
-	want := `"a\"b\\c\nd\te\rf"`
-	if got != want {
-		t.Errorf("quote = %s, want %s", got, want)
-	}
-}
-
-// expr's fallback. A YAML decode yields only the shapes above it, so this arm
-// exists for a caller passing something else — and it must render SOMETHING
-// rather than an empty expression, which would not parse at all.
-func TestExprFallback(t *testing.T) {
-	type odd struct{ A int }
-	if got := expr(odd{1}, ""); !strings.HasPrefix(got, `"`) {
-		t.Errorf("an unknown shape must still render as a string, got %s", got)
 	}
 }
 
@@ -300,9 +264,9 @@ func TestFirstDiffEqualSlices(t *testing.T) {
 // having it — so the seam stands in for the defect it exists to catch. It has
 // caught one already: a heredoc whose terminator appeared in the script.
 func TestConvertRefusesUnparseableOutput(t *testing.T) {
-	old := emitFn
-	t.Cleanup(func() { emitFn = old })
-	emitFn = func(map[string]any) string { return "build { script = \n" }
+	old := convertFn
+	t.Cleanup(func() { convertFn = old })
+	convertFn = func([]byte, string) ([]byte, error) { return []byte("build { script = \n"), nil }
 	if _, err := Convert([]byte("build:\n  script: make\n")); err == nil ||
 		!strings.Contains(err.Error(), "does not parse") {
 		t.Errorf("want a refusal naming the parse failure, got %v", err)
@@ -362,9 +326,11 @@ func TestConvertKeepsVersionText(t *testing.T) {
 // emitter defect, so the seam stands in for one — the same seam that covers
 // the parse-failure guard, and for the same reason.
 func TestConvertRefusesADifferentRecipe(t *testing.T) {
-	old := emitFn
-	t.Cleanup(func() { emitFn = old })
-	emitFn = func(map[string]any) string { return `dependencies = { "openssl.org" = "^99" }` + "\n" }
+	old := convertFn
+	t.Cleanup(func() { convertFn = old })
+	convertFn = func([]byte, string) ([]byte, error) {
+		return []byte(`dependencies = { "openssl.org" = "^99" }` + "\n"), nil
+	}
 
 	_, err := Convert([]byte("dependencies:\n  openssl.org: ^3\nbuild:\n  script: make\n"))
 	if err == nil {
