@@ -415,9 +415,9 @@ func TestRunFactoryFailureStages(t *testing.T) {
 		// closureOf parsed the recipe already; corrupt it before the build loop.
 		closure := closureOf
 		t.Cleanup(func() { closureOf = closure })
-		closureOf = func(dir string, tgt target.Target, want []string, warn func(string)) []string {
+		closureOf = func(dir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
 			writeClosureRecipe(t, h.pantry, "lib.org", "versions: [\n")
-			return want
+			return want, nil
 		}
 		if code := h.run(t, "--recipes", "lib.org"); code != 0 {
 			t.Fatalf("code = %d", code)
@@ -434,7 +434,9 @@ func TestRunFactorySkipsProjectWithoutRecipe(t *testing.T) {
 	h := newFactoryHarness(t)
 	closure := closureOf
 	t.Cleanup(func() { closureOf = closure })
-	closureOf = func(string, target.Target, []string, func(string)) []string { return []string{"ghost.org"} }
+	closureOf = func(string, target.Target, []string, func(string)) ([]string, map[string][]string) {
+		return []string{"ghost.org"}, nil
+	}
 	if code := h.run(t, "--recipes", "ghost.org"); code != 0 {
 		t.Fatalf("code = %d", code)
 	}
@@ -1582,5 +1584,103 @@ func TestRunFactoryIsNotBootstrapByDefault(t *testing.T) {
 	}
 	if strings.Contains(h.out.String(), "BOOTSTRAP:") {
 		t.Errorf("an ordinary run must not claim to be a seed:\n%s", h.out.String())
+	}
+}
+
+// TestFactoryBuildsTheDependencyVersionItsDependentsCanUse.
+//
+// The real failure, reduced: python.org asks bytereef.org/mpdecimal for `2`,
+// the factory resolved the dependency against "*" and built 4.0.1, and
+// python's own build then said
+//
+//	resolve deps: no version of bytereef.org/mpdecimal satisfies "2"
+//	(available: 1)
+//
+// one dispatch and one wasted build later. The constraint was in the dep spec
+// the closure walk had already read.
+func TestFactoryBuildsTheDependencyVersionItsDependentsCanUse(t *testing.T) {
+	f := &factory{demands: map[string][]string{
+		"dep.org":  {"2"},
+		"many.org": {">=3<3.12", "~3.11", ">=3<3.15"},
+		"none.org": {"~5.42", "~5.44"},
+	}}
+	old := factoryList
+	t.Cleanup(func() { factoryList = old })
+	factoryList = func(any) ([]versions.VersionTag, error) {
+		return []versions.VersionTag{
+			{Version: "5.44.1"}, {Version: "5.42.3"}, // perl-shaped
+			{Version: "4.0.1"}, {Version: "2.5.1"}, {Version: "1.0.0"}, // mpdecimal-shaped
+			{Version: "3.14.7"}, {Version: "3.11.9"}, {Version: "3.11.2"}, // python-shaped
+		}, nil
+	}
+	rec := &pantry.Recipe{}
+
+	// Newest that satisfies the one constraint — 4.0.1 is newest and does not.
+	if v, err := f.versionsFor(rec, "dep.org", false, 0); err != nil || len(v) != 1 || v[0] != "2.5.1" {
+		t.Errorf("dep.org = %v %v, want [2.5.1]", v, err)
+	}
+	// EVERY constraint, not the first: only a 3.11.x satisfies all three, and
+	// the newest such is 3.11.9.
+	if v, err := f.versionsFor(rec, "many.org", false, 0); err != nil || len(v) != 1 || v[0] != "3.11.9" {
+		t.Errorf("many.org = %v %v, want [3.11.9]", v, err)
+	}
+	// No version can satisfy both lines. The error names them, because the
+	// answer is two builds and not a choice the factory can make.
+	_, err := f.versionsFor(rec, "none.org", false, 0)
+	if err == nil {
+		t.Fatal("want a refusal")
+	}
+	for _, want := range []string{"none.org", "~5.42", "~5.44"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %q: %v", want, err)
+		}
+	}
+	// A project nothing constrains keeps the old path: newest, resolved.
+	oldRes := factoryResolve
+	t.Cleanup(func() { factoryResolve = oldRes })
+	factoryResolve = func(any, string) (string, string, error) { return "9.9.9", "", nil }
+	if v, err := f.versionsFor(rec, "free.org", false, 0); err != nil || len(v) != 1 || v[0] != "9.9.9" {
+		t.Errorf("free.org = %v %v, want [9.9.9]", v, err)
+	}
+	// And a candidate list that cannot be read is an error, not "no constraint".
+	factoryList = func(any) ([]versions.VersionTag, error) { return nil, errors.New("boom") }
+	if _, err := f.versionsFor(rec, "dep.org", false, 0); err == nil {
+		t.Error("an unreadable version list must surface")
+	}
+}
+
+// The closure walk RECORDS what each dependent asked for; it used to read the
+// constraint off every dep spec and drop it.
+func TestClosureOfCollectsDemands(t *testing.T) {
+	dir := t.TempDir()
+	write := func(proj, body string) {
+		t.Helper()
+		p := filepath.Join(dir, "projects", filepath.FromSlash(proj))
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "package.yml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("app.org", "dependencies:\n  dep.org: '2'\n  free.org: '*'\nbuild: make\n")
+	write("dep.org", "dependencies:\n  free.org: ^1\nbuild: make\n")
+	write("free.org", "build: make\n")
+
+	order, demands := closureOf(dir, target.Target{Platform: "linux", Arch: "x86-64"}, []string{"app.org"}, func(string) {})
+	if len(order) != 3 || order[len(order)-1] != "app.org" {
+		t.Errorf("order = %v, want deps before app.org", order)
+	}
+	if got := demands["dep.org"]; len(got) != 1 || got[0] != "2" {
+		t.Errorf("dep.org demands = %v", got)
+	}
+	// Two dependents, two constraints, recorded once each and sorted.
+	if got := demands["free.org"]; len(got) != 1 || got[0] != "^1" {
+		t.Errorf("free.org demands = %v — `*` says nothing and must not be recorded", got)
+	}
+	// A project nobody constrains has no entry at all, rather than an empty
+	// slice that would read as "constrained by nothing".
+	if _, in := demands["app.org"]; in {
+		t.Errorf("a root nobody depends on must not appear: %v", demands)
 	}
 }

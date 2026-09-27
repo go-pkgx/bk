@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/go-pkgx/bk/build"
@@ -37,7 +39,8 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	// also calls: one path, so `bk closure` cannot describe an order the
 	// factory would not build.
 	if !*withBuild && !*constraints && !*implicit {
-		for _, p := range closureOf(*pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) }) {
+		order, _ := closureOf(*pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
+		for _, p := range order {
 			fmt.Fprintln(stdout, p)
 		}
 		return 0
@@ -55,9 +58,20 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 // in topological order (deps before dependents). Shared by `bk closure` and
 // `bk factory`, which builds a closure deps-first so that a consumer of any
 // package finds every one of its dependencies in the registry too.
-var closureOf = func(pantryDir string, tgt target.Target, want []string, warn func(string)) []string {
+//
+// It also reports WHAT each dependent asked for. The walk reads the constraint
+// off every dep spec and used to drop it on the floor, so the factory resolved
+// a closure-only dependency against "*" — the newest — and the dependent's own
+// build then asked for something else:
+//
+//	python.org 3.14.7: resolve deps: no version of bytereef.org/mpdecimal
+//	satisfies "2" (available: 1)
+//
+// The constraint was in the spec the walk had already read.
+var closureOf = func(pantryDir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
 	seen := map[string]bool{}
 	var order []string
+	demands := map[string][]string{}
 	var visit func(proj string)
 	visit = func(proj string) {
 		if seen[proj] {
@@ -71,6 +85,13 @@ var closureOf = func(pantryDir string, tgt target.Target, want []string, warn fu
 			warn(fmt.Sprintf("closure: skip %s: %v", proj, err))
 			return
 		}
+		for dep, cons := range build.ReduceDeps(rec.Dependencies, tgt) {
+			// "*" and "" say nothing, and recording them would make every
+			// project look constrained.
+			if cons != "" && cons != "*" && !slices.Contains(demands[dep], cons) {
+				demands[dep] = append(demands[dep], cons)
+			}
+		}
 		for _, spec := range build.DepSpecs(rec.Dependencies, tgt) {
 			visit(depName(spec))
 		}
@@ -79,7 +100,10 @@ var closureOf = func(pantryDir string, tgt target.Target, want []string, warn fu
 	for _, p := range want {
 		visit(p)
 	}
-	return order
+	for _, cs := range demands {
+		sort.Strings(cs)
+	}
+	return order, demands
 }
 
 // depName strips the version constraint from a dep spec, in BOTH the forms

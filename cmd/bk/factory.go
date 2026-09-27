@@ -80,8 +80,8 @@ var (
 // packages/factory.sh, and keeps its contract:
 //
 //   - each REQUESTED project builds EVERY available upstream version (newest
-//     first, optionally capped); closure-only dependencies build a single
-//     resolved-latest;
+//     first, optionally capped); a closure-only dependency builds ONE version —
+//     the newest its dependents can all use, which is not always the newest;
 //   - a (project, tag, platform) already in the registry is SKIPPED, so shared
 //     deps build once and successive runs only fill what is missing;
 //   - a per-recipe failure is recorded (failures.txt + failures-detail.txt) and
@@ -98,7 +98,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	platform := fs.String("platform", envOr("PLATFORM", ""), "target os/arch, e.g. linux/x86-64 (required)")
 	bottles := fs.String("bottles", "dist", "local directory the built bottles are staged in")
 	maxVersions := fs.Int("max-versions", envInt("MAX_VERSIONS"), "cap versions built per requested project, newest first (0 = all)")
-	versionSpec := fs.String("versions", envOr("VERSIONS", ""), `only consider versions of the REQUESTED projects that match this pkgx constraint. A BARE version is a RANGE, not an exact match: "2.28.0" means >=2.28.0 within major 2, so an exact version needs "=2.28.0". Also "^3", ">=2.4". Applied before --max-versions; closure-only dependencies still resolve to their newest`)
+	versionSpec := fs.String("versions", envOr("VERSIONS", ""), `only consider versions of the REQUESTED projects that match this pkgx constraint. A BARE version is a RANGE, not an exact match: "2.28.0" means >=2.28.0 within major 2, so an exact version needs "=2.28.0". Also "^3", ">=2.4". Applied before --max-versions. A closure-only dependency is NOT governed by this: it resolves to the newest version every one of its dependents can use`)
 	mirrorFrom := fs.String("mirror-from", "", "instead of building, copy each bottle from this upstream pkgx dist (e.g. https://dist.pkgx.dev) and republish it signed + attested — for versions we cannot or need not rebuild, such as ancient glibc")
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
@@ -216,8 +216,9 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	// resolved with the constraint "*", so it is rebuilt whenever upstream has
 	// moved, whether or not anything needed that.
 	list := want
+	var demands map[string][]string
 	if !*noClosure {
-		list = closureOf(*pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
+		list, demands = closureOf(*pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
 	}
 	if *mirrorFrom != "" {
 		// Mirroring needs no recipe (no build, and the versions come from the
@@ -261,6 +262,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		mirror:           strings.TrimRight(*mirrorFrom, "/"),
 		want:             strings.TrimSpace(*versionSpec),
 		wantPer:          pins,
+		demands:          demands,
 		skippedOverrides: skippedOverrides,
 		requested:        requested,
 		stdout:           stdout, stderr: stderr,
@@ -353,6 +355,10 @@ type factory struct {
 	when     time.Time
 	mirror   string // upstream dist to copy from, "" = build
 	want     string // pkgx constraint the requested projects' versions must satisfy, "" = any
+	// demands is what the DEPENDENTS of a project asked for, collected by the
+	// closure walk. A closure-only dependency is resolved against it instead of
+	// against "*", so the factory stops building a version nobody can use.
+	demands map[string][]string
 	// wantPer overrides want for one project, from a `project@constraint` word
 	// in --recipes. Closing an index gap needs ONE named version of ONE project,
 	// and --versions applies to every requested project at once.
@@ -384,6 +390,27 @@ type factory struct {
 // skip-if-published check possible for deps too.
 func (f *factory) versionsFor(rec *pantry.Recipe, proj string, requested bool, max int) ([]string, error) {
 	if !requested {
+		// The newest version its DEPENDENTS can use, not simply the newest.
+		//
+		// This resolved against "*" and the dependent's own build then asked
+		// for something else, one dispatch and one failed build later:
+		//
+		//	python.org 3.14.7: resolve deps: no version of
+		//	bytereef.org/mpdecimal satisfies "2" (available: 1)
+		//
+		// mpdecimal 4.0.1 was built because it is newest, and python asks for
+		// 2. The constraint was in the dep spec the closure walk already read.
+		//
+		// Filtering the real candidate list rather than intersecting the
+		// constraint STRINGS: an interval solver would have to invent a version
+		// inside the interval, and nothing guarantees one was ever released.
+		if cs := f.demands[proj]; len(cs) > 0 {
+			v, err := f.newestSatisfying(rec, proj, cs)
+			if err != nil {
+				return nil, err
+			}
+			return []string{v}, nil
+		}
 		v, _, err := factoryResolve(rec.Versions, "*")
 		if err != nil {
 			return nil, err
@@ -980,3 +1007,35 @@ func (f *factory) unionWithSiblingArches(proj string, mine []string) []string {
 
 // lessVersionDesc orders versions newest first.
 func lessVersionDesc(a, b string) bool { return bottle.ParseVer(b).Satisfies("<" + a) }
+
+// newestSatisfying picks the newest candidate version of proj that satisfies
+// EVERY constraint its dependents placed on it.
+//
+// Every one, not the first: python.org is asked for `>=3<3.12`, `~3.11` and
+// `>=3<3.15` by three different dependents, and only a 3.11.x satisfies all
+// three. Picking per-dependent would build a version two of them cannot use.
+//
+// Where no version satisfies them all, the error names the constraints and who
+// is left out — `perl.org` is asked for `~5.42` and `~5.44`, which no single
+// perl can be, and those are two builds rather than a choice this can make.
+func (f *factory) newestSatisfying(rec *pantry.Recipe, proj string, cs []string) (string, error) {
+	vts, err := factoryList(rec.Versions)
+	if err != nil {
+		return "", err
+	}
+	for _, vt := range vts {
+		v := bottle.ParseVer(vt.Version)
+		ok := true
+		for _, c := range cs {
+			if !v.Satisfies(c) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return vt.Version, nil
+		}
+	}
+	return "", fmt.Errorf("no version of %s satisfies every dependent: %s (%d candidate(s))",
+		proj, strings.Join(cs, " and "), len(vts))
+}
