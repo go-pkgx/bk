@@ -69,9 +69,12 @@ func walkScripts(dir, buildInstall, prefix string, log func(string, ...any)) err
 		// to rewrite.
 		//
 		// A DANGLING one failed the whole build. gnu.org's gcc recipe links
-		// ar, nm and ranlib to `../../../binutils/v*/bin/…`, an unquoted glob
-		// that stays literal when binutils is not installed, and the fix-up
-		// then said
+		// ar, nm and ranlib to `../../../binutils/v*/bin/…`, where the star is
+		// ESCAPED in the recipe and is not a glob at all: pkgx writes a `v*`
+		// alias beside `v<version>` when it installs a package
+		// (bottle.writeVersionLinks), so the target is a real path — for a
+		// PKGX_DIR that has binutils in it. For one that does not, the link
+		// dangles, and the fix-up then said
 		//
 		//	fix-up: open …/gnu.org/gcc/v14.4.0/bin/ar: no such file or directory
 		//
