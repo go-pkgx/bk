@@ -733,7 +733,28 @@ var autotoolsTiers = [][]string{
 	// aclocal.m4 is bumped one tier newer than the .m4 macros above (the last
 	// matching tier wins), so it never looks stale against them.
 	{"aclocal.m4"},
-	{"config.h.in", "configure"},
+	// The GENERATED configure script, by every name a release tarball gives
+	// it. `configure.sh` is rsync's, and leaving it out did the exact opposite
+	// of this function's job: the tiers above rejuvenate aclocal.m4 to an hour
+	// ago while the untouched script keeps its tarball mtime, so on
+	// rsync-3.5.1 the generated file came out SEVEN DAYS older than its own
+	// prerequisite —
+	//
+	//	configure.ac   2026-09-28 06:56:48
+	//	aclocal.m4     2026-09-28 06:57:48
+	//	configure.sh   2026-09-21 05:55:19
+	//
+	// — make regenerated it with whatever autoconf was in the environment, and
+	// rsync's own Makefile stopped the build dead:
+	//
+	//	configure.sh has CHANGED.
+	//	You may need to run: make reconfigure
+	//	make: *** [Makefile:280: configure.sh] Error 1
+	//
+	// Exact names, never a `configure*` prefix: the tiers are applied in order
+	// and the last match wins, so a prefix would drag configure.ac out of the
+	// inputs tier and into this one.
+	{"config.h.in", "configure", "configure.sh"},
 	{"Makefile.in"}, // final outputs
 }
 
