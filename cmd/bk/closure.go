@@ -32,6 +32,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	withBuild := fs.Bool("build", false, "follow BUILD dependencies as well as runtime ones. The runtime closure is a DAG and is what a consumer needs; adding build dependencies makes it a graph with cycles, and is what FILLING an architecture from nothing actually requires")
 	pins := fs.Bool("pins", false, "instead of the order, emit the `project@constraint` words a `bk factory --recipes` dispatch needs, one per line, so the version a REQUESTED project builds is the one its dependents can use. A project whose dependents cannot agree is reported as a comment rather than decided")
 	constraints := fs.Bool("constraints", false, "instead of the order, list every project a dependent pins to a version line, and who asks for what. `max_versions=1` builds the newest, and the newest is not always what a dependent can use")
+	checkOrderPath := fs.String("check-order", "", "instead of emitting an order, READ one from this file and say what it decided: an edge out of order outside any cycle is a mistake, and the edges it gives up on inside a cycle are the feedback arc set it chose")
 	cycles := fs.Bool("cycles", false, "instead of the order, name the dependency CYCLES: one strongly connected component per line. Inside a component the emitted order is a guess, and a wrong guess shows up as a build that fails several steps later")
 	implicit := fs.Bool("implicit", false, "also name the soname providers this walk cannot reach — dependencies that exist only in the compiled artefact, which no recipe declares")
 	if err := fs.Parse(args); err != nil {
@@ -48,7 +49,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	// The plain runtime walk keeps going through closureOf, which the factory
 	// also calls: one path, so `bk closure` cannot describe an order the
 	// factory would not build.
-	if !*withBuild && !*constraints && !*implicit && !*pins && !*cycles {
+	if !*withBuild && !*constraints && !*implicit && !*pins && !*cycles && *checkOrderPath == "" {
 		order, _ := closureOf(lset, *overlayDir, *pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
 		if code := reportUnreadableRoots(fs.Args(), order, stderr); code != 0 {
 			return code
@@ -60,13 +61,16 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	}
 	// --cycles is about BUILD dependencies: the runtime graph is a DAG, and
 	// asking it for cycles is asking a question with one possible answer.
-	g := newClosureGraph(lset, *pantryDir, tgt, *withBuild || *cycles, func(s string) { fmt.Fprintln(stderr, s) })
+	g := newClosureGraph(lset, *pantryDir, tgt, *withBuild || *cycles || *checkOrderPath != "", func(s string) { fmt.Fprintln(stderr, s) })
 	g.overlay = *overlayDir
 	for _, p := range fs.Args() {
 		g.visit(p)
 	}
 	if code := reportUnreadableRoots(fs.Args(), g.order, stderr); code != 0 {
 		return code
+	}
+	if *checkOrderPath != "" {
+		return checkOrder(g, *checkOrderPath, stdout, stderr)
 	}
 	comps := g.cycles()
 	if *cycles {
