@@ -55,50 +55,6 @@ func Dir(pantryDir, project string) string {
 	return filepath.Join(pantryDir, "projects", filepath.FromSlash(project))
 }
 
-// LoadOverlay reads a project's recipe, consulting an OVERLAY checkout before
-// the pantry — which is what a CONSUMER does, through PKGX_PANTRY_OVERLAY, and
-// therefore what planning a build must do.
-//
-// It is NOT what the factory builds from. `bk factory` loads the recipe it
-// compiles with Load, from the pantry with the overrides applied, and never
-// sees the overlay's copy. That division is deliberate and the two halves fix
-// different things: an overrides patch fixes a BUILD, the overlay fixes
-// RESOLUTION. It is measurable — go-pkgx/packages' `overlaycheck --pantry
-// --overlay` compares the two halves of all 183 projects our overlay carries,
-// and on 2026-09-27 25 disagreed: 23 under `build`, which no build and no
-// consumer reads from the overlay, and 2 under `dependencies`, which are the
-// whole point of the overlay carrying them.
-//
-// The factory's CLOSURE is a third thing again, and takes the union of both
-// halves — see closureRecipes in cmd/bk. A dependency only the overlay
-// declares still has to be BUILT, because a consumer will demand it.
-//
-// This comment used to say the factory consulted the overlay, full stop. That
-// was one claim too wide, and the incident below is about the ORDER.
-//
-// A tool that reads only the pantry describes a build nobody performs. The
-// s390x seed order was computed that way and missed
-// github.com/besser82/libxcrypt entirely: perl.org declares it in our overlay,
-// with a comment explaining that the published perl bottle NEEDs libcrypt.so.1
-// and glibc dropped it. Upstream's perl.org says nothing about it, so a walk
-// over upstream alone cannot see the edge — and the build that discovered it
-// was three steps downstream, in gnu.org/gcc.
-//
-// An empty overlay is the pantry-only case, so callers need not branch.
-func LoadOverlay(overlayDir, pantryDir, project string) (*pantry.Recipe, error) {
-	if overlayDir != "" {
-		if r, err := Load(overlayDir, project); err == nil {
-			return r, nil
-		} else if !errors.Is(err, ErrNoRecipe) {
-			// The overlay HAS this recipe and it does not parse. Falling
-			// through to the pantry would build something other than what the
-			// overlay says, silently.
-			return nil, err
-		}
-	}
-	return Load(pantryDir, project)
-}
-
 // Load reads a project's recipe from a pantry checkout.
 //
 // The error names the project and every filename tried, because "no such file

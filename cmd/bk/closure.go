@@ -137,7 +137,7 @@ func depName(spec string) string { return build.SpecProject(spec) }
 // Reading only the pantry is how github.com/besser82/libxcrypt went missing
 // from the s390x seed: perl.org declares it in OUR overlay, with a comment
 // saying the published perl bottle NEEDs libcrypt.so.1 and glibc dropped it,
-// and upstream's perl.org says nothing about it. recipefile.LoadOverlay was
+// and upstream's perl.org says nothing about it. An overlay-aware read was
 // written for that, and `bk closure --build` got it — but closureOf, the walk
 // `bk factory` itself runs, kept reading the pantry alone. The order that
 // worked was computed by hand with the other tool and handed to the factory as

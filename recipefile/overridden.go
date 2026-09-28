@@ -114,3 +114,110 @@ func LoadBuildRecipe(set *logical.Set, overlayDir, pantryDir, project string) (*
 	}
 	return Load(overlayDir, project)
 }
+
+// LoadMerged reads the overlay MERGED over the pantry recipe as WE build it —
+// upstream's, with the logical overrides applied. With a nil set it is
+// bottle.recipeDoc exactly, which is what a consumer resolves.
+//
+// Not the overlay preferred whole. That was right while every overlay entry
+// was a full copy of an upstream recipe, and it broke the day they stopped
+// being: go-pkgx/pantry-overlay reduced its 183 entries to the keys they
+// change (go-pkgx/bottle#103), so reading one on its own gives a fragment.
+// Measured before this existed — `bk closure --build curl.se` went from 54
+// projects to 8, because the entry says `dependencies` and nothing else, and
+// the walk never saw upstream's build dependencies at all.
+//
+// bottle merges and bk did not, which is the two-halves defect one more time:
+// a change landed in the half a consumer reads and the builder's own reader
+// kept the old rule.
+//
+// The set is the second half of the same lesson. The overlay carries 183
+// projects and the overrides describe 206, 178 of which edit a dependency, so
+// a walk that took the overlay's view for the OTHERS read them unoverridden.
+// Measured 2026-09-28 on a pristine pantry: `bk closure --build
+// rsync.samba.org` lists gnu.org/libidn2 without --overlay and not with it,
+// because that dependency exists only in our override and rsync is one of the
+// six such projects the overlay does not carry. The order that misses a
+// provider is the order the seed builds.
+func LoadMerged(set *logical.Set, overlayDir, pantryDir, project string) (*pantry.Recipe, error) {
+	over, hasOver, err := sideDoc(overlayDir, project)
+	if err != nil {
+		return nil, err
+	}
+	base, hasBase, err := sideDoc(pantryDir, project)
+	if err != nil {
+		return nil, err
+	}
+	if hasBase {
+		if _, err := set.ApplyTo(project, base); err != nil {
+			return nil, fmt.Errorf("%s: %w", project, err)
+		}
+	}
+	switch {
+	case hasBase && hasOver:
+		return docRecipe(mergeRecipe(base, over), project)
+	case hasOver:
+		// Upstream carries no such project: the overlay is the whole recipe.
+		return docRecipe(over, project)
+	case hasBase:
+		return docRecipe(base, project)
+	}
+	return nil, fmt.Errorf("%w for %s in %s or %s", ErrNoRecipe, project, overlayDir, pantryDir)
+}
+
+// sideDoc reads one tree's copy as a document, reporting separately whether it
+// is there and whether reading it failed. A recipe that EXISTS and does not
+// parse is never silently skipped: the walk would plan a build around
+// something it could not read.
+func sideDoc(dir, project string) (map[string]any, bool, error) {
+	if dir == "" {
+		return nil, false, nil
+	}
+	for _, n := range Names {
+		b, err := os.ReadFile(filepath.Join(Dir(dir, project), n))
+		if err != nil {
+			continue
+		}
+		y := b
+		if filepath.Ext(n) == ".hcl" {
+			if y, err = bottle.HCLToYAML(b, n); err != nil {
+				return nil, false, fmt.Errorf("%s/%s: %w", project, n, err)
+			}
+		}
+		var doc map[string]any
+		if err := yaml.Unmarshal(y, &doc); err != nil {
+			return nil, false, fmt.Errorf("%s/%s: %w", project, n, err)
+		}
+		return doc, true, nil
+	}
+	return nil, false, nil
+}
+
+// mergeRecipe is bottle's rule, and it has to be: two readers of one overlay
+// that merged differently would describe two different recipes. A key the
+// overlay states replaces that key, a key it omits is inherited, and a list
+// replaces rather than merges.
+func mergeRecipe(base, over map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(over))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range over {
+		if om, ok := v.(map[string]any); ok {
+			if bm, ok2 := out[k].(map[string]any); ok2 {
+				out[k] = mergeRecipe(bm, om)
+				continue
+			}
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func docRecipe(doc map[string]any, project string) (*pantry.Recipe, error) {
+	out, err := yamlMarshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", project, err)
+	}
+	return pantry.Parse(out)
+}
