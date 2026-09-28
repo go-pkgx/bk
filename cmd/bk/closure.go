@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/go-pkgx/bk/build"
+	"github.com/go-pkgx/bk/logical"
 	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
@@ -25,6 +26,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("closure", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	pantryDir := fs.String("pantry", envOr("PANTRY", "pantry"), "pantry checkout dir")
+	overridesDir := fs.String("overrides", envOr("OVERRIDES", ""), "directory of *.hcl logical recipe overrides, applied to the pantry's recipes as they are read")
 	overlayDir := fs.String("overlay", envOr("PANTRY_OVERLAY_DIR", ""), "an overlay checkout consulted BEFORE the pantry, as the factory consults PKGX_PANTRY_OVERLAY. Without it this describes a build nobody performs")
 	platform := fs.String("platform", envOr("PLATFORM", "linux/x86-64"), "target os/arch")
 	withBuild := fs.Bool("build", false, "follow BUILD dependencies as well as runtime ones. The runtime closure is a DAG and is what a consumer needs; adding build dependencies makes it a graph with cycles, and is what FILLING an architecture from nothing actually requires")
@@ -34,6 +36,11 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	lset, err := logical.LoadDir(*overridesDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "closure:", err)
+		return 2
+	}
 	osn, arch, _ := strings.Cut(*platform, "/")
 	tgt := target.Target{Platform: osn, Arch: arch}
 
@@ -41,13 +48,13 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	// also calls: one path, so `bk closure` cannot describe an order the
 	// factory would not build.
 	if !*withBuild && !*constraints && !*implicit && !*pins {
-		order, _ := closureOf(*overlayDir, *pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
+		order, _ := closureOf(lset, *overlayDir, *pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
 		for _, p := range order {
 			fmt.Fprintln(stdout, p)
 		}
 		return 0
 	}
-	g := newClosureGraph(*pantryDir, tgt, *withBuild, func(s string) { fmt.Fprintln(stderr, s) })
+	g := newClosureGraph(lset, *pantryDir, tgt, *withBuild, func(s string) { fmt.Fprintln(stderr, s) })
 	g.overlay = *overlayDir
 	for _, p := range fs.Args() {
 		g.visit(p)
@@ -70,7 +77,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 //	satisfies "2" (available: 1)
 //
 // The constraint was in the spec the walk had already read.
-var closureOf = func(overlayDir, pantryDir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
+var closureOf = func(set *logical.Set, overlayDir, pantryDir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
 	seen := map[string]bool{}
 	var order []string
 	demands := map[string][]string{}
@@ -80,7 +87,7 @@ var closureOf = func(overlayDir, pantryDir string, tgt target.Target, want []str
 			return
 		}
 		seen[proj] = true // mark first: breaks dependency cycles
-		recs, err := closureRecipes(overlayDir, pantryDir, proj)
+		recs, err := closureRecipes(set, overlayDir, pantryDir, proj)
 		if err != nil {
 			// A dependency we have no recipe for can't be built by us — skip it
 			// (it resolves from upstream dist at build time), but note it.
@@ -148,13 +155,19 @@ func depName(spec string) string { return build.SpecProject(spec) }
 // version nothing had built.
 //
 // With no overlay directory this is exactly the pantry-only walk it replaces.
-func closureRecipes(overlayDir, pantryDir, proj string) ([]*pantry.Recipe, error) {
+func closureRecipes(set *logical.Set, overlayDir, pantryDir, proj string) ([]*pantry.Recipe, error) {
 	var recs []*pantry.Recipe
 	for _, dir := range []string{overlayDir, pantryDir} {
 		if dir == "" {
 			continue
 		}
-		switch r, err := recipefile.Load(dir, proj); {
+		// The logical overrides describe the PANTRY's recipes; our overlay is
+		// ours already and has nothing to override.
+		load := func() (*pantry.Recipe, error) { return recipefile.Load(dir, proj) }
+		if dir == pantryDir {
+			load = func() (*pantry.Recipe, error) { return recipefile.LoadOverridden(set, dir, proj) }
+		}
+		switch r, err := load(); {
 		case err == nil:
 			recs = append(recs, r)
 		case errors.Is(err, recipefile.ErrNoRecipe):

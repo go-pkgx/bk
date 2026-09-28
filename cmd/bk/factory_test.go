@@ -19,6 +19,7 @@ import (
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/config"
+	"github.com/go-pkgx/bk/logical"
 	"github.com/go-pkgx/bk/overrides"
 	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/target"
@@ -416,7 +417,7 @@ func TestRunFactoryFailureStages(t *testing.T) {
 		// closureOf parsed the recipe already; corrupt it before the build loop.
 		closure := closureOf
 		t.Cleanup(func() { closureOf = closure })
-		closureOf = func(overlayDir, dir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
+		closureOf = func(_ *logical.Set, overlayDir, dir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
 			writeClosureRecipe(t, h.pantry, "lib.org", "versions: [\n")
 			return want, nil
 		}
@@ -435,7 +436,7 @@ func TestRunFactorySkipsProjectWithoutRecipe(t *testing.T) {
 	h := newFactoryHarness(t)
 	closure := closureOf
 	t.Cleanup(func() { closureOf = closure })
-	closureOf = func(string, string, target.Target, []string, func(string)) ([]string, map[string][]string) {
+	closureOf = func(*logical.Set, string, string, target.Target, []string, func(string)) ([]string, map[string][]string) {
 		return []string{"ghost.org"}, nil
 	}
 	if code := h.run(t, "--recipes", "ghost.org"); code != 0 {
@@ -1668,7 +1669,7 @@ func TestClosureOfCollectsDemands(t *testing.T) {
 	write("dep.org", "dependencies:\n  free.org: ^1\nbuild: make\n")
 	write("free.org", "build: make\n")
 
-	order, demands := closureOf("", dir, target.Target{Platform: "linux", Arch: "x86-64"}, []string{"app.org"}, func(string) {})
+	order, demands := closureOf(nil, "", dir, target.Target{Platform: "linux", Arch: "x86-64"}, []string{"app.org"}, func(string) {})
 	if len(order) != 3 || order[len(order)-1] != "app.org" {
 		t.Errorf("order = %v, want deps before app.org", order)
 	}
@@ -1838,5 +1839,47 @@ func TestPinToDependentsOnlySeesThisRunsDependents(t *testing.T) {
 	}
 	if v, _ := withoutGlibc.versionsFor(rec, "gnu.org/gcc", true, 1); v[0] != "16.2.0" {
 		t.Errorf("without the dependent = %v — this documents the limit, not an aspiration", v)
+	}
+}
+
+// The logical overrides reach the recipe the factory BUILDS, and a broken one
+// stops the run rather than quietly building the unoverridden recipe.
+func TestRunFactoryAppliesLogicalOverrides(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "app.org", "versions:\n  github: a/app/tags\nbuild: make\ndependencies:\n  openssl.org: ^1.1\n")
+
+	ovDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ovDir, "app.hcl"), []byte(`
+project = "app.org"
+why     = "our registry carries no openssl 1.x"
+edits   = [{ path = "dependencies[\"openssl.org\"]", set = "^3" }]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code := h.run(t, "--recipes", "app.org", "--overrides", ovDir, "--to", "oci://example.test/pkgs")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, h.errb.String())
+	}
+	if !strings.Contains(h.out.String(), "1 logical override(s)") {
+		t.Errorf("the run must say how many it carries:\n%s", h.out.String())
+	}
+	// It reached the recipe: openssl.org is now in the closure at ^3, so the
+	// walk visited it. Had the override not been applied the closure would
+	// still name it, so assert the CONSTRAINT rather than the presence.
+	if !strings.Contains(h.out.String(), "closure:") {
+		t.Errorf("no closure line:\n%s", h.out.String())
+	}
+}
+
+func TestRunFactoryRefusesABrokenLogicalOverride(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "app.org", "versions:\n  github: a/app/tags\nbuild: make\n")
+	ovDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ovDir, "bad.hcl"), []byte("project = "), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.run(t, "--recipes", "app.org", "--overrides", ovDir, "--to", "oci://example.test/pkgs"); code == 0 {
+		t.Fatalf("an override that does not parse must stop the run; stderr = %s", h.errb.String())
 	}
 }

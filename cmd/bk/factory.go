@@ -18,6 +18,7 @@ import (
 	"github.com/go-pkgx/bk/bottlepkg"
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/config"
+	"github.com/go-pkgx/bk/logical"
 	"github.com/go-pkgx/bk/overrides"
 	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/recipefile"
@@ -183,6 +184,19 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		skippedOverrides = ores.SkippedProjects
 	}
 
+	// The LOGICAL overrides from the same directory. Unlike the patches above
+	// they change nothing on disk: they are applied to each recipe's document
+	// as it is read, so package.yml keeps its comments and a re-run needs no
+	// fresh clone.
+	logicalSet, err := logical.LoadDir(*overridesDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "factory:", err)
+		return 1
+	}
+	if n := len(logicalSet.Projects()); n > 0 {
+		fmt.Fprintf(stdout, "%d logical override(s), applied as each recipe is read\n", n)
+	}
+
 	// The base toolchain pins perl for the XS-bearing tools inside it. If one of
 	// those recipes has moved, every autotools recipe that generates a man page
 	// or an info manual will die at install time on a module it cannot load —
@@ -190,7 +204,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	// from any one failure. Say it once here, where it is one line instead of
 	// forty. Reported, not refused: whether a mismatched toolchain should stop a
 	// run is the same question as go-pkgx/packages#147 asks of a mirror.
-	for _, e := range build.CheckToolchainPerl(*pantryDir) {
+	for _, e := range build.CheckToolchainPerl(logicalSet, *pantryDir) {
 		fmt.Fprintln(stderr, "factory: toolchain:", e)
 	}
 
@@ -229,7 +243,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	list := want
 	var demands map[string][]string
 	if !*noClosure {
-		list, demands = closureOf(*overlayDir, *pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
+		list, demands = closureOf(logicalSet, *overlayDir, *pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
 	}
 	if *mirrorFrom != "" {
 		// Mirroring needs no recipe (no build, and the versions come from the
@@ -297,7 +311,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 			}
 			continue
 		}
-		rec, err := recipefile.Load(*pantryDir, proj)
+		rec, err := recipefile.LoadOverridden(logicalSet, *pantryDir, proj)
 		switch {
 		case errors.Is(err, recipefile.ErrNoRecipe):
 			// A pantry need not be complete: the closure walk names projects

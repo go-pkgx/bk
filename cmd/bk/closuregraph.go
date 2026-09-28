@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -8,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/go-pkgx/bk/build"
+	"github.com/go-pkgx/bk/logical"
+	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bottle"
@@ -30,22 +33,30 @@ import (
 // list had no ">", missed a constraint with a trailing `#` comment, and could
 // not see the soname channel at all.
 type closureGraph struct {
-	order    []string // post-order: dependencies before dependents
-	missing  []string // named as a dependency, no recipe in this pantry
-	demands  map[string]map[string][]string
-	seen     map[string]bool
-	pantry   string
-	overlay  string
+	order   []string // post-order: dependencies before dependents
+	missing []string // named as a dependency, no recipe in this pantry
+	demands map[string]map[string][]string
+	seen    map[string]bool
+	pantry  string
+	overlay string
+	// set is the logical overrides, applied to a PANTRY recipe as it is read.
+	//
+	// It is here for the reason go-pkgx/bk#224 exists: bk has two closure
+	// walks, and teaching one of them something the other does not know makes
+	// `bk closure` describe a build the factory would not perform. That defect
+	// was fixed hours before this field was added, and its first draft
+	// reproduced it — `bk closure --build` quietly ignored every override.
+	set      *logical.Set
 	tgt      target.Target
 	withBuil bool
 	warn     func(string)
 }
 
-func newClosureGraph(pantryDir string, tgt target.Target, withBuild bool, warn func(string)) *closureGraph {
+func newClosureGraph(set *logical.Set, pantryDir string, tgt target.Target, withBuild bool, warn func(string)) *closureGraph {
 	return &closureGraph{
 		demands: map[string]map[string][]string{},
 		seen:    map[string]bool{},
-		pantry:  pantryDir, tgt: tgt, withBuil: withBuild, warn: warn,
+		pantry:  pantryDir, tgt: tgt, withBuil: withBuild, warn: warn, set: set,
 	}
 }
 
@@ -57,7 +68,7 @@ func (g *closureGraph) visit(proj string) {
 		return
 	}
 	g.seen[proj] = true
-	rec, err := recipefile.LoadOverlay(g.overlay, g.pantry, proj)
+	rec, err := g.load(proj)
 	if err != nil {
 		g.missing = append(g.missing, proj)
 		if g.warn != nil {
@@ -175,4 +186,22 @@ func printGraph(g *closureGraph, constraints, pins, implicit bool, stdout io.Wri
 			fmt.Fprintf(stdout, "%s\t# soname provider — no recipe declares it\n", p)
 		}
 	}
+}
+
+// load reads a recipe the way this walk must: the overlay first, as a consumer
+// resolves, and the pantry's own copy with the logical overrides applied, as
+// the factory builds.
+func (g *closureGraph) load(proj string) (*pantry.Recipe, error) {
+	if g.overlay != "" {
+		switch r, err := recipefile.Load(g.overlay, proj); {
+		case err == nil:
+			return r, nil
+		case !errors.Is(err, recipefile.ErrNoRecipe):
+			// The overlay HAS this recipe and it does not parse. Falling
+			// through would describe a build from something other than what
+			// the overlay says.
+			return nil, err
+		}
+	}
+	return recipefile.LoadOverridden(g.set, g.pantry, proj)
 }

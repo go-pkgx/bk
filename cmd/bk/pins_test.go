@@ -61,7 +61,7 @@ func TestIntersectConstraints(t *testing.T) {
 // would resolve — and a disagreement is REPORTED, because the answer there is
 // two builds rather than a choice.
 func TestClosureGraphPins(t *testing.T) {
-	g := newClosureGraph("", target.Target{Platform: "linux", Arch: "x86-64"}, true, nil)
+	g := newClosureGraph(nil, "", target.Target{Platform: "linux", Arch: "x86-64"}, true, nil)
 	g.order = []string{"dep.org", "split.org", "free.org", "app.org"}
 	g.demands = map[string]map[string][]string{
 		"dep.org":   {"~3.11": {"app.org"}, ">=3<3.15": {"other.org"}},
