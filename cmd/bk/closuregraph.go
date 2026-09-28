@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -193,15 +192,12 @@ func printGraph(g *closureGraph, constraints, pins, implicit bool, stdout io.Wri
 // the factory builds.
 func (g *closureGraph) load(proj string) (*pantry.Recipe, error) {
 	if g.overlay != "" {
-		switch r, err := recipefile.Load(g.overlay, proj); {
-		case err == nil:
-			return r, nil
-		case !errors.Is(err, recipefile.ErrNoRecipe):
-			// The overlay HAS this recipe and it does not parse. Falling
-			// through would describe a build from something other than what
-			// the overlay says.
-			return nil, err
-		}
+		// MERGED over upstream, not preferred whole. An overlay entry states
+		// only the keys it changes now, so reading one on its own is a
+		// fragment: `bk closure --build curl.se` went from 54 projects to 8
+		// the first time this walk met a reduced entry, because it saw
+		// `dependencies` and never upstream's build dependencies.
+		return recipefile.LoadMerged(g.set, g.overlay, g.pantry, proj)
 	}
 	return recipefile.LoadOverridden(g.set, g.pantry, proj)
 }

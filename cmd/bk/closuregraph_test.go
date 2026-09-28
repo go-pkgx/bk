@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -195,5 +197,51 @@ func TestClosureReadsTheOverlay(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "crypt.org") {
 		t.Errorf("the overlay's edge must be walked:\n%s", out.String())
+	}
+}
+
+// TestClosureMergesAReducedOverlayEntry is the regression that sent bk back to
+// this file. go-pkgx/pantry-overlay reduced its 183 entries to the keys they
+// change, and a walk that preferred the overlay's copy WHOLE then read a
+// fragment: `bk closure --build curl.se` collapsed from 54 projects to 8,
+// because the entry states `dependencies` and the walk never saw upstream's
+// build dependencies at all.
+//
+// The overrides are the same lesson on the other side. They describe 206
+// projects, the overlay carries 183, and 178 of the overrides edit a
+// dependency — so a project the overlay does not carry was read unoverridden.
+// Measured on a pristine pantry: `bk closure --build rsync.samba.org` listed
+// gnu.org/libidn2 without --overlay and not with it.
+func TestClosureMergesAReducedOverlayEntry(t *testing.T) {
+	pan, ov, ovr := t.TempDir(), t.TempDir(), t.TempDir()
+	// A reduced entry: the dependency it changes, and NOTHING else.
+	writeClosureRecipe(t, pan, "app.org",
+		"dependencies:\n  lib.org: ^1\nbuild:\n  dependencies:\n    tool.org: '*'\n  script: make\n")
+	writeClosureRecipe(t, ov, "app.org", "dependencies:\n  lib.org: ^2\n")
+	// A project the overlay does not carry, whose override adds an edge.
+	writeClosureRecipe(t, pan, "lib.org", "build: make\n")
+	writeClosureRecipe(t, pan, "tool.org", "build: make\n")
+	writeClosureRecipe(t, pan, "idn.org", "build: make\n")
+	if err := os.WriteFile(filepath.Join(ovr, "lib.hcl"), []byte(
+		"project = \"lib.org\"\nwhy = \"the published bottle needs it and upstream does not say so\"\n"+
+			"edits = [{ path = \"dependencies[\\\"idn.org\\\"]\", set = \"*\" }]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := runClosure([]string{"--pantry", pan, "--overlay", ov, "--overrides", ovr,
+		"--platform", "linux/x86-64", "--build", "app.org"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("code = %d: %s", code, errb.String())
+	}
+	got := out.String()
+	// Inherited from upstream through the merge: the fragment says nothing
+	// about build dependencies, and tool.org is one.
+	if !strings.Contains(got, "tool.org") {
+		t.Errorf("a reduced entry must not hide upstream's build dependency:\n%s", got)
+	}
+	// Reached through the override, for a project the overlay does not carry.
+	if !strings.Contains(got, "idn.org") {
+		t.Errorf("the overrides must reach the pantry half under an overlay:\n%s", got)
 	}
 }

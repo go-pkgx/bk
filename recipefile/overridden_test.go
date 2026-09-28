@@ -1,6 +1,7 @@
 package recipefile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -241,5 +242,165 @@ edits   = [{ path = "dependencies[\"openssl.org\"]", set = "^3" }]
 	writeRecipe(t, overlay, "broken.example", "package.hcl", "build { script = \"make\" }\n")
 	if _, err := LoadBuildRecipe(set, overlay, pantry, "broken.example"); err == nil {
 		t.Error("a pantry recipe that does not parse must be reported, not replaced")
+	}
+}
+
+// TestLoadMergedMerges pins the rule a REDUCED overlay depends on. An
+// entry that states `dependencies` and nothing else is a fragment, and reading
+// it whole gave a recipe with no build and no distributable — measured as
+// `bk closure --build curl.se` collapsing from 54 projects to 8.
+func TestLoadMergedMerges(t *testing.T) {
+	pantry, overlay := t.TempDir(), t.TempDir()
+	writeRecipe(t, pantry, "acme.org", "package.yml", minimalYAML)
+	writeRecipe(t, overlay, "acme.org", "package.hcl",
+		"dependencies = { \"openssl.org\" = \"^3\" }\nprovides = [\"bin/only\"]\n")
+
+	r, err := LoadMerged(nil, overlay, pantry, "acme.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stated by the overlay: it wins.
+	if r.Dependencies["openssl.org"] != "^3" {
+		t.Errorf("the overlay did not win: %v", r.Dependencies)
+	}
+	// A list REPLACES rather than merging — there is no merge key for one.
+	if fmt.Sprint(r.Provides) != "[bin/only]" {
+		t.Errorf("a list must replace: %v", r.Provides)
+	}
+	// Omitted by the overlay: inherited. This is the whole point — the
+	// fragment carries no build, and the walk still needs one.
+	if !strings.Contains(fmt.Sprint(r.Build), "make install") {
+		t.Errorf("upstream's build was not inherited: %v", r.Build)
+	}
+	if !strings.Contains(fmt.Sprint(r.Distributable), "acme.org") {
+		t.Errorf("upstream's distributable was not inherited: %v", r.Distributable)
+	}
+}
+
+func TestLoadMergedOneSidedAndAbsent(t *testing.T) {
+	pantry, overlay := t.TempDir(), t.TempDir()
+	writeRecipe(t, pantry, "up.org", "package.yml", minimalYAML)
+	writeRecipe(t, overlay, "ours.example", "package.hcl",
+		"distributable { url = \"https://ours.example/x.tar.gz\" }\nbuild { script = \"make\" }\nprovides = [\"bin/ours\"]\n")
+
+	// Upstream carries no such project: the overlay is the whole recipe.
+	r, err := LoadMerged(nil, overlay, pantry, "ours.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(r.Provides) != "[bin/ours]" {
+		t.Errorf("got %v", r.Provides)
+	}
+	// The overlay says nothing: upstream, untouched.
+	if r, err = LoadMerged(nil, overlay, pantry, "up.org"); err != nil {
+		t.Fatal(err)
+	} else if fmt.Sprint(r.Provides) != "[bin/acme]" {
+		t.Errorf("got %v", r.Provides)
+	}
+	// No overlay directory at all is the same question asked of the pantry.
+	if _, err := LoadMerged(nil, "", pantry, "up.org"); err != nil {
+		t.Fatal(err)
+	}
+	// In neither half.
+	if _, err := LoadMerged(nil, overlay, pantry, "absent.example"); !errors.Is(err, ErrNoRecipe) {
+		t.Errorf("want ErrNoRecipe, got %v", err)
+	}
+}
+
+// TestLoadMergedRefusesWhatItCannotRead: a recipe that EXISTS and does
+// not parse must never read as an absence. Skipping it silently would plan a
+// build around a document nobody could read, on EITHER side.
+func TestLoadMergedRefusesWhatItCannotRead(t *testing.T) {
+	for _, tc := range []struct{ name, side, file, body string }{
+		{"overlay HCL", "overlay", "package.hcl", "build { script = \n"},
+		{"pantry YAML", "pantry", "package.yml", "a: [\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pantry, overlay := t.TempDir(), t.TempDir()
+			writeRecipe(t, pantry, "x.org", "package.yml", minimalYAML)
+			writeRecipe(t, overlay, "x.org", "package.hcl", "provides = [\"bin/x\"]\n")
+			dir := overlay
+			if tc.side == "pantry" {
+				dir = pantry
+			}
+			writeRecipe(t, dir, "x.org", tc.file, tc.body)
+			if _, err := LoadMerged(nil, overlay, pantry, "x.org"); err == nil {
+				t.Fatal("a recipe that does not parse must be an error, not an absence")
+			}
+		})
+	}
+}
+
+// TestLoadMergedWhenTheDocumentCannotBeWrittenBack reaches the marshal
+// failure through the seam: the merged document is re-emitted as YAML for the
+// pantry parser, and that write can fail.
+func TestLoadMergedWhenTheDocumentCannotBeWrittenBack(t *testing.T) {
+	pantry := t.TempDir()
+	writeRecipe(t, pantry, "x.org", "package.yml", minimalYAML)
+	old := yamlMarshal
+	t.Cleanup(func() { yamlMarshal = old })
+	yamlMarshal = func(any) ([]byte, error) { return nil, os.ErrInvalid }
+	if _, err := LoadMerged(nil, "", pantry, "x.org"); err == nil {
+		t.Fatal("want the marshal failure")
+	}
+}
+
+// TestMergeRecipeReplacesAScalarWithAMap: the overlay states a table where
+// upstream states something else. There is nothing to merge INTO, so the
+// overlay's value replaces it whole.
+func TestMergeRecipeReplacesAScalarWithAMap(t *testing.T) {
+	got := mergeRecipe(
+		map[string]any{"build": "make", "keep": 1},
+		map[string]any{"build": map[string]any{"script": "make -j2"}},
+	)
+	b, ok := got["build"].(map[string]any)
+	if !ok || b["script"] != "make -j2" {
+		t.Errorf("got %#v", got["build"])
+	}
+	if got["keep"] != 1 {
+		t.Errorf("an untouched key was lost: %#v", got)
+	}
+}
+
+// TestLoadMergedAppliesTheOverridesToTheBase: the overlay carries 183 projects
+// and the overrides describe 206. A walk that read the overlay's view for a
+// project the overlay does NOT carry read it unoverridden — measured on a
+// pristine pantry, `bk closure --build rsync.samba.org` listed gnu.org/libidn2
+// without --overlay and not with it.
+func TestLoadMergedAppliesTheOverridesToTheBase(t *testing.T) {
+	pantry, overlay := t.TempDir(), t.TempDir()
+	writeRecipe(t, pantry, "acme.org", "package.yml", minimalYAML)
+	set := setFrom(t, `
+project = "acme.org"
+why     = "our registry carries no openssl 1.x"
+edits   = [{ path = "dependencies[\"gnu.org/libidn2\"]", set = "*" }]
+`)
+	// The overlay says nothing about this project: the override still applies.
+	r, err := LoadMerged(set, overlay, pantry, "acme.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Dependencies["gnu.org/libidn2"] != "*" {
+		t.Errorf("the override did not reach the base: %v", r.Dependencies)
+	}
+
+	// And when the overlay DOES carry it, the overlay still wins for what it
+	// states — it was generated from the overridden recipe.
+	writeRecipe(t, overlay, "acme.org", "package.hcl",
+		"dependencies = { \"gnu.org/libidn2\" = \"^2\" }\n")
+	if r, err = LoadMerged(set, overlay, pantry, "acme.org"); err != nil {
+		t.Fatal(err)
+	} else if r.Dependencies["gnu.org/libidn2"] != "^2" {
+		t.Errorf("the overlay did not win: %v", r.Dependencies)
+	}
+
+	// An override whose premise is gone is an error, not a silent skip.
+	bad := setFrom(t, `
+project = "acme.org"
+why     = "premise"
+edits   = [{ path = "dependencies[\"openssl.org\"]", set = "^3", expect = "^9" }]
+`)
+	if _, err := LoadMerged(bad, overlay, pantry, "acme.org"); err == nil {
+		t.Error("an override that no longer holds must be reported")
 	}
 }
