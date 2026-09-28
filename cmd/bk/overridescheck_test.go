@@ -61,7 +61,7 @@ func TestOverridesAppliesCleanly(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("rc = %d, stderr = %s", rc, errb)
 	}
-	if !strings.Contains(out, "1 override(s): 1 applied, 0 no longer apply") {
+	if !strings.Contains(out, "1 patch override(s): 1 applied, 0 no longer apply") {
 		t.Errorf("out = %q", out)
 	}
 }
@@ -84,7 +84,7 @@ func TestOverridesFailsOnAPatchThatStoppedApplying(t *testing.T) {
 	if rc != 1 {
 		t.Fatalf("rc = %d, want 1 — a patch that stopped applying must fail the lane", rc)
 	}
-	if !strings.Contains(out, "1 override(s): 0 applied, 1 no longer apply") {
+	if !strings.Contains(out, "1 patch override(s): 0 applied, 1 no longer apply") {
 		t.Errorf("out = %q", out)
 	}
 	// Named by PROJECT as well as by patch: the patch name says which file was
@@ -106,7 +106,7 @@ func TestOverridesRefusesAnEmptyDirectory(t *testing.T) {
 	if rc != 1 {
 		t.Errorf("rc = %d, want 1", rc)
 	}
-	if !strings.Contains(errb, "no patch in") {
+	if !strings.Contains(errb, "nothing in") {
 		t.Errorf("the message must say what it means: %q", errb)
 	}
 }
@@ -181,4 +181,113 @@ func TestOverridesNeedsNoBuildTarget(t *testing.T) {
 			t.Errorf("bk %v: the refusal must name the platform: %q", cmd[0], e2.String())
 		}
 	}
+}
+
+// writeHCL puts a logical override in the directory ovTree made.
+func writeHCL(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const logicalRecipe = "distributable:\n  url: https://acme.org/{{version}}.tar.gz\ndependencies:\n  openssl.org: ^1.1\nbuild:\n  script: make install\nprovides:\n  - bin/acme\n"
+
+// The three outcomes, which is why the logical format exists. A unified diff
+// could only say "applies" or "does not", and "does not" covers two opposite
+// situations — a defect, and a job upstream has already done.
+func TestOverridesChecksTheLogicalOnes(t *testing.T) {
+	t.Run("it is needed", func(t *testing.T) {
+		dir, pantry := ovTree(t, logicalRecipe, "")
+		writeHCL(t, dir, "acme.hcl", `
+project = "acme.org"
+why     = "our registry carries no openssl 1.x"
+edits   = [{ path = "dependencies[\"openssl.org\"]", set = "^3" }]
+`)
+		rc, out, errb := ov(t, "--dir", dir, "--pantry", pantry)
+		if rc != 0 {
+			t.Fatalf("rc = %d\n%s\n%s", rc, out, errb)
+		}
+		if !strings.Contains(out, "1 operation(s) applied, 0 already true") {
+			t.Errorf("out:\n%s", out)
+		}
+	})
+
+	t.Run("upstream has caught up", func(t *testing.T) {
+		dir, pantry := ovTree(t, strings.Replace(logicalRecipe, "^1.1", "^3", 1), "")
+		writeHCL(t, dir, "acme.hcl", `
+project = "acme.org"
+why     = "our registry carries no openssl 1.x"
+edits   = [{ path = "dependencies[\"openssl.org\"]", set = "^3" }]
+`)
+		rc, out, errb := ov(t, "--dir", dir, "--pantry", pantry)
+		if rc != 0 {
+			t.Fatalf("rc = %d\n%s\n%s", rc, out, errb)
+		}
+		// Not an error — an instruction. An override directory only ever grows
+		// unless something says which entries have stopped being needed.
+		if !strings.Contains(out, "upstream has caught up with — delete them") ||
+			!strings.Contains(out, "acme.org (acme.hcl)") {
+			t.Errorf("out:\n%s", out)
+		}
+	})
+
+	t.Run("its premise is gone", func(t *testing.T) {
+		dir, pantry := ovTree(t, logicalRecipe, "")
+		writeHCL(t, dir, "acme.hcl", `
+project = "acme.org"
+why     = "w"
+edits   = [{ path = "build.script", from = "cmake", to = "cmake3" }]
+`)
+		rc, _, errb := ov(t, "--dir", dir, "--pantry", pantry)
+		if rc != 1 {
+			t.Fatalf("rc = %d\n%s", rc, errb)
+		}
+		if !strings.Contains(errb, "premise is gone") {
+			t.Errorf("stderr:\n%s", errb)
+		}
+	})
+
+	t.Run("it names a project the pantry has not got", func(t *testing.T) {
+		dir, pantry := ovTree(t, logicalRecipe, "")
+		writeHCL(t, dir, "absent.hcl", `
+project = "absent.example"
+why     = "w"
+edits   = [{ path = "a", set = 1 }]
+`)
+		rc, _, errb := ov(t, "--dir", dir, "--pantry", pantry)
+		if rc != 1 || !strings.Contains(errb, "absent.example") {
+			t.Errorf("rc = %d, stderr:\n%s", rc, errb)
+		}
+	})
+
+	t.Run("it produces something a recipe may not say", func(t *testing.T) {
+		dir, pantry := ovTree(t, logicalRecipe, "")
+		writeHCL(t, dir, "acme.hcl", `
+project = "acme.org"
+why     = "w"
+edits   = [{ path = "distributable", set = 7 }]
+`)
+		rc, _, errb := ov(t, "--dir", dir, "--pantry", pantry)
+		if rc != 1 {
+			t.Errorf("a schema failure must stop the run: rc = %d\n%s", rc, errb)
+		}
+	})
+
+	t.Run("a file that does not parse", func(t *testing.T) {
+		dir, pantry := ovTree(t, logicalRecipe, "")
+		writeHCL(t, dir, "bad.hcl", "project = ")
+		rc, _, errb := ov(t, "--dir", dir, "--pantry", pantry)
+		if rc != 1 || !strings.Contains(errb, "overrides:") {
+			t.Errorf("rc = %d, stderr:\n%s", rc, errb)
+		}
+	})
+
+	t.Run("neither format present", func(t *testing.T) {
+		dir, pantry := ovTree(t, logicalRecipe, "")
+		rc, _, errb := ov(t, "--dir", dir, "--pantry", pantry)
+		if rc != 1 || !strings.Contains(errb, "nothing in") {
+			t.Errorf("rc = %d, stderr:\n%s", rc, errb)
+		}
+	})
 }
