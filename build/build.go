@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-pkgx/bk/logical"
 	"github.com/go-pkgx/bk/moustache"
 	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
@@ -215,10 +216,10 @@ var perlXSToolchainProjects = []string{"gnu.org/texinfo", "gnu.org/help2man"}
 // A recipe that is absent is not a disagreement — a pantry need not be
 // complete, and refusing to build because a file is missing would be a worse
 // failure than the one this prevents.
-func CheckToolchainPerl(pantryDir string) []error {
+func CheckToolchainPerl(set *logical.Set, pantryDir string) []error {
 	var problems []error
 	for _, proj := range perlXSToolchainProjects {
-		r, err := recipefile.Load(pantryDir, proj)
+		r, err := recipefile.LoadOverridden(set, pantryDir, proj)
 		switch {
 		case errors.Is(err, recipefile.ErrNoRecipe):
 			// Absent is not a disagreement: a pantry need not be complete.

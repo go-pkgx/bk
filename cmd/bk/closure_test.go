@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"github.com/go-pkgx/bk/logical"
 	"os"
 	"path/filepath"
 	"slices"
@@ -149,7 +150,7 @@ func TestClosureOfSeesAnOverlayOnlyDependency(t *testing.T) {
 	writeClosureRecipe(t, pantry, "github.com/besser82/libxcrypt", "build: make\n")
 
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
-	order, _ := closureOf(overlay, pantry, tgt, []string{"perl.org"}, func(string) {})
+	order, _ := closureOf(nil, overlay, pantry, tgt, []string{"perl.org"}, func(string) {})
 	for _, want := range []string{"github.com/besser82/libxcrypt", "gnu.org/gdbm", "perl.org"} {
 		if !slices.Contains(order, want) {
 			t.Errorf("order = %v, missing %s", order, want)
@@ -162,7 +163,7 @@ func TestClosureOfSeesAnOverlayOnlyDependency(t *testing.T) {
 	}
 
 	// Without the overlay this is the walk it replaces, blind spot and all.
-	if order, _ := closureOf("", pantry, tgt, []string{"perl.org"}, func(string) {}); slices.Contains(order, "github.com/besser82/libxcrypt") {
+	if order, _ := closureOf(nil, "", pantry, tgt, []string{"perl.org"}, func(string) {}); slices.Contains(order, "github.com/besser82/libxcrypt") {
 		t.Errorf("a pantry-only walk cannot see the overlay's edge: %v", order)
 	}
 }
@@ -177,7 +178,7 @@ func TestClosureOfCollectsDemandsFromBothHalves(t *testing.T) {
 	writeClosureRecipe(t, overlay, "app.org", "dependencies:\n  lib.org: '>=1.60'\n")
 	writeClosureRecipe(t, pantry, "lib.org", "build: make\n")
 
-	_, demands := closureOf(overlay, pantry, target.Target{Platform: "linux", Arch: "x86-64"},
+	_, demands := closureOf(nil, overlay, pantry, target.Target{Platform: "linux", Arch: "x86-64"},
 		[]string{"app.org"}, func(string) {})
 	got := demands["lib.org"]
 	slices.Sort(got)
@@ -192,19 +193,109 @@ func TestClosureOfCollectsDemandsFromBothHalves(t *testing.T) {
 func TestClosureRecipes(t *testing.T) {
 	pantry, overlay := t.TempDir(), t.TempDir()
 	writeClosureRecipe(t, overlay, "only.example", "build: make\n")
-	if recs, err := closureRecipes(overlay, pantry, "only.example"); err != nil || len(recs) != 1 {
+	if recs, err := closureRecipes(nil, overlay, pantry, "only.example"); err != nil || len(recs) != 1 {
 		t.Errorf("overlay-only: %d recipe(s), %v", len(recs), err)
 	}
-	if _, err := closureRecipes(overlay, pantry, "absent.example"); !errors.Is(err, recipefile.ErrNoRecipe) {
+	if _, err := closureRecipes(nil, overlay, pantry, "absent.example"); !errors.Is(err, recipefile.ErrNoRecipe) {
 		t.Errorf("absent everywhere: %v", err)
 	}
 	writeClosureRecipe(t, overlay, "broken.example", "dependencies: [\n")
-	if _, err := closureRecipes(overlay, pantry, "broken.example"); err == nil || errors.Is(err, recipefile.ErrNoRecipe) {
+	if _, err := closureRecipes(nil, overlay, pantry, "broken.example"); err == nil || errors.Is(err, recipefile.ErrNoRecipe) {
 		t.Errorf("a recipe that exists and does not parse must be reported: %v", err)
 	}
 	// With no overlay it is the pantry-only loader it replaces.
 	writeClosureRecipe(t, pantry, "plain.example", "build: make\n")
-	if recs, err := closureRecipes("", pantry, "plain.example"); err != nil || len(recs) != 1 {
+	if recs, err := closureRecipes(nil, "", pantry, "plain.example"); err != nil || len(recs) != 1 {
 		t.Errorf("pantry-only: %d recipe(s), %v", len(recs), err)
+	}
+}
+
+// `bk closure` reads the same logical overrides the factory does, so the order
+// it prints is the order that would be built.
+func TestRunClosureWithLogicalOverrides(t *testing.T) {
+	p := t.TempDir()
+	writeClosureRecipe(t, p, "app.org", "dependencies:\n  lib.org: '*'\nbuild: make\n")
+	writeClosureRecipe(t, p, "lib.org", "build: make\n")
+
+	ovDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ovDir, "app.hcl"), []byte(`
+project = "app.org"
+why     = "it links zlib and upstream does not say so"
+merge {
+  dependencies = { "zlib.net" = "^1" }
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeClosureRecipe(t, p, "zlib.net", "build: make\n")
+
+	var out, errb bytes.Buffer
+	if code := runClosure([]string{"--pantry", p, "--overrides", ovDir, "--platform", "linux/x86-64", "app.org"}, &out, &errb); code != 0 {
+		t.Fatalf("code, stderr = %s", errb.String())
+	}
+	if !strings.Contains(out.String(), "zlib.net") {
+		t.Errorf("the override's dependency is not in the closure:\n%s", out.String())
+	}
+
+	// A broken one stops the walk rather than describing a build nobody
+	// performs.
+	bad := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bad, "x.hcl"), []byte("project = "), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errb.Reset()
+	if code := runClosure([]string{"--pantry", p, "--overrides", bad, "app.org"}, &out, &errb); code != 2 {
+		t.Errorf("code = %d, want 2; stderr = %s", code, errb.String())
+	}
+}
+
+// An overlay recipe that EXISTS and does not parse must stop the walk, not
+// fall through to the pantry: falling through describes a build from something
+// other than what the overlay says, silently.
+func TestClosureGraphRefusesAnUnparsableOverlayRecipe(t *testing.T) {
+	pantry, overlay := t.TempDir(), t.TempDir()
+	writeClosureRecipe(t, pantry, "app.org", "build: make\n")
+	writeClosureRecipeNamed(t, overlay, "app.org", "package.hcl", "distributable {")
+
+	var errb bytes.Buffer
+	g := newClosureGraph(nil, pantry, target.Target{Platform: "linux", Arch: "x86-64"}, true,
+		func(s string) { errb.WriteString(s + "\n") })
+	g.overlay = overlay
+	g.visit("app.org")
+	if !strings.Contains(errb.String(), "app.org") {
+		t.Errorf("the walk must say which recipe it could not read: %q", errb.String())
+	}
+	if len(g.order) != 0 {
+		t.Errorf("a recipe it could not read must not enter the order: %v", g.order)
+	}
+}
+
+// And the logical overrides reach the GRAPH walk too — `bk closure --build` is
+// the tool a person runs to work out what the factory will do, so the two have
+// to read a recipe the same way. The first draft of this wiring gave the set to
+// closureOf and not to the graph, which is the very asymmetry go-pkgx/bk#224
+// had just been written to remove.
+func TestClosureGraphAppliesLogicalOverrides(t *testing.T) {
+	pantry := t.TempDir()
+	writeClosureRecipe(t, pantry, "app.org", "build: make\n")
+	writeClosureRecipe(t, pantry, "zlib.net", "build: make\n")
+
+	ovDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ovDir, "app.hcl"), []byte(`
+project = "app.org"
+why     = "it links zlib and upstream does not say so"
+merge { dependencies = { "zlib.net" = "^1" } }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set, err := logical.LoadDir(ovDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := newClosureGraph(set, pantry, target.Target{Platform: "linux", Arch: "x86-64"}, true, nil)
+	g.visit("app.org")
+	if !slices.Contains(g.order, "zlib.net") {
+		t.Errorf("the override's dependency is not in the graph: %v", g.order)
 	}
 }

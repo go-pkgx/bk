@@ -365,7 +365,7 @@ func TestCheckToolchainPerl(t *testing.T) {
 		for _, p := range perlXSToolchainProjects {
 			writeRecipe(t, root, p, fmt.Sprintf(recipeWithPerl, ToolchainPerl))
 		}
-		if problems := CheckToolchainPerl(root); len(problems) != 0 {
+		if problems := CheckToolchainPerl(nil, root); len(problems) != 0 {
 			t.Errorf("reported %v for recipes that agree with the pin", problems)
 		}
 	})
@@ -373,7 +373,7 @@ func TestCheckToolchainPerl(t *testing.T) {
 		root := t.TempDir()
 		writeRecipe(t, root, perlXSToolchainProjects[0], fmt.Sprintf(recipeWithPerl, "~5.46"))
 		writeRecipe(t, root, perlXSToolchainProjects[1], fmt.Sprintf(recipeWithPerl, ToolchainPerl))
-		problems := CheckToolchainPerl(root)
+		problems := CheckToolchainPerl(nil, root)
 		if len(problems) != 1 {
 			t.Fatalf("reported %d problem(s), want 1: %v", len(problems), problems)
 		}
@@ -386,7 +386,7 @@ func TestCheckToolchainPerl(t *testing.T) {
 	t.Run("a recipe that is not there", func(t *testing.T) {
 		// A pantry need not be complete. Refusing to build over a missing file
 		// would be a worse failure than the one this prevents.
-		if problems := CheckToolchainPerl(t.TempDir()); len(problems) != 0 {
+		if problems := CheckToolchainPerl(nil, t.TempDir()); len(problems) != 0 {
 			t.Errorf("reported %v for an empty pantry", problems)
 		}
 	})
@@ -400,14 +400,14 @@ build:
   script: make
 test: true
 `)
-		if problems := CheckToolchainPerl(root); len(problems) != 0 {
+		if problems := CheckToolchainPerl(nil, root); len(problems) != 0 {
 			t.Errorf("reported %v for a recipe with no perl constraint", problems)
 		}
 	})
 	t.Run("a recipe we cannot read", func(t *testing.T) {
 		root := t.TempDir()
 		writeRecipe(t, root, perlXSToolchainProjects[0], "versions: [1, 2\n")
-		if problems := CheckToolchainPerl(root); len(problems) != 1 {
+		if problems := CheckToolchainPerl(nil, root); len(problems) != 1 {
 			t.Errorf("want the parse failure reported, got %v", problems)
 		}
 	})
