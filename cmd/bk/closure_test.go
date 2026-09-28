@@ -299,3 +299,46 @@ merge { dependencies = { "zlib.net" = "^1" } }
 		t.Errorf("the override's dependency is not in the graph: %v", g.order)
 	}
 }
+
+// TestClosureFailsOnARootItCannotRead. A dependency with no recipe is skipped
+// on purpose; a project that was ASKED FOR is not the same thing, and the walk
+// used to skip both by the same line and exit 0.
+//
+// The witness is the shape that caught me on 2026-09-28: zsh does not
+// word-split an unquoted expansion, so all 76 seed projects went in as ONE
+// argument. The walk printed nothing, exited 0, and I nearly wrote the empty
+// answer down as a measurement.
+func TestClosureFailsOnARootItCannotRead(t *testing.T) {
+	pan := t.TempDir()
+	writeClosureRecipe(t, pan, "app.org", "dependencies:\n  gone.org: '*'\nbuild: make\n")
+
+	// A DEPENDENCY with no recipe is still a skip: it resolves from upstream
+	// dist at build time, and this is the premise of the case below.
+	var out, errb bytes.Buffer
+	if code := runClosure([]string{"--pantry", pan, "--platform", "linux/x86-64", "app.org"}, &out, &errb); code != 0 {
+		t.Fatalf("a missing dependency must not fail the walk: code = %d, %s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "app.org") {
+		t.Errorf("order = %q", out.String())
+	}
+
+	for _, withBuild := range []bool{false, true} {
+		args := []string{"--pantry", pan, "--platform", "linux/x86-64"}
+		if withBuild {
+			args = append(args, "--build")
+		}
+		// One argument holding two names: no recipe is called that.
+		out.Reset()
+		errb.Reset()
+		if code := runClosure(append(args, "app.org gone.org"), &out, &errb); code == 0 {
+			t.Errorf("--build=%v: a root nobody can read must fail, got 0 and %q", withBuild, out.String())
+		}
+		if !strings.Contains(errb.String(), "asked for and not read") {
+			t.Errorf("--build=%v: stderr must name it: %q", withBuild, errb.String())
+		}
+		// And nothing is printed, so a caller cannot mistake it for an answer.
+		if out.Len() != 0 {
+			t.Errorf("--build=%v: printed an order anyway: %q", withBuild, out.String())
+		}
+	}
+}
