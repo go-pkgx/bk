@@ -151,20 +151,25 @@ func TestExpectRefusesAnUpstreamChange(t *testing.T) {
 	}
 }
 
-// A heredoc value that does not end in a newline still has to close on a line
-// that is exactly the marker.
-func TestEmitAddsTheTrailingNewlineAHeredocNeeds(t *testing.T) {
-	v := "one\ntwo" // no trailing newline
-	src := Emit(&Override{Project: "p", Why: "w", Ops: []Op{{Why: "w", Path: Path{"a"}, Set: v}}})
-	got, err := Parse(src, "t.hcl")
-	if err != nil {
-		t.Fatalf("%v\n%s", err, src)
-	}
-	// HCL gives the body back WITH the newline the heredoc form requires; what
-	// matters is that it parses and keeps both lines.
-	s, _ := got.Ops[0].Set.(string)
-	if !strings.HasPrefix(s, "one\ntwo") {
-		t.Errorf("got %q", s)
+// A multi-line value that does NOT end in a newline cannot be a heredoc: the
+// form closes on a line that is exactly the marker, so its body always ends
+// with one. openjpeg.org's substitution runs from mid-line, across a line
+// break, to mid-line — written as a heredoc it came back one newline longer
+// and then matched nothing.
+func TestEmitWillNotPutALineFragmentInAHeredoc(t *testing.T) {
+	for _, v := range []string{
+		"one\ntwo",
+		"-DCMAKE_BUILD_TYPE=Release\nmake",
+		"one\ntwo\n", // this one MAY be a heredoc
+	} {
+		src := Emit(&Override{Project: "p", Why: "w", Ops: []Op{{Why: "w", Path: Path{"a"}, Set: v}}})
+		got, err := Parse(src, "t.hcl")
+		if err != nil {
+			t.Fatalf("%q: %v\n%s", v, err, src)
+		}
+		if got.Ops[0].Set != v {
+			t.Errorf("%q came back as %q\n%s", v, got.Ops[0].Set, src)
+		}
 	}
 }
 

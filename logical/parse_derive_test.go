@@ -107,10 +107,14 @@ func TestDeriveReproduces(t *testing.T) {
 		{"a key appears", map[string]any{}, map[string]any{"a": "1"}, "set"},
 		{"a key goes", map[string]any{"a": "1"}, map[string]any{}, "remove"},
 		{"a scalar changes", map[string]any{"a": "1"}, map[string]any{"a": "2"}, "set"},
-		{"a string gains a run", map[string]any{"a": "cc -O2"}, map[string]any{"a": "cc -O2 -g"}, "substitute"},
+		// A pure APPEND to a string has no idempotent run — the original is a
+		// substring of the result, so any run survives its own replacement —
+		// and it becomes a whole-value set.
+		{"a string gains a run at the end", map[string]any{"a": "cc -O2"}, map[string]any{"a": "cc -O2 -g"}, "set"},
+		{"a string gains a run in the middle", map[string]any{"a": "cc -O2 -Wall"}, map[string]any{"a": "cc -O2 -g -Wall"}, "substitute"},
 		{"a list grows at the end", map[string]any{"a": []any{"x"}}, map[string]any{"a": []any{"x", "y"}}, "append"},
 		{"a list grows at the front", map[string]any{"a": []any{"x"}}, map[string]any{"a": []any{"y", "x"}}, "prepend"},
-		{"one element is edited", map[string]any{"a": []any{"p", "cc -O2"}}, map[string]any{"a": []any{"p", "cc -O2 -g"}}, "substitute"},
+		{"one element is edited", map[string]any{"a": []any{"p", "cc -O2 -Wall"}}, map[string]any{"a": []any{"p", "cc -O2 -g -Wall"}}, "substitute"},
 		{"a list is rewritten", map[string]any{"a": []any{"x", "y"}}, map[string]any{"a": []any{"z"}}, "set"},
 		{"a short scalar changes whole", map[string]any{"a": map[string]any{"b": "^1.1"}}, map[string]any{"a": map[string]any{"b": "^3"}}, "set"},
 		{"a long command gains a flag", map[string]any{"a": "cargo install --root=x --path=. --features=y"}, map[string]any{"a": "cargo install --locked --root=x --path=. --features=y"}, "substitute"},
@@ -156,17 +160,44 @@ func TestDeriveWillNotSubstituteARunThatOccursTwice(t *testing.T) {
 	}
 }
 
-// One string being a PREFIX of the other used to index past the end.
+// One string being a PREFIX of the other used to index past the end. It is
+// also the case that has no idempotent run at all: "abc" is inside "abcdef",
+// so whatever run you replace is still there afterwards and replacing twice
+// would compound. The caller assigns the value instead.
 func TestRunDiffOnAPrefix(t *testing.T) {
-	if from, to, ok := runDiff("abc", "abcdef"); !ok || from == "" || !strings.HasPrefix(to, from) {
-		t.Errorf("runDiff = %q,%q,%v", from, to, ok)
+	if from, to, ok := runDiff("abc", "abcdef"); ok {
+		t.Errorf("a pure insertion has no idempotent run, got %q → %q", from, to)
 	}
 	if _, _, ok := runDiff("abc", "abc"); ok {
 		t.Error("identical strings have no run")
 	}
-	// A run that cannot be made unique: the caller falls back to assignment.
 	if _, _, ok := runDiff("aaaa", "aaaaa"); ok {
-		t.Log("widened to unique, acceptable")
+		t.Error("a pure insertion has no idempotent run")
+	}
+}
+
+// Every run runDiff hands back must be gone from the result: applying the
+// substitution a second time has to do nothing. Derived without this rule, the
+// cargo --locked fix came out as "l --" → "l --locked --", which still matches
+// inside "install --locked" and gives "--locked --locked" on a second pass.
+// 24 operations across 22 real projects did exactly that.
+func TestRunDiffIsIdempotent(t *testing.T) {
+	for _, tc := range [][2]string{
+		{"cargo install --path .", "cargo install --locked --path ."},
+		{"cc -O2 -Wall", "cc -O2 -g -Wall"},
+		{"./configure $ARGS", "./configure --disable-nls $ARGS"},
+	} {
+		from, to, ok := runDiff(tc[0], tc[1])
+		if !ok {
+			continue
+		}
+		if strings.Contains(tc[1], from) {
+			t.Errorf("runDiff(%q,%q) = %q: still present afterwards, so a second pass would compound",
+				tc[0], tc[1], from)
+		}
+		if got := strings.Replace(tc[0], from, to, 1); got != tc[1] {
+			t.Errorf("runDiff(%q,%q) = %q→%q gives %q", tc[0], tc[1], from, to, got)
+		}
 	}
 }
 
@@ -282,8 +313,12 @@ func TestRunDiffUniqueness(t *testing.T) {
 // worthSubstituting is the rule that decides between the two verbs, and it has
 // no threshold to argue about: would restating the value be repeating it?
 func TestWorthSubstituting(t *testing.T) {
-	if worthSubstituting("^1.1", "1.1") {
-		t.Error("a version constraint reads better as a whole-value set")
+	// Nothing survives: the run IS the value, so it is an assignment.
+	if worthSubstituting("^1.1", "^1.1") {
+		t.Error("a whole-value run is an assignment, not an amendment")
+	}
+	if !worthSubstituting("cargo install --path .", "install --path") {
+		t.Error("a command that keeps most of itself is an amendment")
 	}
 	long := "cargo install --root=x --path=. --features=y"
 	if !worthSubstituting(long, "--locked ") {

@@ -178,42 +178,89 @@ func runDiffIn(a, b string, count func(string) int) (from, to string, ok bool) {
 		j--
 	}
 	from, to = a[i:len(a)-j], b[i:len(b)-j]
-	// Widen until replacing the run REPRODUCES the target. Uniqueness alone is
-	// not enough, and the difference bit: for "ααα" → "αααβ" the naive run is
-	// "αα", which strings.Count says occurs once — non-overlapping — while
-	// Replace puts it at the FRONT and yields "ααβα". The only test worth
-	// making is the one the caller will make.
+	// Widen until the run satisfies all three things a substitution owes.
 	//
-	// This terminates without a bound, and the guard that used to be here was
-	// dead code. Each step moves i or j one rune towards 0, and when both
-	// reach 0 the run is the whole of `a` and the replacement is the whole of
-	// `b` — which reproduces by construction. A bound would have looked
-	// prudent and been untestable.
-	for count(from) != 1 || strings.Replace(a, from, to, 1) != b {
-		if i == 0 && j == 0 {
-			// The run is already the whole of `a` and it STILL is not unique:
-			// the same command appears twice in the list, and no substitution
-			// can name one of them. The caller falls back to assigning the
-			// list, which is always correct and merely blunter.
-			return "", "", false
-		}
-		if i > 0 {
-			i--
-			for i > 0 && !utf8Start(a[i]) {
-				i--
-			}
-		} else {
+	//  1. it occurs exactly once in the scope it will be searched;
+	//  2. replacing it REPRODUCES the target — uniqueness is not enough, and
+	//     the difference bit: for "ααα" → "αααβ" the naive run is "αα", which
+	//     strings.Count says occurs once (non-overlapping) while Replace puts
+	//     it at the FRONT and yields "ααβα";
+	//  3. it is GONE from the result, so applying the substitution a second
+	//     time does nothing.
+	//
+	// The third is not decoration. Derived naively, the cargo `--locked` fix
+	// came out as `"l --"` → `"l --locked --"`, and "l --" is still there
+	// afterwards, inside "install --locked": running it twice gives
+	// `--locked --locked`. Measured on the real overrides, 24 operations across
+	// 22 projects did that. An override must be safe to apply to a recipe that
+	// already has it, or nothing may ever apply one twice — not a re-run, not a
+	// second tool, not the two formats side by side during a migration.
+	//
+	// Widening ALTERNATES, one rune to the right then one to the left.
+	//
+	// Going all the way right before touching the left overshoots badly: for
+	// `cargo install --path .` it produces a run of most of the command, and
+	// `worthSubstituting` then rejects it and assigns the whole value. A run
+	// that straddles the insertion point is both idempotent and short —
+	// `install --root` is not inside `cargo install --locked --root=x` — and
+	// short is what a person reads.
+	right := true
+	for count(from) != 1 || strings.Replace(a, from, to, 1) != b || strings.Contains(b, from) {
+		switch {
+		case right && j > 0, j > 0 && i == 0:
+			right = false
 			j--
 			for j > 0 && !utf8Start(a[len(a)-j]) {
 				j--
 			}
+		case i > 0:
+			right = true
+			i--
+			for i > 0 && !utf8Start(a[i]) {
+				i--
+			}
+		default:
+			// The run is the whole of `a` and it still fails one of the three.
+			// A pure insertion is the ordinary case: "abc" becoming "abcdef"
+			// has no run whose removal is idempotent, because the original is
+			// a substring of the result. The caller assigns the value instead,
+			// which is always correct and merely blunter.
+			return "", "", false
 		}
 		from, to = a[i:len(a)-j], b[i:len(b)-j]
 	}
-	if from == "" {
-		return "", "", false
+	// No `from == ""` check: the loop above exits only when the run occurs
+	// exactly once, and strings.Count reports len(a)+1 occurrences of the
+	// empty string.
+	return snapToWords(a, b, i, j)
+}
+
+// snapToWords grows a run out to whitespace, when that keeps every property.
+//
+// The shortest run that satisfies the three rules is often a fragment —
+// `l --roo` rather than `install --root` — and these files are read by people.
+// Widening can only help: a longer run occurs no more often than a shorter one
+// and is no more present in the result, so the only thing to re-check is that
+// the replacement still reproduces the target.
+func snapToWords(a, b string, i, j int) (string, string, bool) {
+	// Growing needs no re-checking, and the version that re-checked had four
+	// branches no input could reach. Each property survives a longer run:
+	//
+	//   - a superstring occurs no more often than the string, and it occurred
+	//     exactly once, and it still occurs at least once — so still once;
+	//   - a superstring of something absent from the result is absent too;
+	//   - the replacement still reproduces, because growing only moves the
+	//     edges INTO the common prefix and the common suffix, where a and b
+	//     agree character for character.
+	//
+	// The loops stop at i == 0 and j == 0, so neither can run off an end.
+	for i > 0 && a[i-1] != ' ' && a[i-1] != '\n' {
+		i--
 	}
-	return from, to, true
+	for j > 0 && a[len(a)-j] != ' ' && a[len(a)-j] != '\n' {
+		j--
+	}
+	return a[i : len(a)-j], b[i : len(b)-j], true
 }
 
 func utf8Start(c byte) bool { return c&0xC0 != 0x80 }
@@ -239,18 +286,23 @@ func countInList(l []any, from string) int {
 }
 
 // worthSubstituting asks the only question that distinguishes the two verbs:
-// would writing the new value out in full be REPEATING it?
+// does any of the value SURVIVE?
 //
-// A substitution earns its keep on a 200-character build command that gains a
-// flag — restating the command would fork it, and the fork is what rots. It
-// earns nothing on a version constraint: `^1.1` becoming `^3` reads far better
-// as `set = "^3"` than as a substring swap, and a short run is also the one
-// most likely to match somewhere nobody looked.
+// A substitution amends; an assignment decides. When the run runDiff settles
+// on is the whole value there is nothing being amended, and `set = "^3"` says
+// what happened far better than swapping "^1.1" for "^3" inside a string four
+// characters long.
 //
-// So: substitute only when the part that stays is at least as long as the part
-// that changes. No threshold to argue about — the rule is the question.
+// This needs no length threshold, and the earlier one — "the part that stays
+// must be at least as long as the part that changes" — stopped meaning
+// anything once runs had to be idempotent and snapped to whitespace, because
+// those are necessarily longer. It was rejecting `install --path` →
+// `install --locked --path`, which is exactly the case substitution exists for.
+//
+// A value with no whitespace in it settles on itself, so a version constraint
+// becomes a `set` without that being a special case.
 func worthSubstituting(whole, from string) bool {
-	return len(whole)-len(from) >= len(from)
+	return len(from) < len(whole)
 }
 
 // changedText pulls the one piece of text that differs between two list
