@@ -49,6 +49,9 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	// factory would not build.
 	if !*withBuild && !*constraints && !*implicit && !*pins {
 		order, _ := closureOf(lset, *overlayDir, *pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
+		if code := reportUnreadableRoots(fs.Args(), order, stderr); code != 0 {
+			return code
+		}
 		for _, p := range order {
 			fmt.Fprintln(stdout, p)
 		}
@@ -59,8 +62,40 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	for _, p := range fs.Args() {
 		g.visit(p)
 	}
+	if code := reportUnreadableRoots(fs.Args(), g.order, stderr); code != 0 {
+		return code
+	}
 	printGraph(g, *constraints, *pins, *implicit, stdout)
 	return 0
+}
+
+// reportUnreadableRoots fails when a project that was ASKED FOR is not in the
+// walk. A dependency with no recipe is skipped on purpose — it resolves from
+// upstream dist at build time — and for a while a root was skipped by the same
+// line, which is a different thing entirely: nobody asked the walk to guess
+// whether they meant it.
+//
+// The cost is that the walk then says nothing and says it successfully. I hit
+// this on 2026-09-28 measuring go-pkgx/bk#232: zsh does not word-split an
+// unquoted expansion, so all 76 seed projects went in as ONE argument, and the
+// walk printed an empty order and exited 0. An empty order is a legal answer to
+// a question nobody could ask, and I nearly wrote it down as a finding.
+//
+// It is checked on the OUTPUT rather than inside either walk, because bk has
+// two of them and a check in one is a check the other does not have.
+func reportUnreadableRoots(want, order []string, stderr io.Writer) int {
+	var lost []string
+	for _, p := range want {
+		if !slices.Contains(order, p) {
+			lost = append(lost, p)
+		}
+	}
+	if len(lost) == 0 {
+		return 0
+	}
+	sort.Strings(lost)
+	fmt.Fprintf(stderr, "closure: %d project(s) asked for and not read: %s\n", len(lost), strings.Join(lost, " "))
+	return 1
 }
 
 // closureOf expands want to its transitive runtime-dependency closure for tgt,
