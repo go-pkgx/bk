@@ -143,12 +143,16 @@ func TestDeriveWillNotSubstituteARunThatOccursTwice(t *testing.T) {
 	before := map[string]any{"a": []any{`-DX="{{p}}"`, `-DY="{{p}}"`}}
 	after := map[string]any{"a": []any{`-DX=""{{p}}"`, `-DY="{{p}}"`}}
 	ops := Derive(before, after, "why")
-	if len(ops) != 1 || verbOf(ops[0]) != "set" {
-		t.Fatalf("want a whole-list set, got %+v", ops)
-	}
 	got := deepCopy(before)
 	if _, err := Apply(got, ops); err != nil || !reflect.DeepEqual(got, after) {
 		t.Errorf("got %v, err %v", got, err)
+	}
+	// Whether it widens the run until it is unique or gives up and assigns the
+	// list, the property asserted here is the one that matters — it must not
+	// edit the NEIGHBOUR. Asserting the verb instead made this test fail the
+	// day the deriver got better at the first option.
+	if second := got["a"].([]any)[1]; second != before["a"].([]any)[1] {
+		t.Errorf("the neighbouring element was edited: %v", second)
 	}
 }
 
@@ -469,5 +473,58 @@ func TestRunDiffWidensRightwardsOverARune(t *testing.T) {
 	}
 	if !utf8Start(from[0]) || !utf8Start(to[0]) {
 		t.Errorf("run starts mid-rune: %q → %q", from, to)
+	}
+}
+
+// changedText: the shapes a list element can take, and the ones it may not.
+func TestChangedText(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		x, y any
+		ok   bool
+	}{
+		{"two plain strings", "a", "b", true},
+		{"string against a number", "a", 1, false},
+		{"one field differs", map[string]any{"run": "a", "if": "x"}, map[string]any{"run": "b", "if": "x"}, true},
+		{"two fields differ", map[string]any{"run": "a", "if": "x"}, map[string]any{"run": "b", "if": "y"}, false},
+		{"no field differs", map[string]any{"run": "a"}, map[string]any{"run": "a"}, false},
+		{"a key is missing", map[string]any{"run": "a"}, map[string]any{"cmd": "a"}, false},
+		{"different sizes", map[string]any{"run": "a"}, map[string]any{"run": "a", "if": "x"}, false},
+		{"a non-string field differs", map[string]any{"n": 1}, map[string]any{"n": 2}, false},
+		{"a map against a number", map[string]any{"run": "a"}, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, ok := changedText(tc.x, tc.y); ok != tc.ok {
+				t.Errorf("changedText(%v,%v) ok = %v, want %v", tc.x, tc.y, ok, tc.ok)
+			}
+		})
+	}
+}
+
+// A list in which the SAME command appears twice, and one of them changes:
+// no substitution can name one of two identical strings, so the deriver gives
+// up and the caller assigns the list — with `expect`, so it still refuses if
+// upstream has moved.
+func TestDeriveGivesUpOnTwoIdenticalElements(t *testing.T) {
+	before := map[string]any{"a": []any{"make install", "make install"}}
+	after := map[string]any{"a": []any{"make install", "make install -j4"}}
+	ops := Derive(before, after, "w")
+	if len(ops) != 1 || verbOf(ops[0]) != "set" || !ops[0].HasExpect {
+		t.Fatalf("want a whole-list set carrying expect, got %+v", ops)
+	}
+	got := deepCopy(before)
+	if _, err := Apply(got, ops); err != nil || !reflect.DeepEqual(got, after) {
+		t.Errorf("got %v err %v", got, err)
+	}
+}
+
+// A list element that is neither a string nor a mapping stops the derivation
+// before it can produce something it cannot express.
+func TestDeriveListWithANumberElement(t *testing.T) {
+	before := map[string]any{"a": []any{1, "x"}}
+	after := map[string]any{"a": []any{2, "x"}}
+	got := deepCopy(before)
+	if _, err := Apply(got, Derive(before, after, "w")); err != nil || !reflect.DeepEqual(got, after) {
+		t.Errorf("got %v err %v", got, err)
 	}
 }

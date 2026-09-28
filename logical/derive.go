@@ -65,11 +65,15 @@ func derive(a, b any, path Path, why string, out *[]Op) {
 	al, aok2 := a.([]any)
 	bl, bok2 := b.([]any)
 	if aok2 && bok2 {
-		if op, ok := deriveList(al, bl, path, why); ok {
-			*out = append(*out, op)
+		if ops, ok := deriveList(al, bl, path, why); ok {
+			*out = append(*out, ops...)
 			return
 		}
-		*out = append(*out, Op{Why: why, Path: path, Set: b})
+		// Replacing a whole list that was already there is the one operation
+		// that can swallow an upstream change without saying so — a diff would
+		// at least have refused. So it carries what it believes it is
+		// replacing, and refuses too.
+		*out = append(*out, Op{Why: why, Path: path, Set: b, Expect: a, HasExpect: true})
 		return
 	}
 	if as, ok := a.(string); ok {
@@ -84,45 +88,53 @@ func derive(a, b any, path Path, why string, out *[]Op) {
 }
 
 // deriveList prefers append/prepend/substitute over restating the list.
-func deriveList(a, b []any, path Path, why string) (Op, bool) {
+//
+// Several elements may each be a substitution, and then several substitutions
+// is the right answer rather than one whole-list assignment:
+// info-zip.org/zip's override adds `.patch` to ten filenames, bumps a URL and
+// extends a compiler line. As one assignment that is a fork of a 13-line
+// script which would silently survive upstream adding a fourteenth; as twelve
+// substitutions each one says what it does and each one refuses if its target
+// has moved.
+func deriveList(a, b []any, path Path, why string) ([]Op, bool) {
 	// Pure append: a is a prefix of b.
 	if len(b) > len(a) && reflect.DeepEqual(a, b[:len(a)]) {
-		return Op{Why: why, Path: path, Append: append([]any{}, b[len(a):]...)}, true
+		return []Op{{Why: why, Path: path, Append: append([]any{}, b[len(a):]...)}}, true
 	}
 	// Pure prepend: a is a suffix of b.
 	if len(b) > len(a) && reflect.DeepEqual(a, b[len(b)-len(a):]) {
-		return Op{Why: why, Path: path, Prepend: append([]any{}, b[:len(b)-len(a)]...)}, true
+		return []Op{{Why: why, Path: path, Prepend: append([]any{}, b[:len(b)-len(a)]...)}}, true
 	}
-	// One element edited in place, and the edit is one contiguous run inside a
-	// string: express it as the substitution it is.
-	if len(a) == len(b) {
-		changed := -1
-		for i := range a {
-			if !reflect.DeepEqual(a[i], b[i]) {
-				if changed >= 0 {
-					return Op{}, false
-				}
-				changed = i
-			}
-		}
-		if changed >= 0 {
-			as, ok1 := a[changed].(string)
-			bs, ok2 := b[changed].(string)
-			if ok1 && ok2 {
-				if from, to, ok := runDiff(as, bs); ok && worthSubstituting(as, from) && countInList(a, from) == 1 {
-					// Unique in the WHOLE list, not merely in the element that
-					// changed: substitute walks every element, so a run that
-					// also occurs in a neighbour would be replaced there too.
-					// grpc.io and apache.org/serf both did exactly that, and
-					// produced -DCMAKE_INSTALL_PREFIX=""{{prefix}} — found by
-					// demanding the derived operations reproduce the diff, not
-					// by reading this function.
-					return Op{Why: why, Path: path, Substitute: true, From: from, To: to}, true
-				}
-			}
-		}
+	if len(a) != len(b) {
+		return nil, false
 	}
-	return Op{}, false
+	var ops []Op
+	for i := range a {
+		if reflect.DeepEqual(a[i], b[i]) {
+			continue
+		}
+		as, bs, ok := changedText(a[i], b[i])
+		if !ok {
+			return nil, false
+		}
+		from, to, ok := runDiffIn(as, bs, func(run string) int { return countInList(a, run) })
+		if !ok || !worthSubstituting(as, from) {
+			// Unique in the WHOLE list, not merely in the element that
+			// changed: substitute walks every element, so a run that also
+			// occurs in a neighbour would be replaced there too. grpc.io and
+			// apache.org/serf both did exactly that, and produced
+			// -DCMAKE_INSTALL_PREFIX=""{{prefix}} — found by demanding the
+			// derived operations reproduce the diff, not by reading this.
+			return nil, false
+		}
+		ops = append(ops, Op{Why: why, Path: path, Substitute: true, From: from, To: to})
+	}
+	// No `len(ops) == 0` guard: derive only reaches here for two lists that
+	// are NOT DeepEqual, and two lists of the same length whose elements are
+	// all DeepEqual are DeepEqual. The loop therefore always produced at least
+	// one operation. A guard for it would have been untestable, which is the
+	// tell.
+	return ops, true
 }
 
 // runDiff finds the single contiguous run by which two strings differ, and
@@ -133,6 +145,18 @@ func deriveList(a, b []any, path Path, why string) (Op, bool) {
 // back to assigning the whole value, which is always correct and merely more
 // verbose.
 func runDiff(a, b string) (from, to string, ok bool) {
+	return runDiffIn(a, b, func(run string) int { return strings.Count(a, run) })
+}
+
+// runDiffIn is runDiff with the uniqueness question asked of a wider scope.
+//
+// Inside a list, `substitute` walks EVERY element, so a run has to be unique
+// across the list and not merely inside the element that changed. Widening
+// only against its own element is why ten filenames each gaining `.patch`
+// could not be expressed: the naive run is the trailing character, which
+// occurs everywhere, and giving up on the first one sent the whole
+// thirteen-line script down the whole-list assignment path.
+func runDiffIn(a, b string, count func(string) int) (from, to string, ok bool) {
 	if a == b {
 		return "", "", false
 	}
@@ -165,7 +189,14 @@ func runDiff(a, b string) (from, to string, ok bool) {
 	// reach 0 the run is the whole of `a` and the replacement is the whole of
 	// `b` — which reproduces by construction. A bound would have looked
 	// prudent and been untestable.
-	for strings.Count(a, from) != 1 || strings.Replace(a, from, to, 1) != b {
+	for count(from) != 1 || strings.Replace(a, from, to, 1) != b {
+		if i == 0 && j == 0 {
+			// The run is already the whole of `a` and it STILL is not unique:
+			// the same command appears twice in the list, and no substitution
+			// can name one of them. The caller falls back to assigning the
+			// list, which is always correct and merely blunter.
+			return "", "", false
+		}
 		if i > 0 {
 			i--
 			for i > 0 && !utf8Start(a[i]) {
@@ -220,4 +251,49 @@ func countInList(l []any, from string) int {
 // that changes. No threshold to argue about — the rule is the question.
 func worthSubstituting(whole, from string) bool {
 	return len(whole)-len(from) >= len(from)
+}
+
+// changedText pulls the one piece of text that differs between two list
+// elements, whether the element is a plain command or a step written as a
+// mapping.
+//
+// A pantry step is often `{run: "…", if: ">=3.4.3", working-directory: "…"}`,
+// and treating that as opaque is what sent info-zip.org/zip — ten filenames
+// gaining `.patch`, inside a list whose FIRST element is such a step — down
+// the whole-list assignment path.
+//
+// Exactly one field may differ. Two would need two substitutions at one index,
+// and the caller has no way to say which of them applies first.
+func changedText(x, y any) (string, string, bool) {
+	if xs, ok := x.(string); ok {
+		ys, ok2 := y.(string)
+		return xs, ys, ok2
+	}
+	xm, ok1 := x.(map[string]any)
+	ym, ok2 := y.(map[string]any)
+	if !ok1 || !ok2 || len(xm) != len(ym) {
+		return "", "", false
+	}
+	var from, to string
+	found := 0
+	for k, xv := range xm {
+		yv, in := ym[k]
+		if !in {
+			return "", "", false
+		}
+		if reflect.DeepEqual(xv, yv) {
+			continue
+		}
+		xs, k1 := xv.(string)
+		ys, k2 := yv.(string)
+		if !k1 || !k2 {
+			return "", "", false
+		}
+		found++
+		from, to = xs, ys
+	}
+	if found != 1 {
+		return "", "", false
+	}
+	return from, to, true
 }
