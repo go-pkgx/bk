@@ -597,3 +597,53 @@ func TestHostPrefixForSelfDep(t *testing.T) {
 		t.Errorf("without a lookup there is nothing to confirm: %v", got)
 	}
 }
+
+// The defect the test above could not see: it creates every file at NOW, so a
+// generated file this function does not know the name of comes out newer than
+// its prerequisites by accident, and the ordering assertion passes.
+//
+// A release tarball's files are old. Then the tiers rejuvenate the INPUTS to
+// within the last hour while an unknown generated file keeps its tarball
+// mtime, and the function does the exact opposite of its job. On rsync-3.5.1,
+// whose generated script is `configure.sh`:
+//
+//	configure.ac   2026-09-28 06:56:48
+//	aclocal.m4     2026-09-28 06:57:48
+//	configure.sh   2026-09-21 05:55:19   ← seven days STALE
+//
+// make regenerated it with whatever autoconf was present and rsync's Makefile
+// stopped the build: "configure.sh has CHANGED."
+func TestTouchAutotoolsOnATarballsOldTimestamps(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().AddDate(0, 0, -7)
+	for _, f := range []string{"configure.ac", "aclocal.m4", "config.h.in", "configure", "configure.sh", "Makefile.in"} {
+		p := filepath.Join(dir, f)
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := TouchAutotools(dir); err != nil {
+		t.Fatal(err)
+	}
+	mt := func(f string) time.Time {
+		fi, err := os.Stat(filepath.Join(dir, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.ModTime()
+	}
+	// Every generated configure script, by every name a tarball gives it, must
+	// end up newer than the inputs make would regenerate it from.
+	for _, gen := range []string{"configure", "configure.sh"} {
+		if !mt("aclocal.m4").Before(mt(gen)) {
+			t.Errorf("%s (%v) is not newer than aclocal.m4 (%v) — make will regenerate it",
+				gen, mt(gen), mt("aclocal.m4"))
+		}
+		if !mt("configure.ac").Before(mt(gen)) {
+			t.Errorf("%s (%v) is not newer than configure.ac (%v)", gen, mt(gen), mt("configure.ac"))
+		}
+	}
+}
