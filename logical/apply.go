@@ -43,7 +43,18 @@ type Op struct {
 
 	Path Path
 
-	Set        any    // set Path to this value (maps deep-merge, lists replace)
+	Set any // set Path to this value (maps deep-merge, lists replace)
+	// Expect is what the operation believes is at Path before it runs, and
+	// HasExpect says the field means anything — nil is a value a document can
+	// legitimately hold.
+	//
+	// It exists for the one operation that can swallow an upstream change
+	// without saying so: replacing a whole list that was already there. A
+	// unified diff would at least have refused; a blind assignment would not,
+	// and quietly discarding somebody else's fix is worse than failing.
+	// RFC 6902 has this as `test`, and it is the verb JSON Merge Patch lacks.
+	Expect     any
+	HasExpect  bool
 	Remove     bool   // remove Path
 	Append     []any  // append these to the list at Path
 	Prepend    []any  // prepend these to the list at Path
@@ -119,6 +130,12 @@ func set(doc map[string]any, op Op) (Result, error) {
 		return Result{op, PremiseGone, err.Error()}, err
 	}
 	old, had := parent[key]
+	if op.HasExpect && had && !reflect.DeepEqual(old, op.Expect) && !reflect.DeepEqual(old, op.Set) {
+		// Not what we thought we were replacing, and not the result either.
+		// Somebody changed it, and overwriting would throw their change away.
+		return Result{op, PremiseGone, fmt.Sprintf("%s is not what this replaces any more", op.Path)},
+			fmt.Errorf("%s is not what this replaces any more", op.Path)
+	}
 	want := op.Set
 	if m, ok := want.(map[string]any); ok {
 		if oldM, ok2 := old.(map[string]any); ok2 {

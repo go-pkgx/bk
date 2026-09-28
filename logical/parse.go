@@ -51,6 +51,7 @@ func Parse(src []byte, filename string) (*Override, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", filename, err)
 	}
+	doc, _ = sameTypesAsYAML(doc).(map[string]any)
 	o := &Override{}
 	if s, ok := doc["project"].(string); ok {
 		o.Project = s
@@ -151,6 +152,9 @@ func parseEdit(e any, defaultWhy string) (Op, error) {
 	app, hasApp := m["append"]
 	pre, hasPre := m["prepend"]
 
+	if e, ok := m["expect"]; ok {
+		op.Expect, op.HasExpect = e, true
+	}
 	n := 0
 	if hasSet {
 		n++
@@ -190,5 +194,36 @@ func parseEdit(e any, defaultWhy string) (Op, error) {
 		// Two verbs in one edit would need an order, and the file already has
 		// one: the list.
 		return Op{}, fmt.Errorf("names more than one verb; write them as separate edits")
+	}
+}
+
+// sameTypesAsYAML makes HCL's numbers the Go types the YAML reader produces.
+//
+// The recipe a value is merged INTO was read by gopkg.in/yaml.v3, which gives
+// a plain `int`; HCL gives an `int64`. Both print 14 and neither is wrong, and
+// a document holding one where the other is expected compares unequal while
+// looking identical — fftw.org's gnu.org/gcc pin failed a parity check as
+// `14 != 14`.
+//
+// Two readers of the same recipe have to agree about what they read, or every
+// comparison downstream is measuring the readers.
+func sameTypesAsYAML(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			out[k] = sameTypesAsYAML(e)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = sameTypesAsYAML(e)
+		}
+		return out
+	case int64:
+		return int(t)
+	default:
+		return v
 	}
 }
