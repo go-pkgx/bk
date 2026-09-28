@@ -6,7 +6,9 @@ import (
 	"io"
 	"sort"
 
+	"github.com/go-pkgx/bk/logical"
 	"github.com/go-pkgx/bk/overrides"
+	"github.com/go-pkgx/bk/recipefile"
 )
 
 // runOverrides implements `bk overrides`: apply every patch in a directory to a
@@ -28,11 +30,17 @@ import (
 func runOverrides(args []string, stdout, stderr io.Writer) int {
 	fset := flag.NewFlagSet("overrides", flag.ContinueOnError)
 	fset.SetOutput(stderr)
-	dir := fset.String("dir", "overrides", "directory of *.patch recipe overrides")
+	dir := fset.String("dir", "overrides", "directory of recipe overrides: *.patch applied to the tree, *.hcl applied as each recipe is read")
 	pantryDir := fset.String("pantry", envOr("PANTRY", "pantry"), "pantry checkout to patch — a FRESH one, since a patch already applied does not apply twice")
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
+
+	// BEFORE the patches, not after. They are applied to the same tree, and
+	// while both formats are present a patch does the logical override's work
+	// first — every one of them then reports "already true" and the run says
+	// upstream has caught up with all 205. It has not; we had.
+	logicalCode, logicalSeen := checkLogical(*dir, *pantryDir, stdout, stderr)
 
 	res, err := overridesApply(overrides.Options{
 		Dir:  *dir,
@@ -49,13 +57,15 @@ func runOverrides(args []string, stdout, stderr io.Writer) int {
 	// them is a pass — a `--dir` pointing at an empty directory would
 	// otherwise report a clean run forever.
 	total := len(res.Applied) + len(res.Skipped)
-	if total == 0 {
-		fmt.Fprintf(stderr, "overrides: no patch in %s — is that the right directory?\n", *dir)
+	if total+logicalSeen == 0 {
+		fmt.Fprintf(stderr, "overrides: nothing in %s — is that the right directory?\n", *dir)
 		return 1
 	}
-	fmt.Fprintf(stdout, "%d override(s): %d applied, %d no longer apply\n", total, len(res.Applied), len(res.Skipped))
+	if total > 0 {
+		fmt.Fprintf(stdout, "%d patch override(s): %d applied, %d no longer apply\n", total, len(res.Applied), len(res.Skipped))
+	}
 	if len(res.Skipped) == 0 {
-		return 0
+		return max(0, logicalCode)
 	}
 
 	// Named by PROJECT as well as by patch: the patch name says which file was
@@ -73,6 +83,77 @@ func runOverrides(args []string, stdout, stderr io.Writer) int {
 	return 1
 }
 
+// checkLogical applies every *.hcl override to the recipe it names and says
+// what each one did. It returns the exit code it wants and how many overrides
+// it saw.
+//
+// This is the ongoing gate the *.patch check has always been, asked of a format
+// that can answer it better. A diff could only say "applies" or "does not", and
+// "does not" covers two opposite situations. These three are distinguished:
+//
+//	applied    the recipe needed it
+//	redundant  UPSTREAM HAS CAUGHT UP — delete the override
+//	gone       what it edits is not there any more: an error
+//
+// The middle one is the reason to run this on a schedule rather than only in
+// CI. An override directory only ever grows unless something tells you which
+// entries have stopped being needed, and a unified diff never could.
+func checkLogical(dir, pantryDir string, stdout, stderr io.Writer) (int, int) {
+	set, err := logical.LoadDir(dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "overrides: %v\n", err)
+		return 1, 0
+	}
+	projects := set.Projects()
+	if len(projects) == 0 {
+		return 0, 0
+	}
+
+	applied, redundant := 0, 0
+	var obsolete, broken []string
+	for _, proj := range projects {
+		// Through the loader, so the recipe is read, overridden and validated
+		// exactly as the factory will do it. A check that read the file its
+		// own way would be checking its own reader.
+		_, res, err := recipefile.LoadOverriddenReporting(set, pantryDir, proj)
+		if err != nil {
+			broken = append(broken, fmt.Sprintf("  %s: %v", proj, err))
+			continue
+		}
+		allRedundant := true
+		for _, r := range res {
+			if r.Outcome == logical.Applied {
+				applied++
+				allRedundant = false
+				continue
+			}
+			redundant++
+		}
+		if allRedundant && len(res) > 0 {
+			obsolete = append(obsolete, fmt.Sprintf("  %s (%s)", proj, set.Files[proj]))
+		}
+	}
+
+	fmt.Fprintf(stdout, "%d logical override(s): %d operation(s) applied, %d already true\n",
+		len(projects), applied, redundant)
+	if len(obsolete) > 0 {
+		sort.Strings(obsolete)
+		fmt.Fprintf(stdout, "%d override(s) upstream has caught up with — delete them:\n", len(obsolete))
+		for _, o := range obsolete {
+			fmt.Fprintln(stdout, o)
+		}
+	}
+	if len(broken) > 0 {
+		sort.Strings(broken)
+		fmt.Fprintf(stderr, "%d override(s) whose premise is gone:\n", len(broken))
+		for _, b := range broken {
+			fmt.Fprintln(stderr, b)
+		}
+		return 1, len(projects)
+	}
+	return 0, len(projects)
+}
+
 // overridesApply is a seam: the failure paths here are a filesystem's, and a
-// test should not need one to reach them.
+// test must reach them without contriving an unreadable directory.
 var overridesApply = overrides.Apply

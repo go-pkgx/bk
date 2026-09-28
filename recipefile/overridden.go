@@ -31,6 +31,17 @@ var yamlMarshal = yaml.Marshal
 // most projects are still unified diffs and must not change behaviour because
 // this function exists.
 func LoadOverridden(set *logical.Set, pantryDir, project string) (*pantry.Recipe, error) {
+	r, _, err := LoadOverriddenReporting(set, pantryDir, project)
+	return r, err
+}
+
+// LoadOverriddenReporting is LoadOverridden, saying what each operation did.
+//
+// `bk overrides` needs the outcomes — applied, already true, premise gone —
+// and getting them by applying the override a SECOND time next to this call
+// left two error branches no input could reach, because anything that fails
+// there has already failed here. One read, one application, one answer.
+func LoadOverriddenReporting(set *logical.Set, pantryDir, project string) (*pantry.Recipe, []logical.Result, error) {
 	dir := Dir(pantryDir, project)
 	for _, n := range Names {
 		b, err := os.ReadFile(filepath.Join(dir, n))
@@ -38,37 +49,40 @@ func LoadOverridden(set *logical.Set, pantryDir, project string) (*pantry.Recipe
 			continue
 		}
 		if set.For(project) == nil {
-			return parse(b, n)
+			r, err := parse(b, n)
+			return r, nil, err
 		}
 		return overridden(set, project, b, n)
 	}
-	return nil, fmt.Errorf("%w for %s in %s (tried %v)", ErrNoRecipe, project, dir, Names)
+	return nil, nil, fmt.Errorf("%w for %s in %s (tried %v)", ErrNoRecipe, project, dir, Names)
 }
 
 // overridden applies the override between reading the file and validating it,
 // so the result goes through the same schema every other recipe does. An
 // override that produces something a recipe may not say fails here, loudly,
 // rather than at the point the build trips over it.
-func overridden(set *logical.Set, project string, b []byte, name string) (*pantry.Recipe, error) {
+func overridden(set *logical.Set, project string, b []byte, name string) (*pantry.Recipe, []logical.Result, error) {
 	y := b
 	if filepath.Ext(name) == ".hcl" {
 		// Through bottle, the same converter the client uses: a second reading
 		// of one format is two opinions about what a recipe means.
 		var err error
 		if y, err = bottle.HCLToYAML(b, name); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	var doc map[string]any
 	if err := yaml.Unmarshal(y, &doc); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return nil, nil, fmt.Errorf("%s: %w", name, err)
 	}
-	if _, err := set.ApplyTo(project, doc); err != nil {
-		return nil, err
+	res, err := set.ApplyTo(project, doc)
+	if err != nil {
+		return nil, res, err
 	}
 	out, err := yamlMarshal(doc)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return nil, res, fmt.Errorf("%s: %w", name, err)
 	}
-	return pantry.Parse(out)
+	r, err := pantry.Parse(out)
+	return r, res, err
 }
