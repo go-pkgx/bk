@@ -34,6 +34,11 @@ import (
 type closureGraph struct {
 	order   []string // post-order: dependencies before dependents
 	missing []string // named as a dependency, no recipe in this pantry
+	// edges is the graph as WALKED, project to project, so the cycles it had
+	// to break can be named afterwards. The walk itself cannot say: it
+	// terminates by ignoring whichever edge closes a cycle, and which one that
+	// is depends on the order projects were reached. See cycles().
+	edges   map[string][]string
 	demands map[string]map[string][]string
 	seen    map[string]bool
 	pantry  string
@@ -55,6 +60,7 @@ func newClosureGraph(set *logical.Set, pantryDir string, tgt target.Target, with
 	return &closureGraph{
 		demands: map[string]map[string][]string{},
 		seen:    map[string]bool{},
+		edges:   map[string][]string{},
 		pantry:  pantryDir, tgt: tgt, withBuil: withBuild, warn: warn, set: set,
 	}
 }
@@ -76,12 +82,14 @@ func (g *closureGraph) visit(proj string) {
 		return
 	}
 	g.record(proj, rec.Dependencies)
+	g.link(proj, rec.Dependencies)
 	for _, spec := range build.DepSpecs(rec.Dependencies, g.tgt) {
 		g.visit(build.SpecProject(spec))
 	}
 	if g.withBuil {
 		bd := build.BuildDeps(rec)
 		g.record(proj, bd)
+		g.link(proj, bd)
 		for _, spec := range build.DepSpecs(bd, g.tgt) {
 			g.visit(build.SpecProject(spec))
 		}
@@ -92,6 +100,19 @@ func (g *closureGraph) visit(proj string) {
 // record notes who asked for what. A constraint is kept only when it says
 // something: "*" and "" are every version, and listing them would bury the
 // handful that pin a LINE under a hundred that do not.
+// link records the edges of the graph as walked. It is separate from record
+// because record drops "*" and "" — a constraint that says nothing is still a
+// dependency, and a cycle closed by one is still a cycle.
+func (g *closureGraph) link(by string, deps map[string]any) {
+	for _, spec := range build.DepSpecs(deps, g.tgt) {
+		to := build.SpecProject(spec)
+		if !slices.Contains(g.edges[by], to) {
+			g.edges[by] = append(g.edges[by], to)
+		}
+	}
+	sort.Strings(g.edges[by])
+}
+
 func (g *closureGraph) record(by string, deps map[string]any) {
 	for dep, cons := range build.ReduceDeps(deps, g.tgt) {
 		if cons == "" || cons == "*" {
