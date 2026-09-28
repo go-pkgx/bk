@@ -58,8 +58,16 @@ func Emit(o *Override) []byte {
 // hclString quotes a string, or writes a heredoc when it holds newlines —
 // which a build script always does, and which a quoted string would render as
 // one unreadable line of \n.
+//
+// A heredoc closes on a line that is exactly its marker, so its body ALWAYS
+// ends with a newline: a value that does not cannot survive one. That is not a
+// theoretical loss. openjpeg.org's override substitutes
+// "…-DCMAKE_BUILD_TYPE=Release\nmake", a run spanning a line break and ending
+// in the middle of the next line; written as a heredoc it came back with a
+// trailing newline, and the substitution then matched nothing. Such a value is
+// quoted instead — less pleasant to read, and correct.
 func hclString(s string) string {
-	if !strings.Contains(s, "\n") {
+	if !strings.Contains(s, "\n") || !strings.HasSuffix(s, "\n") {
 		return quote(s)
 	}
 	// A heredoc ends at a line that is exactly the marker, so a marker the
@@ -68,11 +76,7 @@ func hclString(s string) string {
 	for strings.Contains(s, "\n"+marker) || strings.HasPrefix(s, marker) {
 		marker += "T"
 	}
-	body := s
-	if !strings.HasSuffix(body, "\n") {
-		body += "\n"
-	}
-	return "<<" + marker + "\n" + escapeTemplates(body) + marker
+	return "<<" + marker + "\n" + escapeTemplates(s) + marker
 }
 
 // quote renders a one-line string. Go's %q escapes what HCL needs escaped in a
