@@ -1,6 +1,7 @@
 package recipefile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,4 +86,31 @@ func overridden(set *logical.Set, project string, b []byte, name string) (*pantr
 	}
 	r, err := pantry.Parse(out)
 	return r, res, err
+}
+
+// LoadBuildRecipe reads the recipe the FACTORY compiles.
+//
+// The pantry first, with the project's logical override applied; the overlay
+// only when the pantry has no such project at all.
+//
+// FALLBACK, not preference — and the difference is the whole division of
+// labour. For a project upstream carries, `overrides/` fixes the BUILD and the
+// overlay fixes what a consumer RESOLVES, and letting the overlay win here
+// would silently build something other than what the overrides say. For a
+// project upstream does not carry, there is nothing to fall back from: the
+// overlay's copy is the only recipe there is.
+//
+// It replaces a directory of patches that CREATED those recipes. A patch that
+// adds a whole package.yml is not an override of anybody's recipe — it is a
+// recipe of ours — and writing it twice, once as a diff for the builder and
+// once as HCL for the consumer, is the two-halves defect carried deliberately.
+// Measured on 2026-09-28: 8 projects were written both ways, and exactly 8 of
+// the overlay's 183 are absent upstream, so this reaches those and nothing
+// else.
+func LoadBuildRecipe(set *logical.Set, overlayDir, pantryDir, project string) (*pantry.Recipe, error) {
+	r, err := LoadOverridden(set, pantryDir, project)
+	if !errors.Is(err, ErrNoRecipe) || overlayDir == "" {
+		return r, err
+	}
+	return Load(overlayDir, project)
 }

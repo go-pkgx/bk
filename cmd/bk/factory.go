@@ -311,7 +311,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 			}
 			continue
 		}
-		rec, err := recipefile.LoadOverridden(logicalSet, *pantryDir, proj)
+		rec, err := recipefile.LoadBuildRecipe(logicalSet, *overlayDir, *pantryDir, proj)
 		switch {
 		case errors.Is(err, recipefile.ErrNoRecipe):
 			// A pantry need not be complete: the closure walk names projects
