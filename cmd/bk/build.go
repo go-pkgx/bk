@@ -85,14 +85,28 @@ func runBashTo(out, errOut io.Writer) func(string, []string) error {
 		if err != nil {
 			return fmt.Errorf("parse %s: %w", scriptPath, err)
 		}
+		// Watched for an OOM kill on the way past. This is the only layer that
+		// has the bytes: the compiler driver reaps its own cc1plus and exits 1,
+		// so by the time the error reaches the caller the signal is gone. See
+		// oomSignatures.
+		oom := &oomSniffer{w: out}
+		oomErr := oom
+		if errOut != out {
+			oomErr = &oomSniffer{w: errOut}
+		}
 		r, err := newInterp(
 			interp.Env(expand.ListEnviron(env...)),
-			interp.StdIO(os.Stdin, out, errOut),
+			interp.StdIO(os.Stdin, oom, oomErr),
 		)
 		if err != nil {
 			return err
 		}
-		return r.Run(context.Background(), prog)
+		err = r.Run(context.Background(), prog)
+		if err != nil && (oom.seen || oomErr.seen) {
+			return fmt.Errorf("%w — a compiler was KILLED: the machine ran OUT OF MEMORY, "+
+				"and the recipe is not what needs changing. Give it swap, or fewer parallel jobs", err)
+		}
+		return err
 	}
 }
 
