@@ -1883,3 +1883,51 @@ func TestRunFactoryRefusesABrokenLogicalOverride(t *testing.T) {
 		t.Fatalf("an override that does not parse must stop the run; stderr = %s", h.errb.String())
 	}
 }
+
+// TestEnvBool. `FORCE=0` used to mean FORCE, because every one of these flags
+// read `os.Getenv(k) != ""` — the shell's `[ -n "$X" ]` convention, which is
+// wrong the moment anyone writes the value out rather than leaving it unset.
+//
+// Measured on the s390x seed's own registry, 2026-09-29, everything else held:
+//
+//	FORCE unset   ⏭  SKIP zlib.net 1.3.2 — already published   0 built, 1 skipped
+//	FORCE=0       ✅ OK zlib.net 1.3.2                         1 built, 0 skipped
+func TestEnvBool(t *testing.T) {
+	for _, tc := range []struct {
+		val  string
+		want bool
+		why  string
+	}{
+		{"", false, "unset is off, as it always was"},
+		{"0", false, "THE defect: a non-empty string that means false"},
+		{"false", false, ""},
+		{"FALSE", false, ""},
+		{"False", false, ""},
+		{"f", false, ""},
+		{"1", true, ""},
+		{"true", true, ""},
+		{"TRUE", true, ""},
+		{"t", true, ""},
+		// Anything else non-empty stays TRUE: that is what it meant yesterday,
+		// and `FORCE=yes` must not quietly start meaning no.
+		{"yes", true, "not a ParseBool word, and it meant true before this"},
+		{"on", true, ""},
+		{"please", true, ""},
+		{" ", true, "a space is not emptiness"},
+	} {
+		name := tc.val
+		if name == "" {
+			name = "(unset)"
+		}
+		t.Run(name, func(t *testing.T) {
+			if tc.val == "" {
+				os.Unsetenv("BK_TEST_BOOL")
+			} else {
+				t.Setenv("BK_TEST_BOOL", tc.val)
+			}
+			if got := envBool("BK_TEST_BOOL"); got != tc.want {
+				t.Errorf("envBool(%q) = %v, want %v  %s", tc.val, got, tc.want, tc.why)
+			}
+		})
+	}
+}

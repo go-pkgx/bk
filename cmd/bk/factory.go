@@ -94,7 +94,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	recipes := fs.String("recipes", envOr("RECIPES", ""), `space-separated projects to build (default: --recipes-file). A word may carry its own version constraint after "@" — "cmake.org@=4.4.2" pins that project alone, which is what closing one index gap needs; --versions applies to every requested project at once`)
 	recipesFile := fs.String("recipes-file", "recipes.txt", "file listing one project per line (# comments allowed)")
-	noClosure := fs.Bool("no-closure", os.Getenv("NO_CLOSURE") != "", "build ONLY the requested projects, not their dependency closure. For a repair run, where the dependencies are already published and rebuilding them at their newest upstream version starves the targets behind them")
+	noClosure := fs.Bool("no-closure", envBool("NO_CLOSURE"), "build ONLY the requested projects, not their dependency closure. For a repair run, where the dependencies are already published and rebuilding them at their newest upstream version starves the targets behind them")
 	pantryDir := fs.String("pantry", envOr("PANTRY", "pantry"), "pantry checkout to build from")
 	// The factory BUILDS from the pantry alone — this does not change that.
 	// It widens the CLOSURE: a dependency only our overlay declares is one a
@@ -114,9 +114,9 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
 	bootstrap := fs.Bool("bootstrap", false, "FIRST FILL ONLY on an architecture no registry has: build without the base toolchain in the environment, taking those tools from the host. The base toolchain is a cycle with no entry point (see build.BootstrapToolDeps), so without this nothing can be built first. Bottles made this way were driven by unpinned host tools: publish them to a throwaway registry, use them to stage the sovereign rootfs, and rebuild everything inside it")
 	jobs := fs.Int("jobs", envInt("JOBS"), "parallelism handed to each recipe build (`hw.concurrency`); 0 = one per CPU. Lower it when the target is emulated.")
-	pinToDependents := fs.Bool("pin-to-dependents", os.Getenv("PIN_TO_DEPENDENTS") != "", "hold a REQUESTED project to the constraints its dependents place on it, as a closure-only one already is. For a SEED, where every project is named and none would otherwise be held to anything: gnu.org/glibc asks for gnu.org/gcc 14 and a seed naming gcc built 16.2.0. OFF by default, because naming a project is how you say \"this version, whatever else wants\" — a repair run must not be talked out of it. An explicit project@constraint still wins. It only sees the dependents IN THIS RUN: a batch that does not reach gnu.org/glibc never learns glibc asks gcc for 14, so for a partial seed use `bk closure --build --pins` over the whole order file and pass the words")
-	keepBuildTrees := fs.Bool("keep-build-trees", os.Getenv("KEEP_BUILD_TREES") != "", "leave each PUBLISHED build tree on disk. By default a tree is removed once its bottle is published, because a run of seventy-six keeps all seventy-six otherwise and the s390x seed filled its disk on the fifty-seventh. A FAILED build's tree is always kept: it is the only copy of what went wrong")
-	force := fs.Bool("force", os.Getenv("FORCE") != "", "rebuild and republish even when the bottle is already in the registry — the projects you REQUESTED only, never the dependency closure behind them")
+	pinToDependents := fs.Bool("pin-to-dependents", envBool("PIN_TO_DEPENDENTS"), "hold a REQUESTED project to the constraints its dependents place on it, as a closure-only one already is. For a SEED, where every project is named and none would otherwise be held to anything: gnu.org/glibc asks for gnu.org/gcc 14 and a seed naming gcc built 16.2.0. OFF by default, because naming a project is how you say \"this version, whatever else wants\" — a repair run must not be talked out of it. An explicit project@constraint still wins. It only sees the dependents IN THIS RUN: a batch that does not reach gnu.org/glibc never learns glibc asks gcc for 14, so for a partial seed use `bk closure --build --pins` over the whole order file and pass the words")
+	keepBuildTrees := fs.Bool("keep-build-trees", envBool("KEEP_BUILD_TREES"), "leave each PUBLISHED build tree on disk. By default a tree is removed once its bottle is published, because a run of seventy-six keeps all seventy-six otherwise and the s390x seed filled its disk on the fifty-seventh. A FAILED build's tree is always kept: it is the only copy of what went wrong")
+	force := fs.Bool("force", envBool("FORCE"), "rebuild and republish even when the bottle is already in the registry — the projects you REQUESTED only, never the dependency closure behind them")
 	compress := fs.String("compress", envOr("COMPRESS", "zstd"), "codec for NEW bottles: zstd or gzip. Already-published bottles are never rewritten, so gzip stays readable; this only governs what we create")
 	signKey := fs.String("sign", "", "sign published bottles with this go-attest/sign secret key file (else $SIGNING_KEY)")
 	pkgx := fs.String("pkgx", "pkgx", "path to the pkgx binary used for the deps env")
@@ -909,6 +909,42 @@ func factoryTime() time.Time {
 }
 
 // envInt reads a non-negative integer environment variable, 0 if unset/invalid.
+// envBool reads a flag's default from the environment, and `FORCE=0` means
+// FALSE.
+//
+// Every one of these read `os.Getenv(k) != ""`, which is the shell convention
+// — `[ -n "$X" ]` — and it is wrong the moment anyone writes the value out.
+// `FORCE=0` is a non-empty string, so it turned forcing ON. Measured
+// 2026-09-29 on the s390x seed's own registry, with everything else held:
+//
+//	FORCE unset   ⏭  SKIP zlib.net 1.3.2 — already published    0 built, 1 skipped
+//	FORCE=0       ✅ OK zlib.net 1.3.2                          1 built, 0 skipped
+//
+// Four flags shared it — FORCE, NO_CLOSURE, PIN_TO_DEPENDENTS and
+// KEEP_BUILD_TREES — and the costs are not symmetric. `FORCE=0` rebuilds a
+// registry somebody meant to preserve. `NO_CLOSURE=0` builds ONLY the named
+// projects, so a seed silently drops every dependency behind them.
+// `KEEP_BUILD_TREES=0` keeps every tree, which is how the s390x disk filled.
+//
+// go-pkgx/packages' build.yml already guarded FORCE by hand
+// (`[ "${inputs.force}" = "0" ] || FORCE=1`), which is the workaround that
+// says where the defect is. It belongs here, once, for every caller — and
+// `bk factory` run by hand is a caller.
+//
+// strconv.ParseBool FIRST, so 0/f/F/false/FALSE/False are false and
+// 1/t/T/true/TRUE/True are true. Anything else non-empty stays TRUE, because
+// that is what it meant yesterday and `FORCE=yes` must not start meaning no.
+func envBool(key string) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return false
+	}
+	if b, err := strconv.ParseBool(v); err == nil {
+		return b
+	}
+	return true
+}
+
 func envInt(key string) int {
 	n, err := strconv.Atoi(os.Getenv(key))
 	if err != nil || n < 0 {
