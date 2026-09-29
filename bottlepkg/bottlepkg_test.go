@@ -5,11 +5,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/go-pkgx/bottle"
@@ -366,4 +369,130 @@ func TestWriteBottleVersionsCloseError(t *testing.T) {
 	if _, err := WriteBottle(makeTree(t), project, version, "darwin", "aarch64", t.TempDir()); !errors.Is(err, errBoom) {
 		t.Fatalf("err = %v, want errBoom", err)
 	}
+}
+
+// TestBottleDoesNotCarryTheBuildersUmask. Two builds of one recipe on two
+// machines produced two different bottles, and the difference was the umask.
+// Measured 2026-09-29 on zlib.net 1.3.2, built on the s390x seed VM before and
+// after it was replaced: every FILE byte-identical, and every DIRECTORY 0755
+// on one host and 0775 on the other — 0022 against 0002.
+//
+// Files were untouched because cp and install preserve the source's mode; a
+// directory gets its mode from mkdir, which applies the umask. So the same
+// source, the same compiler and the same libc still gave two digests.
+//
+// This builds the same tree twice under those two umasks and asserts the tar
+// headers come out identical. Without normalise it fails on the directories,
+// which is the defect reproduced rather than described.
+func TestBottleDoesNotCarryTheBuildersUmask(t *testing.T) {
+	bottleUnder := func(mask int) []string {
+		old := syscall.Umask(mask)
+		defer syscall.Umask(old)
+		dir := t.TempDir()
+		// MkdirAll and WriteFile both go through the umask.
+		if err := os.MkdirAll(filepath.Join(dir, "lib", "pkgconfig"), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "lib", "pkgconfig", "z.pc"), []byte("x"), 0o666); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "lib", "libz.so.1"), []byte("y"), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("libz.so.1", filepath.Join(dir, "lib", "libz.so")); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		if err := Bottle(dir, "zlib.net", "1.3.2", &buf); err != nil {
+			t.Fatal(err)
+		}
+		return headersOf(t, buf.Bytes())
+	}
+
+	strict, loose := bottleUnder(0o022), bottleUnder(0o002)
+	if len(strict) == 0 {
+		t.Fatal("premise: the bottle has no entries")
+	}
+	if fmt.Sprint(strict) != fmt.Sprint(loose) {
+		t.Errorf("the builder's umask reached the bottle:\n  umask 022 %v\n  umask 002 %v", strict, loose)
+	}
+	// And what it settled on, so a later change has to say so out loud.
+	want := []string{
+		"lib/ 0755 0:0",
+		"lib/libz.so 0755 0:0",
+		"lib/libz.so.1 0755 0:0",
+		"lib/pkgconfig/ 0755 0:0",
+		"lib/pkgconfig/z.pc 0644 0:0",
+	}
+	if fmt.Sprint(strict) != fmt.Sprint(want) {
+		t.Errorf("headers = %v, want %v", strict, want)
+	}
+}
+
+// A bottle that ships a setuid binary means it, and a=rX would strip the bit.
+func TestBottleKeepsSetuid(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "ping")
+	if err := os.WriteFile(p, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o755|os.ModeSetuid|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := Bottle(dir, "iputils.org", "1.0", &buf); err != nil {
+		t.Fatal(err)
+	}
+	got := headersOf(t, buf.Bytes())
+	// 5755: setuid (4000) and sticky (1000) both kept, over a normalised
+	// 0755. Written out rather than as a prefix, so a change to either bit
+	// has to be stated.
+	if len(got) != 1 || got[0] != "ping 5755 0:0" {
+		t.Errorf("headers = %v, want [ping 5755 0:0] — both special bits kept", got)
+	}
+}
+
+// headersOf lists "<name> <mode> <uid>:<gid>" for each entry, with the
+// project/version prefix stripped so the assertions read as paths.
+func headersOf(t *testing.T, packed []byte) []string {
+	t.Helper()
+	// Through the same decoder the other structural tests use, so this
+	// follows Codec rather than pinning one compressor.
+	var dec io.Reader
+	switch Codec {
+	case bottle.ExtTarZst:
+		z, err := zstd.NewReader(bytes.NewReader(packed))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(z.Close)
+		dec = z
+	default:
+		gz, err := gzip.NewReader(bytes.NewReader(packed))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer gz.Close()
+		dec = gz
+	}
+	var out []string
+	tr := tar.NewReader(dec)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := h.Name
+		if i := strings.Index(name, "/v"); i >= 0 {
+			if j := strings.Index(name[i+2:], "/"); j >= 0 {
+				name = name[i+2+j+1:]
+			}
+		}
+		out = append(out, fmt.Sprintf("%s %04o %d:%d", name, h.Mode, h.Uid, h.Gid))
+	}
+	sort.Strings(out)
+	return out
 }
