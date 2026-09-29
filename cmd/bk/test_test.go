@@ -219,8 +219,11 @@ func TestRunTestWritesTheScriptOutsideTheSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Errorf("sandbox is not empty: %v", entries)
+	// The sandbox holds the recipe's own files and nothing of ours.
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".test.sh") {
+			t.Errorf("our script is in the sandbox: %s", e.Name())
+		}
 	}
 }
 
@@ -388,5 +391,129 @@ func TestRunTestKeepsTheGivenPkgxWhenItCannotBeResolved(t *testing.T) {
 	// stays legible instead of being replaced by an empty string.
 	if !strings.Contains(string(script), "/my/pkgx") {
 		t.Errorf("the given pkgx was lost:\n%s", script)
+	}
+}
+
+// Recipes name their fixtures by bare relative name (`cc test.c -lz`), so the
+// sandbox has to hold them or the test fails on the tool.
+func TestRunTestStagesTheRecipesOwnFiles(t *testing.T) {
+	testTestbed(t)
+	stubRun(t, nil)
+	p := writeTestRecipe(t, "versions:\n  - 1.2.3\nbuild: make\ntest: cc test.c\n")
+	dir := filepath.Dir(p)
+	if err := os.WriteFile(filepath.Join(dir, "test.c"), []byte("int main(){}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "entrypoint.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A SUBDIRECTORY of a recipe directory is another project, not a fixture.
+	if err := os.MkdirAll(filepath.Join(dir, "minizip"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	box := filepath.Join(t.TempDir(), "box")
+	var out, errOut bytes.Buffer
+	if code := runTest([]string{"--recipe", p, "--sandbox", box, "proj.org"}, &out, &errOut); code != 0 {
+		t.Fatalf("want 0, got %d (%s)", code, errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(box, "test.c")); err != nil {
+		t.Errorf("the fixture was not staged: %v", err)
+	}
+	fi, err := os.Stat(filepath.Join(box, "entrypoint.sh"))
+	if err != nil {
+		t.Fatalf("the executable fixture was not staged: %v", err)
+	}
+	if fi.Mode().Perm()&0o111 == 0 {
+		t.Errorf("the executable bit was lost: %v", fi.Mode())
+	}
+	if _, err := os.Stat(filepath.Join(box, "minizip")); !os.IsNotExist(err) {
+		t.Error("a subproject directory was copied into the sandbox")
+	}
+}
+
+func TestStageRecipeFilesReportsADirectoryItCannotRead(t *testing.T) {
+	if err := stageRecipeFiles(filepath.Join(t.TempDir(), "absent"), t.TempDir()); err == nil {
+		t.Error("want an error for a recipe directory that is not there")
+	}
+}
+
+func TestStageRecipeFilesReportsAFileItCannotCopy(t *testing.T) {
+	requireNonRootHere(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "secret"), []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := stageRecipeFiles(src, t.TempDir()); err == nil {
+		t.Error("want an error for a fixture that cannot be read")
+	}
+}
+
+func TestStageRecipeFilesReportsASandboxItCannotWriteInto(t *testing.T) {
+	requireNonRootHere(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := t.TempDir()
+	if err := os.Chmod(dst, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dst, 0o755) })
+	if err := stageRecipeFiles(src, dst); err == nil {
+		t.Error("want an error for a sandbox that cannot be written")
+	}
+}
+
+// A non-regular entry is skipped rather than followed.
+func TestStageRecipeFilesSkipsWhatIsNotARegularFile(t *testing.T) {
+	src := t.TempDir()
+	if err := os.Symlink("/nowhere", filepath.Join(src, "dangling")); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+	dst := t.TempDir()
+	if err := stageRecipeFiles(src, dst); err != nil {
+		t.Fatalf("a dangling symlink must be skipped, not fatal: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "dangling")); !os.IsNotExist(err) {
+		t.Error("the symlink was copied")
+	}
+}
+
+func TestRunTestReportsRecipeFilesItCannotStage(t *testing.T) {
+	requireNonRootHere(t)
+	testTestbed(t)
+	p := writeTestRecipe(t, okRecipe)
+	// Traversable but not listable: os.ReadFile of a known name still works,
+	// os.ReadDir does not — so the recipe parses and the staging is what
+	// fails, which is the arm under test.
+	dir := filepath.Dir(p)
+	if err := os.Chmod(dir, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	var out, errOut bytes.Buffer
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 1 {
+		t.Errorf("want 1, got %d", code)
+	}
+	if !strings.Contains(errOut.String(), "stage recipe files") {
+		t.Errorf("want the step named: %q", errOut.String())
+	}
+}
+
+// The entry that vanished between the listing and the stat. Only a seam can
+// produce it, and leaving it unexercised would leave a return nobody checked.
+func TestStageRecipeFilesReportsAnEntryThatVanished(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := dirEntryInfo
+	dirEntryInfo = func(os.DirEntry) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { dirEntryInfo = prev })
+
+	if err := stageRecipeFiles(src, t.TempDir()); err == nil {
+		t.Error("want the error surfaced, not swallowed")
 	}
 }
