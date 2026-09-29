@@ -25,6 +25,23 @@ import (
 // not must not come back green.
 const exitNoTest = 3
 
+// exitCannotRun is returned when the test never started: an unresolvable
+// version, a recipe that will not parse, a sandbox that cannot be made.
+//
+// It is separate from 1 because the FIRST sweep this command ever ran could
+// not tell them apart. Fourteen of forty projects came back "FAIL", and four
+// of those had never executed a line of their test block:
+//
+//	aomedia.googlesource.com/aom  GET …/+refs: 503 Service Unavailable
+//	curl.se/ca-certs              no candidate version matched
+//
+// A 503 is not a broken package, and reporting it as one is the failure mode
+// this repository keeps writing down: an answer that could not be obtained
+// must not read as a negative one. Wired into the factory — which is what
+// go-pkgx/bk#162 is deciding — that conflation would file bugs against
+// packages for an outage.
+const exitCannotRun = 4
+
 // testRun executes the generated test script; a seam so a test of this file
 // does not need pkgx, a registry, or the package installed.
 var testRun = runBash
@@ -68,12 +85,12 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 	data, err := os.ReadFile(*recipe)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
-		return 1
+		return exitCannotRun
 	}
 	rec, err := pantry.Parse(data)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
-		return 1
+		return exitCannotRun
 	}
 	// Asked BEFORE resolving a version or touching the disk: "there is nothing
 	// to run" is an answer about the recipe, and making the caller wait for a
@@ -87,7 +104,7 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 	tgt, err := target.Resolve()
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
-		return 1
+		return exitCannotRun
 	}
 	constraint := "*"
 	if *version != "" {
@@ -96,7 +113,7 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 	ver, tag, err := versions.Resolve(rec.Versions, constraint)
 	if err != nil {
 		fmt.Fprintln(stderr, "error: resolve version:", err)
-		return 1
+		return exitCannotRun
 	}
 
 	paths := config.Compute(project, ver, tgt)
@@ -110,15 +127,15 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 	// the schema uses and it has to be true.
 	if err := os.RemoveAll(box); err != nil {
 		fmt.Fprintln(stderr, "error: clear sandbox:", err)
-		return 1
+		return exitCannotRun
 	}
 	if err := os.MkdirAll(box, 0o755); err != nil {
 		fmt.Fprintln(stderr, "error: create sandbox:", err)
-		return 1
+		return exitCannotRun
 	}
 	if err := stageRecipeFiles(filepath.Dir(*recipe), box); err != nil {
 		fmt.Fprintln(stderr, "error: stage recipe files:", err)
-		return 1
+		return exitCannotRun
 	}
 
 	// Absolute, for the same reason runBuild does it: the script runs under a
@@ -132,7 +149,7 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 	script, err := renderTest(rec, project, ver, tag, tgt, paths, box, *recipe, pkgxBin)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
-		return 1
+		return exitCannotRun
 	}
 	// Beside the sandbox, never inside it: the next run empties the sandbox,
 	// and a test that lists its working directory must not find our script
@@ -140,7 +157,7 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 	scriptPath := filepath.Join(filepath.Dir(box), filepath.Base(box)+".test.sh")
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		fmt.Fprintln(stderr, "error:", err)
-		return 1
+		return exitCannotRun
 	}
 
 	fmt.Fprintf(stdout, "test %s %s (%s/%s) in %s\n", project, ver, tgt.Platform, tgt.Arch, box)

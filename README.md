@@ -52,9 +52,11 @@ overrides, and publishes each bottle signed with an SBOM and provenance.
 emptied sandbox holding that package, its `test.dependencies` and the recipe's
 own files (recipes name fixtures by bare relative name: `cc test.c -lz`) — none of
 the build's flags, compiler or source tree, because the question is whether what
-we published works and not whether the build did. It answers in three states,
-not two: pass, fail, and `3` for a recipe that declares no test, which has done
-neither.
+we published works and not whether the build did. It answers in four states, not
+two: `0` passed, `1` ran and failed, `3` the recipe declares no test, and `4`
+the test never ran (an unresolvable version, an unreachable version source, a
+sandbox that could not be made). A 503 from a version source is not a broken
+package, and a sweep that cannot tell the two apart files bugs for an outage.
 
 ## Building bottles that owe nothing to the build container
 

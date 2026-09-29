@@ -262,3 +262,62 @@ func TestFixtures(t *testing.T) {
 		t.Errorf("dollar escape = %q", s)
 	}
 }
+
+// A fixture on the NODE covers the whole script. 115 of the pantry's 1897
+// recipes write `test: {script, fixture}`, and until the test path ran,
+// nothing noticed that only the per-STEP form was handled.
+func TestGenerateNodeLevelFixture(t *testing.T) {
+	s, err := Generate(map[string]any{
+		"script":  "mv $FIXTURE test.cpp\nfd -e cpp test",
+		"fixture": "hello, world\n",
+	}, Options{Target: target.Target{Platform: "linux", Arch: "x86-64"}, PkgVersion: "1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"FIXTURE=$(mktemp)",
+		"cat <<DEV_PKGX_EOF > $FIXTURE",
+		"hello, world",
+		"mv $FIXTURE test.cpp",
+		"rm -f $FIXTURE*",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+}
+
+// The cd and the exports stay OUTSIDE the fixture wrapper, which is the
+// nesting a per-step fixture already gets.
+func TestGenerateNodeLevelFixtureNestsInsideEnvAndWorkingDirectory(t *testing.T) {
+	s, err := Generate(map[string]any{
+		"script":            "cat $FIXTURE",
+		"fixture":           "x",
+		"env":               map[string]any{"K": "v"},
+		"working-directory": "sub",
+	}, Options{Target: target.Target{Platform: "linux", Arch: "x86-64"}, PkgVersion: "1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	iEnv := strings.Index(s, "K=")
+	iCd := strings.Index(s, "cd sub")
+	iFix := strings.Index(s, "FIXTURE=$(mktemp)")
+	if iEnv < 0 || iCd < 0 || iFix < 0 {
+		t.Fatalf("a piece is missing (env=%d cd=%d fixture=%d):\n%s", iEnv, iCd, iFix, s)
+	}
+	if !(iEnv < iCd && iCd < iFix) {
+		t.Errorf("want env, then cd, then the fixture; got %d %d %d:\n%s", iEnv, iCd, iFix, s)
+	}
+}
+
+// `prop` is the other spelling fixtureOf accepts, and it reaches $PROP.
+func TestGenerateNodeLevelProp(t *testing.T) {
+	s, err := Generate(map[string]any{"script": "cat $PROP", "prop": "p"},
+		Options{Target: target.Target{Platform: "linux", Arch: "x86-64"}, PkgVersion: "1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(s, "PROP=$(mktemp)") {
+		t.Errorf("no PROP wrapper:\n%s", s)
+	}
+}
