@@ -12,8 +12,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-pkgx/bk/bottlepkg"
 	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bottle"
+	"github.com/klauspost/compress/zstd"
 )
 
 // machoBytes builds a minimal thin Mach-O64 (LE) carrying the given load
@@ -73,6 +75,38 @@ func gzBottle(t *testing.T, files map[string][]byte) string {
 		t.Fatal(err)
 	}
 	p := filepath.Join(t.TempDir(), "v2.55.0.tar.gz")
+	if err := os.WriteFile(p, raw.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// zstBottle is gzBottle in the codec the factory actually publishes.
+func zstBottle(t *testing.T, files map[string][]byte) string {
+	t.Helper()
+	var raw bytes.Buffer
+	zw, err := zstd.NewWriter(&raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(zw)
+	for name, content := range files {
+		if err := tw.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o755, Size: int64(len(content)), Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "v2.55.0.tar.zst")
 	if err := os.WriteFile(p, raw.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -145,8 +179,15 @@ func TestAuditMirroredBottleSaysWhenItCouldNotRead(t *testing.T) {
 	if err == nil {
 		t.Fatal("an unhandled compression returned no error")
 	}
-	if !strings.Contains(err.Error(), "unhandled compression") {
-		t.Errorf("error does not name the cause: %v", err)
+	// The EXTENSION, not a phrase. The wording moved when this stopped
+	// hand-rolling its decoder and asked bottle.Decompressor, and an assertion
+	// on the sentence would have made a correct change look like a regression.
+	// What a reader needs is which compression was refused.
+	if !strings.Contains(err.Error(), ".tar.br") {
+		t.Errorf("error does not name the compression it could not read: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cannot audit") {
+		t.Errorf("error does not say what failed: %v", err)
 	}
 }
 
@@ -379,5 +420,26 @@ func TestRunFactoryMirrorDoesNotAuditLinux(t *testing.T) {
 	}
 	if strings.Contains(h.errb.String(), "not audited") || strings.Contains(h.errb.String(), "NOT RELOCATABLE") {
 		t.Errorf("linux must not be audited:\n%s", h.errb.String())
+	}
+}
+
+// TestAuditMirroredBottleReadsTheDEFAULTCodec. The switch this replaced knew xz
+// and gzip and sent .tar.zst — which is what bottlepkg.Codec is — down its
+// error arm. The audit therefore refused every bottle the factory publishes
+// today, and said so politely enough that it read as a gap rather than as
+// total coverage of nothing.
+func TestAuditMirroredBottleReadsTheDEFAULTCodec(t *testing.T) {
+	if bottlepkg.Codec != bottle.ExtTarZst {
+		t.Skipf("the default codec is %s; this test is about the one that is published", bottlepkg.Codec)
+	}
+	tb := zstBottle(t, map[string][]byte{
+		"x/v1/lib/a.dylib": machoBytes([2]any{lcRpath, "@loader_path/../../.."}),
+	})
+	checked, problems, err := auditMirroredBottle(tb, bottle.ExtTarZst, "x", "1")
+	if err != nil {
+		t.Fatalf("the default codec must be auditable: %v", err)
+	}
+	if checked != 1 || len(problems) != 0 {
+		t.Errorf("checked=%d problems=%v, want 1 and none", checked, problems)
 	}
 }

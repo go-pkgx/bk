@@ -3,7 +3,6 @@ package main
 import (
 	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
@@ -23,7 +22,6 @@ import (
 	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bottle"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/ulikunitz/xz"
 )
 
 // OCI artifactType / mediaType of each attestation attached as a referrer.
@@ -126,22 +124,25 @@ func sonamesFromTarball(tarball []byte, ext string) ([]string, error) {
 	return fixup.SortedUnique(out), nil
 }
 
+// bottle.Decompressor, for the reason sonamesFromTarball gives directly above
+// — and this function is where that reason was NOT applied. It knew xz and
+// assumed gzip for everything else, so on a .tar.zst, which is the default
+// codec, glibc's publish died on
+//
+//	❌ PUBLISH FAIL gnu.org/glibc 2.44: gzip: invalid header
+//
+// after a build that had taken hours. Nothing else showed it because nothing
+// else calls this: it is glibc's alone.
+//
+// The comment above was written when the SAME defect was found in the function
+// above. A warning left beside the code it warns about is not a fix for the
+// code next to it.
 func glibcMinKernelFromTarball(tarball []byte, ext string) (string, error) {
-	var r io.Reader = bytes.NewReader(tarball)
-	if ext == bottle.ExtTarXz {
-		xr, err := xz.NewReader(r)
-		if err != nil {
-			return "", err
-		}
-		r = xr
-	} else {
-		gz, err := gzip.NewReader(r)
-		if err != nil {
-			return "", err
-		}
-		defer gz.Close()
-		r = gz
+	r, closeFn, err := bottle.Decompressor(ext, bytes.NewReader(tarball))
+	if err != nil {
+		return "", err
 	}
+	defer closeFn()
 	tr := tar.NewReader(r)
 	var linkTarget string         // what libc.so.6 points at, when it is a symlink
 	images := map[string][]byte{} // candidate ELFs, by base name

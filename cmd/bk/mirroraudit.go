@@ -3,7 +3,6 @@ package main
 import (
 	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/go-pkgx/bk/fixup"
 	"github.com/go-pkgx/bottle"
-	"github.com/ulikunitz/xz"
 )
 
 // machoMagic are the four leading bytes of a Mach-O, thin or fat, either
@@ -72,24 +70,17 @@ func auditMirroredBottle(path, ext, proj, ver string) (checked int, problems []e
 	}
 	defer f.Close()
 
-	var r io.Reader
-	switch ext {
-	case bottle.ExtTarXz:
-		if r, err = xz.NewReader(f); err != nil {
-			return 0, nil, err
-		}
-	case bottle.ExtTarGz, "":
-		g, gerr := gzip.NewReader(f)
-		if gerr != nil {
-			return 0, nil, gerr
-		}
-		defer g.Close()
-		r = g
-	default:
-		// Say so rather than reporting a clean bill: an audit that could not
-		// read must not read as an audit that found nothing.
-		return 0, nil, fmt.Errorf("cannot audit %s: unhandled compression %q", path, ext)
+	// bottle.Decompressor, which knows every codec this factory publishes. The
+	// switch this replaces knew xz and gzip and sent .tar.zst — the DEFAULT —
+	// down its error arm, so the audit refused today's bottles by name. It was
+	// honest about it, which is the reason nobody noticed: "unhandled
+	// compression" reads as a gap in the audit rather than as the audit
+	// covering nothing. An unknown codec still says so, from there.
+	r, closeFn, err := bottle.Decompressor(ext, f)
+	if err != nil {
+		return 0, nil, fmt.Errorf("cannot audit %s: %w", path, err)
 	}
+	defer closeFn()
 
 	dir, err := auditMkdirTemp("", "bk-mirror-audit-")
 	if err != nil {
