@@ -39,7 +39,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `build` | the pipeline orchestrator (`Runner`): dep-closure, base toolchain, sanitized env, autotools maintainer-mode defeat |
 | `overrides` | applies the factory's local recipe-override patches to a pantry checkout in pure Go — a `git diff` parsed and applied without shelling out to `git apply`, and idempotent (it resets the files it touches first) |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | `target`, `fixup`, `versions`, `build`, `publish`, `closure`, `depgaps`, `builder`, `factory` |
+| `cmd/bk` | `target`, `fixup`, `versions`, `build`, `test`, `publish`, `closure`, `depgaps`, `builder`, `factory` |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -47,6 +47,13 @@ sanitized env → fix-up → package a bottle. `bk factory` drives that over a w
 list of projects: it expands them to their topologically-ordered runtime-dependency
 closure, skips any `(project, version, platform)` already published, applies the
 overrides, and publishes each bottle signed with an SBOM and provenance.
+
+`bk test` runs a recipe's own `test:` block against the INSTALLED package, in an
+emptied sandbox holding only that package and its `test.dependencies` — none of
+the build's flags, compiler or source tree, because the question is whether what
+we published works and not whether the build did. It answers in three states,
+not two: pass, fail, and `3` for a recipe that declares no test, which has done
+neither.
 
 ## Building bottles that owe nothing to the build container
 
