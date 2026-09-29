@@ -88,6 +88,7 @@ func addEntry(tw *tar.Writer, installDir, project, version, rel string) error {
 	if fi.IsDir() {
 		hdr.Name += "/"
 	}
+	normalise(hdr, fi)
 	if err := tw.WriteHeader(hdr); err != nil {
 		return err
 	}
@@ -101,6 +102,48 @@ func addEntry(tw *tar.Writer, installDir, project, version, rel string) error {
 	defer f.Close()
 	_, err = ioCopy(tw, f)
 	return err
+}
+
+// normalise strips the BUILDER from a bottle's tar headers.
+//
+// Two builds of one recipe on two machines produced two different bottles, and
+// the difference was the umask. Measured 2026-09-29, zlib.net 1.3.2 built on
+// the s390x seed VM before and after it was replaced:
+//
+//	every FILE byte-identical, 14 entries either side
+//	directories   0755 → 0775      the hosts' umasks, 0022 and 0002
+//	uid/gid/uname 1000/linux1      the same ONLY because the account was
+//
+// Files were untouched because cp and install preserve the source's mode; a
+// directory gets its mode from mkdir, which applies the umask. So the same
+// source, the same compiler and the same libc still gave two digests.
+//
+// reproducible-builds.org says exactly this under "Archive metadata" —
+// "Permissions on build artifacts may vary, for example due to differing
+// umask settings" — and prescribes `--mode=a=rX,u+w` together with
+// `--owner=0 --group=0 --numeric-owner`. That is what this does:
+//
+//	directories and anything executable   0755
+//	everything else                       0644
+//	setuid, setgid and sticky             KEPT — a bottle that ships one
+//	                                      means it, and a=rX would strip it
+//	uid, gid                              0, with the names cleared
+//
+// mtime is deliberately NOT touched, and it is the third member of this class:
+// every entry already carries ONE timestamp, but it is the build's. Fixing it
+// to an epoch would make a bottle say nothing about when it was made, and that
+// is a policy choice rather than a defect. It is named here so the next person
+// finds it already weighed instead of thinking it was missed.
+func normalise(hdr *tar.Header, fi fs.FileInfo) {
+	// The bits that are not permissions: setuid, setgid, sticky.
+	special := hdr.Mode &^ 0o777
+	perm := int64(0o644)
+	if fi.IsDir() || hdr.Mode&0o111 != 0 {
+		perm = 0o755
+	}
+	hdr.Mode = special | perm
+	hdr.Uid, hdr.Gid = 0, 0
+	hdr.Uname, hdr.Gname = "", ""
 }
 
 // WriteBottle creates "outDir/<project>/<os>/<arch>/v<version>.tar.gz",
