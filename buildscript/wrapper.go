@@ -125,6 +125,14 @@ func Wrap(o WrapOptions) string {
 	for _, f := range wrapFlags(o.Target, o.PkgxDir, o.Install, o.HasBinutils, o.LibcPkgx) {
 		b.WriteString(f + "\n")
 	}
+	// A redacted DUMP of the environment into the build log, not an unset —
+	// `env` with no command prints and exits, and `-u` removes those two names
+	// from what it prints. Measured, because it reads like the opposite: after
+	// this line GITHUB_TOKEN is still exported, and deliberately so
+	// (SanitizedEnv passes it through for recipes that fetch from GitHub).
+	//
+	// WrapTest has no counterpart: a test's environment is the package and its
+	// test dependencies, which the eval above already names in full.
 	b.WriteString("env -u GH_TOKEN -u GITHUB_TOKEN\n\n")
 
 	b.WriteString("set -x\n")
