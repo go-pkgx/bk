@@ -49,7 +49,8 @@ closure, skips any `(project, version, platform)` already published, applies the
 overrides, and publishes each bottle signed with an SBOM and provenance.
 
 `bk test` runs a recipe's own `test:` block against the INSTALLED package, in an
-emptied sandbox holding only that package and its `test.dependencies` — none of
+emptied sandbox holding that package, its `test.dependencies` and the recipe's
+own files (recipes name fixtures by bare relative name: `cc test.c -lz`) — none of
 the build's flags, compiler or source tree, because the question is whether what
 we published works and not whether the build did. It answers in three states,
 not two: pass, fail, and `3` for a recipe that declares no test, which has done

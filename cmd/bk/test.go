@@ -116,6 +116,10 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error: create sandbox:", err)
 		return 1
 	}
+	if err := stageRecipeFiles(filepath.Dir(*recipe), box); err != nil {
+		fmt.Fprintln(stderr, "error: stage recipe files:", err)
+		return 1
+	}
 
 	// Absolute, for the same reason runBuild does it: the script runs under a
 	// sanitized PATH of /usr/bin:/bin:/usr/sbin:/sbin, which excludes the two
@@ -200,4 +204,58 @@ func testDepSpecs(node any, tgt target.Target) []string {
 		return nil
 	}
 	return build.DepSpecs(deps, tgt)
+}
+
+// dirEntryInfo is os.DirEntry.Info as a seam. It fails only when the entry
+// vanished between the listing and the stat — a real race against a pantry
+// being updated underneath us, and one no test can provoke by arranging
+// files. bk keeps such seams as package vars (build/seams.go does the same
+// for os.WriteFile) rather than leaving the branch unexercised.
+var dirEntryInfo = func(e os.DirEntry) (os.FileInfo, error) { return e.Info() }
+
+// stageRecipeFiles copies the recipe directory's own files into the sandbox.
+//
+// Recipes name them by BARE relative name — `cc test.c -lz` in zlib.net,
+// `test.pdf` in poppler, `fixture.gif` in giflib, `hello.pro` in qt.io — so a
+// sandbox without them makes the test fail on the tool rather than on the
+// package. Measured on pantry 2df061b: 357 recipe directories carry a file
+// beside their package.yml, and the first sweep this command ever ran reported
+//
+//   - cc test.c -lz
+//     clang: error: no such file or directory: 'test.c'
+//
+// which reads as a broken package and is a missing fixture.
+//
+// Regular files only, and no recursion: a subdirectory of a recipe directory
+// is ANOTHER PROJECT (zlib.net/minizip has its own package.yml), and copying
+// one into the sandbox would put a second package's sources under test.
+//
+// package.yml goes in with the rest. Leaving it out would be a rule about one
+// name rather than about the directory, and the three recipes that mention
+// package.yml at all do so in a comment.
+//
+// The mode travels, because some of these fixtures are meant to be executed
+// (agpt.co ships `entrypoint.sh`).
+func stageRecipeFiles(recipeDir, sandbox string) error {
+	entries, err := os.ReadDir(recipeDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		info, err := dirEntryInfo(e)
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(recipeDir, e.Name()))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(sandbox, e.Name()), data, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
