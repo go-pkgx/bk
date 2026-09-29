@@ -332,3 +332,61 @@ func TestTestDepSpecsIgnoresWhatIsNotADepMap(t *testing.T) {
 		t.Errorf("a non-map dependencies value yields none, got %v", got)
 	}
 }
+
+// The dispatch arm. Without it `bk test` is unreachable from the command
+// line, and nothing else in the suite goes through main's switch for it.
+func TestTestCommandIsDispatched(t *testing.T) {
+	// No --recipe, so runTest answers 2 (usage) — which is enough to prove
+	// the arm was taken, and needs no recipe, pkgx or registry to do it.
+	if code, _, errOut := run2(t, "test"); code != 2 {
+		t.Errorf("code=%d, stderr=%q", code, errOut)
+	}
+}
+
+// lookPath is asked because the script runs under a sanitized PATH. Both
+// answers are exercised HERE rather than left to the machine: pkgx is on a
+// developer's PATH and not on CI's, so leaving it implicit makes this branch
+// covered in one place and not the other — which is how it first arrived red.
+func TestRunTestResolvesPkgxToAnAbsolutePath(t *testing.T) {
+	testTestbed(t)
+	got := stubRun(t, nil)
+	prev := lookPath
+	lookPath = func(string) (string, error) { return "/opt/elsewhere/pkgx", nil }
+	t.Cleanup(func() { lookPath = prev })
+
+	p := writeTestRecipe(t, okRecipe)
+	var out, errOut bytes.Buffer
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 0 {
+		t.Fatalf("want 0, got %d (%s)", code, errOut.String())
+	}
+	script, err := os.ReadFile(*got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "/opt/elsewhere/pkgx") {
+		t.Errorf("the resolved pkgx did not reach the script:\n%s", script)
+	}
+}
+
+func TestRunTestKeepsTheGivenPkgxWhenItCannotBeResolved(t *testing.T) {
+	testTestbed(t)
+	got := stubRun(t, nil)
+	prev := lookPath
+	lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	t.Cleanup(func() { lookPath = prev })
+
+	p := writeTestRecipe(t, okRecipe)
+	var out, errOut bytes.Buffer
+	if code := runTest([]string{"--recipe", p, "--pkgx", "/my/pkgx", "proj.org"}, &out, &errOut); code != 0 {
+		t.Fatalf("want 0, got %d (%s)", code, errOut.String())
+	}
+	script, err := os.ReadFile(*got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Kept as given: an explicit path still works and the original error
+	// stays legible instead of being replaced by an empty string.
+	if !strings.Contains(string(script), "/my/pkgx") {
+		t.Errorf("the given pkgx was lost:\n%s", script)
+	}
+}
