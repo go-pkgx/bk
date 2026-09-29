@@ -81,8 +81,8 @@ func TestRunTestUsage(t *testing.T) {
 func TestRunTestUnreadableRecipe(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := runTest([]string{"--recipe", filepath.Join(t.TempDir(), "absent.yml"), "proj.org"}, &out, &errOut)
-	if code != 1 {
-		t.Errorf("want 1, got %d", code)
+	if code != exitCannotRun {
+		t.Errorf("want %d, got %d", exitCannotRun, code)
 	}
 	if !strings.Contains(errOut.String(), "error:") {
 		t.Errorf("no error said: %q", errOut.String())
@@ -92,7 +92,7 @@ func TestRunTestUnreadableRecipe(t *testing.T) {
 func TestRunTestUnparseableRecipe(t *testing.T) {
 	p := writeTestRecipe(t, "versions: [1.0.0]\nbuild: make\ntest: 3\nthis is: not: yaml:\n")
 	var out, errOut bytes.Buffer
-	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 1 {
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != exitCannotRun {
 		t.Errorf("want 1, got %d (%s)", code, errOut.String())
 	}
 }
@@ -120,8 +120,8 @@ func TestRunTestUnresolvableTarget(t *testing.T) {
 	t.Setenv("BREWKIT_TARGET", "not-a-target")
 	p := writeTestRecipe(t, okRecipe)
 	var out, errOut bytes.Buffer
-	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 1 {
-		t.Errorf("want 1, got %d", code)
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != exitCannotRun {
+		t.Errorf("want %d, got %d", exitCannotRun, code)
 	}
 }
 
@@ -130,8 +130,10 @@ func TestRunTestUnresolvableVersion(t *testing.T) {
 	p := writeTestRecipe(t, okRecipe)
 	var out, errOut bytes.Buffer
 	code := runTest([]string{"--recipe", p, "--version", "9.9.9", "proj.org"}, &out, &errOut)
-	if code != 1 {
-		t.Errorf("want 1, got %d", code)
+	// A version this recipe cannot resolve is not a package that failed its
+	// test — it is a test that never ran.
+	if code != exitCannotRun {
+		t.Errorf("want %d, got %d", exitCannotRun, code)
 	}
 	if !strings.Contains(errOut.String(), "resolve version") {
 		t.Errorf("want the version step named: %q", errOut.String())
@@ -241,8 +243,8 @@ func TestRunTestReportsASandboxItCannotClear(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
 	p := writeTestRecipe(t, okRecipe)
 	var out, errOut bytes.Buffer
-	if code := runTest([]string{"--recipe", p, "--sandbox", box, "proj.org"}, &out, &errOut); code != 1 {
-		t.Errorf("want 1, got %d", code)
+	if code := runTest([]string{"--recipe", p, "--sandbox", box, "proj.org"}, &out, &errOut); code != exitCannotRun {
+		t.Errorf("want %d, got %d", exitCannotRun, code)
 	}
 	if !strings.Contains(errOut.String(), "clear sandbox") {
 		t.Errorf("want the step named: %q", errOut.String())
@@ -267,8 +269,8 @@ func TestRunTestReportsASandboxItCannotCreate(t *testing.T) {
 	p := writeTestRecipe(t, okRecipe)
 	var out, errOut bytes.Buffer
 	code := runTest([]string{"--recipe", p, "--sandbox", filepath.Join(parent, "box"), "proj.org"}, &out, &errOut)
-	if code != 1 {
-		t.Errorf("want 1, got %d", code)
+	if code != exitCannotRun {
+		t.Errorf("want %d, got %d", exitCannotRun, code)
 	}
 	if !strings.Contains(errOut.String(), "create sandbox") {
 		t.Errorf("want the step named: %q", errOut.String())
@@ -287,8 +289,8 @@ func TestRunTestReportsAScriptItCannotWrite(t *testing.T) {
 	}
 	p := writeTestRecipe(t, okRecipe)
 	var out, errOut bytes.Buffer
-	if code := runTest([]string{"--recipe", p, "--sandbox", box, "proj.org"}, &out, &errOut); code != 1 {
-		t.Errorf("want 1, got %d", code)
+	if code := runTest([]string{"--recipe", p, "--sandbox", box, "proj.org"}, &out, &errOut); code != exitCannotRun {
+		t.Errorf("want %d, got %d", exitCannotRun, code)
 	}
 }
 
@@ -299,8 +301,8 @@ func TestRunTestReportsAnUnrenderableTestBlock(t *testing.T) {
 	// render — it refuses rather than emitting an empty command.
 	p := writeTestRecipe(t, "versions:\n  - 1.2.3\nbuild: make\ntest:\n  script:\n    - if: '>=1'\n")
 	var out, errOut bytes.Buffer
-	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 1 {
-		t.Errorf("want 1, got %d (%s)", code, errOut.String())
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != exitCannotRun {
+		t.Errorf("want %d, got %d (%s)", exitCannotRun, code, errOut.String())
 	}
 }
 
@@ -494,8 +496,8 @@ func TestRunTestReportsRecipeFilesItCannotStage(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 
 	var out, errOut bytes.Buffer
-	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 1 {
-		t.Errorf("want 1, got %d", code)
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != exitCannotRun {
+		t.Errorf("want %d, got %d", exitCannotRun, code)
 	}
 	if !strings.Contains(errOut.String(), "stage recipe files") {
 		t.Errorf("want the step named: %q", errOut.String())
@@ -515,5 +517,27 @@ func TestStageRecipeFilesReportsAnEntryThatVanished(t *testing.T) {
 
 	if err := stageRecipeFiles(src, t.TempDir()); err == nil {
 		t.Error("want the error surfaced, not swallowed")
+	}
+}
+
+// The four answers have to stay four. A caller that cannot tell "it failed"
+// from "it never ran" files bugs against packages for a network outage —
+// which is what the first real sweep did, four times out of forty.
+func TestTheFourOutcomesAreDistinct(t *testing.T) {
+	seen := map[int]string{}
+	for code, name := range map[int]string{
+		0:             "pass",
+		1:             "ran and failed",
+		2:             "asked wrongly",
+		exitNoTest:    "nothing to run",
+		exitCannotRun: "could not run it",
+	} {
+		if prev, ok := seen[code]; ok {
+			t.Errorf("%q and %q share exit %d", prev, name, code)
+		}
+		seen[code] = name
+	}
+	if len(seen) != 5 {
+		t.Errorf("want five distinct codes, got %d", len(seen))
 	}
 }
