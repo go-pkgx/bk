@@ -647,3 +647,66 @@ func TestTouchAutotoolsOnATarballsOldTimestamps(t *testing.T) {
 		}
 	}
 }
+
+// TestTouchAutotoolsOnGlibcsPreconfigure. glibc's sysdeps/*/preconfigure is a
+// generated file like configure, and until it was listed as one the s390x seed
+// died on a message about a machine glibc has supported for decades:
+//
+//	configure: error: The s390x is not supported.
+//
+// The shape here is the one measured in glibc-2.44.tar.xz: aclocal.m4,
+// sysdeps/s390/preconfigure.ac and sysdeps/s390/preconfigure all carry ONE
+// tarball mtime. Rejuvenating aclocal.m4 and leaving the preconfigure alone
+// makes the prerequisite newer than its target, make runs
+// `$(AUTOCONF) … > $@.new; mv -f $@.new $@`, and bk's own AUTOCONF=true writes
+// an EMPTY file over the four lines that turn $machine into s390/s390-64.
+//
+// glibc 2.42 had ten preconfigure.ac files and 2.44 has eleven: s390's is the
+// new one, which is why this only started failing now.
+func TestTouchAutotoolsOnGlibcsPreconfigure(t *testing.T) {
+	dir := t.TempDir()
+	sys := filepath.Join(dir, "sysdeps", "s390")
+	if err := os.MkdirAll(sys, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// One mtime for everything, as a tarball gives it.
+	old := time.Date(2026, 7, 24, 15, 16, 0, 0, time.UTC)
+	files := map[string]string{
+		filepath.Join(dir, "aclocal.m4"):      "x",
+		filepath.Join(dir, "configure.ac"):    "x",
+		filepath.Join(dir, "configure"):       "x",
+		filepath.Join(sys, "preconfigure.ac"): "x",
+		filepath.Join(sys, "preconfigure"):    "x",
+	}
+	for p, b := range files {
+		if err := os.WriteFile(p, []byte(b), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := TouchAutotools(dir); err != nil {
+		t.Fatal(err)
+	}
+	mt := func(p string) time.Time {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.ModTime()
+	}
+	pre := filepath.Join(sys, "preconfigure")
+	// Newer than BOTH prerequisites of `%/preconfigure: %/preconfigure.ac aclocal.m4`.
+	for _, prereq := range []string{filepath.Join(dir, "aclocal.m4"), filepath.Join(sys, "preconfigure.ac")} {
+		if !mt(prereq).Before(mt(pre)) {
+			t.Errorf("preconfigure (%v) is not newer than %s (%v) — make will regenerate it, and AUTOCONF=true will empty it",
+				mt(pre), filepath.Base(prereq), mt(prereq))
+		}
+	}
+	// And preconfigure.ac must stay in the INPUTS tier: an exact name cannot
+	// claim it, and dragging it up here would defeat the whole ordering.
+	if !mt(filepath.Join(sys, "preconfigure.ac")).Before(mt(filepath.Join(dir, "aclocal.m4")).Add(time.Second)) {
+		t.Errorf("preconfigure.ac was pulled out of the inputs tier")
+	}
+}

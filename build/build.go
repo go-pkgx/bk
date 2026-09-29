@@ -752,10 +752,34 @@ var autotoolsTiers = [][]string{
 	//	You may need to run: make reconfigure
 	//	make: *** [Makefile:280: configure.sh] Error 1
 	//
+	// `preconfigure` is glibc's, and it was added here after the s390x seed
+	// died on a message about a machine glibc has supported for decades:
+	//
+	//	configure: error: The s390x is not supported.
+	//
+	// glibc 2.44 grew a sysdeps/s390/preconfigure.ac — 2.42 had ten of those
+	// and 2.44 has eleven — so the rule
+	//
+	//	%/preconfigure: %/preconfigure.ac aclocal.m4; $(autoconf-it)
+	//
+	// could finally fire for s390. In the tarball, aclocal.m4 and
+	// sysdeps/s390/preconfigure carry ONE mtime (Jul 24 15:16 for 2.44); the
+	// tier above rejuvenates aclocal.m4 and nothing rejuvenated the
+	// preconfigure, so the prerequisite became an hour newer than its target.
+	// make then ran `$(AUTOCONF) … > $@.new; mv -f $@.new $@` with the
+	// AUTOCONF=true that bk itself exports, writing an EMPTY file over the four
+	// lines that turn $machine from `s390x` into `s390/s390-64`.
+	//
+	// The failure is a whole configure LATER: the recipe's own configure
+	// succeeds and lists sysdeps/s390 quite happily, and it is the re-run make
+	// triggers through Makeconfig:103 that sources the emptied fragment.
+	//
 	// Exact names, never a `configure*` prefix: the tiers are applied in order
 	// and the last match wins, so a prefix would drag configure.ac out of the
-	// inputs tier and into this one.
-	{"config.h.in", "configure", "configure.sh"},
+	// inputs tier and into this one. `preconfigure.ac` is unaffected for the
+	// same reason — it matches the `.ac` suffix in the inputs tier, and an
+	// exact name cannot claim it.
+	{"config.h.in", "configure", "configure.sh", "preconfigure"},
 	{"Makefile.in"}, // final outputs
 }
 
