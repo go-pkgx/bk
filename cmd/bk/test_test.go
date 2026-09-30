@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -640,5 +641,76 @@ func TestRunTestSeparatesAnUnassemblableEnvironmentFromAFailure(t *testing.T) {
 				t.Errorf("want %q in: %q", tc.want, errOut.String())
 			}
 		})
+	}
+}
+
+// A test may name a dependency's prefix. Eleven recipes do, gnu.org/glibc
+// among them.
+func TestRunTestResolvesADependencysPrefixWhenTheScriptNamesOne(t *testing.T) {
+	testTestbed(t)
+	got := stubRun(t, nil)
+	prev := resolveTestDep
+	resolveTestDep = func(project, constraint string) (string, error) {
+		if project != "gnu.org/gcc" {
+			t.Errorf("asked about %q", project)
+		}
+		return "14.2.0", nil
+	}
+	t.Cleanup(func() { resolveTestDep = prev })
+
+	p := writeTestRecipe(t, "versions:\n  - 1.2.3\nbuild: make\n"+
+		"test:\n  dependencies:\n    gnu.org/gcc: 14\n  script: cat {{deps.gnu.org/gcc.prefix}}/x\n")
+	var out, errOut bytes.Buffer
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 0 {
+		t.Fatalf("want 0, got %d (%s)", code, errOut.String())
+	}
+	script, err := os.ReadFile(*got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(script), "{{deps.") {
+		t.Errorf("a moustache reached the shell:\n%s", script)
+	}
+	if !strings.Contains(string(script), "gnu.org/gcc/v14.2.0/x") {
+		t.Errorf("the prefix did not render:\n%s", script)
+	}
+}
+
+// And a test that names none pays no round-trip: 1894 of the 1905 recipes
+// with a test block would otherwise resolve dependencies for nothing, and a
+// 503 would turn a passing test into one that never ran.
+func TestRunTestResolvesNothingWhenTheScriptNamesNoDependency(t *testing.T) {
+	testTestbed(t)
+	stubRun(t, nil)
+	prev := resolveTestDep
+	resolveTestDep = func(string, string) (string, error) {
+		t.Error("resolved a dependency the script never named")
+		return "", errors.New("must not be called")
+	}
+	t.Cleanup(func() { resolveTestDep = prev })
+
+	p := writeTestRecipe(t, "versions:\n  - 1.2.3\nbuild: make\n"+
+		"test:\n  dependencies:\n    gnu.org/gcc: 14\n  script: true\n")
+	var out, errOut bytes.Buffer
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 0 {
+		t.Fatalf("want 0, got %d (%s)", code, errOut.String())
+	}
+}
+
+// A dependency that cannot be resolved is NOT-RUN, not a failure.
+func TestRunTestReportsADependencyItCannotResolve(t *testing.T) {
+	testTestbed(t)
+	prev := resolveTestDep
+	resolveTestDep = func(string, string) (string, error) { return "", errors.New("503") }
+	t.Cleanup(func() { resolveTestDep = prev })
+
+	p := writeTestRecipe(t, "versions:\n  - 1.2.3\nbuild: make\n"+
+		"test:\n  dependencies:\n    gnu.org/gcc: 14\n  script: cat {{deps.gnu.org/gcc.prefix}}/x\n")
+	var out, errOut bytes.Buffer
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != exitCannotRun {
+		t.Errorf("want %d, got %d", exitCannotRun, code)
+	}
+	if !strings.Contains(errOut.String(), "resolve test deps") {
+		t.Errorf("want the step named: %q", errOut.String())
 	}
 }
