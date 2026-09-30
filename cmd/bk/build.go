@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/go-pkgx/bk/bottlepkg"
 	"github.com/go-pkgx/bk/build"
@@ -75,6 +76,19 @@ func runBash(scriptPath string, env []string) error {
 // both at one writer (as factory.sh's `2>&1` did) so a failed build's error tail
 // can be captured verbatim into failures-detail.txt.
 func runBashTo(out, errOut io.Writer) func(string, []string) error {
+	return runBashLimited(0, out, errOut)
+}
+
+// runBashLimited is runBashTo with a deadline; 0 means none, which is what a
+// BUILD gets — a compile that takes an hour is a compile, and a factory that
+// killed one would be inventing failures.
+//
+// A recipe's TEST is the other case. It runs after the build, in a chunk that
+// must finish, and one that waits on a socket nobody will answer hangs the
+// whole run rather than the package. mvdan.cc/sh's interpreter takes the
+// context, so the limit reaches the running script rather than only the
+// goroutine waiting on it.
+func runBashLimited(limit time.Duration, out, errOut io.Writer) func(string, []string) error {
 	return func(scriptPath string, env []string) error {
 		f, err := os.Open(scriptPath)
 		if err != nil {
@@ -101,7 +115,13 @@ func runBashTo(out, errOut io.Writer) func(string, []string) error {
 		if err != nil {
 			return err
 		}
-		err = r.Run(context.Background(), prog)
+		ctx := context.Background()
+		if limit > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, limit)
+			defer cancel()
+		}
+		err = r.Run(ctx, prog)
 		if err != nil && (oom.seen || oomErr.seen) {
 			return fmt.Errorf("%w — a compiler was KILLED: the machine ran OUT OF MEMORY, "+
 				"and the recipe is not what needs changing. Give it swap, or fewer parallel jobs", err)
