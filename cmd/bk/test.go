@@ -92,32 +92,107 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return exitCannotRun
 	}
-	// Asked BEFORE resolving a version or touching the disk: "there is nothing
-	// to run" is an answer about the recipe, and making the caller wait for a
-	// version resolution to hear it would report a network fault as a missing
-	// test.
-	if rec.Test == nil {
-		fmt.Fprintf(stdout, "%s declares no test: block — nothing was run\n", project)
-		return exitNoTest
-	}
-
 	tgt, err := target.Resolve()
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return exitCannotRun
 	}
-	constraint := "*"
-	if *version != "" {
-		constraint = "=" + *version
-	}
-	ver, tag, err := versions.Resolve(rec.Versions, constraint)
-	if err != nil {
-		fmt.Fprintln(stderr, "error: resolve version:", err)
-		return exitCannotRun
+	// Absolute, for the same reason runBuild does it: the script runs under a
+	// sanitized PATH of /usr/bin:/bin:/usr/sbin:/sbin, which excludes the two
+	// directories pkgx is normally installed into.
+	pkgxBin := *pkgx
+	if abs, err := lookPath(pkgxBin); err == nil {
+		pkgxBin = abs
 	}
 
-	paths := config.Compute(project, ver, tgt)
-	box := *sandbox
+	state, _ := runRecipeTest(testRequest{
+		Recipe: rec, RecipeDir: filepath.Dir(*recipe), Project: project,
+		Version: *version, Target: tgt, Sandbox: *sandbox, PkgxBin: pkgxBin,
+	}, stdout, stderr)
+	return state.exit()
+}
+
+// testState is what a run of a recipe's test came to.
+//
+// Four, not two, and named rather than numbered so a caller inside the
+// process does not decode an exit status to find out which. See
+// exitCannotRun for what the fourth cost before it existed.
+type testState string
+
+const (
+	testPassed  testState = "pass"
+	testFailed  testState = "fail"
+	testNoBlock testState = "no-test"
+	testNotRun  testState = "not-run"
+)
+
+// exit maps a state to the process exit status `bk test` answers with.
+func (s testState) exit() int {
+	switch s {
+	case testPassed:
+		return 0
+	case testFailed:
+		return 1
+	case testNoBlock:
+		return exitNoTest
+	default:
+		return exitCannotRun
+	}
+}
+
+// testRequest is one package's test, decided by the caller rather than by
+// flags, so `bk factory` can ask for it with the recipe it already holds.
+type testRequest struct {
+	Recipe    *pantry.Recipe
+	RecipeDir string // holds the fixtures the test names by bare relative name
+	Project   string
+	Version   string // exact; empty resolves the latest the recipe offers
+	Target    target.Target
+	Sandbox   string // empty computes the testbed
+	PkgxBin   string
+	// Run executes the generated script; nil uses the package default, which
+	// is the same pure-Go interpreter a build runs under.
+	Run func(scriptPath string, env []string) error
+}
+
+// runRecipeTest renders a recipe's test: block and runs it in a fresh sandbox
+// against the INSTALLED package.
+//
+// The field has existed since the recipe type was written and nothing read
+// it: `grep -rn '\.Test\b'` found only toolsurface.go, which scans it for
+// tool NAMES and never runs a line of it. So every `test:` block in the
+// pantry was parsed and discarded, and the answer to "does this package
+// work?" was nobody's (go-pkgx/bk#162).
+//
+// What it costs is not hypothetical. github.com/rcedgar/muscle 5.3 shipped
+// for darwin/aarch64 as a binary the kernel kills on sight, and its recipe's
+// first test line is `(muscle --version 2>&1 || true) | grep '{{version.raw}}'`
+// — a killed process writes nothing, grep finds nothing, and the package's
+// own acceptance test catches exactly the defect that reached the registry.
+//
+// The error it returns accompanies a state; it is never the whole answer. A
+// caller that reads only the error cannot tell testNoBlock from testPassed.
+func runRecipeTest(req testRequest, stdout, stderr io.Writer) (testState, error) {
+	// Asked BEFORE resolving a version or touching the disk: "there is nothing
+	// to run" is an answer about the recipe, and making the caller wait for a
+	// version resolution to hear it would report a network fault as a missing
+	// test.
+	if req.Recipe.Test == nil {
+		fmt.Fprintf(stdout, "%s declares no test: block — nothing was run\n", req.Project)
+		return testNoBlock, nil
+	}
+	constraint := "*"
+	if req.Version != "" {
+		constraint = "=" + req.Version
+	}
+	ver, tag, err := versions.Resolve(req.Recipe.Versions, constraint)
+	if err != nil {
+		fmt.Fprintln(stderr, "error: resolve version:", err)
+		return testNotRun, err
+	}
+
+	paths := config.Compute(req.Project, ver, req.Target)
+	box := req.Sandbox
 	if box == "" {
 		box = paths.Test
 	}
@@ -127,29 +202,21 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 	// the schema uses and it has to be true.
 	if err := os.RemoveAll(box); err != nil {
 		fmt.Fprintln(stderr, "error: clear sandbox:", err)
-		return exitCannotRun
+		return testNotRun, err
 	}
 	if err := os.MkdirAll(box, 0o755); err != nil {
 		fmt.Fprintln(stderr, "error: create sandbox:", err)
-		return exitCannotRun
+		return testNotRun, err
 	}
-	if err := stageRecipeFiles(filepath.Dir(*recipe), box); err != nil {
+	if err := stageRecipeFiles(req.RecipeDir, box); err != nil {
 		fmt.Fprintln(stderr, "error: stage recipe files:", err)
-		return exitCannotRun
+		return testNotRun, err
 	}
 
-	// Absolute, for the same reason runBuild does it: the script runs under a
-	// sanitized PATH of /usr/bin:/bin:/usr/sbin:/sbin, which excludes the two
-	// directories pkgx is normally installed into.
-	pkgxBin := *pkgx
-	if abs, err := lookPath(pkgxBin); err == nil {
-		pkgxBin = abs
-	}
-
-	script, err := renderTest(rec, project, ver, tag, tgt, paths, box, *recipe, pkgxBin)
+	script, err := renderTest(req.Recipe, req.Project, ver, tag, req.Target, paths, box, req.RecipeDir, req.PkgxBin)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
-		return exitCannotRun
+		return testNotRun, err
 	}
 	// Beside the sandbox, never inside it: the next run empties the sandbox,
 	// and a test that lists its working directory must not find our script
@@ -157,21 +224,25 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 	scriptPath := filepath.Join(filepath.Dir(box), filepath.Base(box)+".test.sh")
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		fmt.Fprintln(stderr, "error:", err)
-		return exitCannotRun
+		return testNotRun, err
 	}
 
-	fmt.Fprintf(stdout, "test %s %s (%s/%s) in %s\n", project, ver, tgt.Platform, tgt.Arch, box)
-	if err := testRun(scriptPath, build.SanitizedEnv(paths.Home, config.PkgxDir())); err != nil {
-		fmt.Fprintf(stderr, "FAIL %s %s: %v\n", project, ver, err)
-		return 1
+	run := req.Run
+	if run == nil {
+		run = testRun
 	}
-	fmt.Fprintf(stdout, "PASS %s %s\n", project, ver)
-	return 0
+	fmt.Fprintf(stdout, "test %s %s (%s/%s) in %s\n", req.Project, ver, req.Target.Platform, req.Target.Arch, box)
+	if err := run(scriptPath, build.SanitizedEnv(paths.Home, config.PkgxDir())); err != nil {
+		fmt.Fprintf(stderr, "FAIL %s %s: %v\n", req.Project, ver, err)
+		return testFailed, err
+	}
+	fmt.Fprintf(stdout, "PASS %s %s\n", req.Project, ver)
+	return testPassed, nil
 }
 
 // renderTest turns the recipe's test node into the runnable script.
 func renderTest(rec *pantry.Recipe, project, ver, tag string, tgt target.Target,
-	paths config.Paths, box, recipePath, pkgxBin string) (string, error) {
+	paths config.Paths, box, recipeDir, pkgxBin string) (string, error) {
 	// {{prefix}} is the INSTALLED prefix, not the build's staging directory.
 	// That is the whole difference between this and a build: the test reads
 	// the package where a consumer would find it, so a file the build made and
@@ -182,7 +253,7 @@ func renderTest(rec *pantry.Recipe, project, ver, tag string, tgt target.Target,
 	toks = append(toks, moustache.Host(tgt.Arch, tgt.Triple, tgt.Platform, 1)...)
 	toks = append(toks,
 		moustache.Token{From: "srcroot", To: box},
-		moustache.Token{From: "props", To: filepath.Dir(recipePath)},
+		moustache.Token{From: "props", To: recipeDir},
 		moustache.Token{From: "pkgx.prefix", To: config.PkgxDir()},
 	)
 	user, err := buildscript.Generate(rec.Test, buildscript.Options{

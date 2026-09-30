@@ -122,6 +122,9 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	pkgx := fs.String("pkgx", "pkgx", "path to the pkgx binary used for the deps env")
 	failures := fs.String("failures", "failures.txt", "write the list of failed builds here")
 	failuresDetail := fs.String("failures-detail", "failures-detail.txt", "write each failure's error tail here")
+	runTests := fs.Bool("test", true, "run each published package's own test: block and RECORD the outcome (never changes the run's result)")
+	testsFile := fs.String("tests", "tests.txt", "write one line per package's test outcome here")
+	testTimeout := fs.Duration("test-timeout", 5*time.Minute, "give up on one package's test after this long")
 	sourceMirror := fs.String("source-mirror", envOr("SOURCE_MIRROR", ""), "keep every source archive a build downloads in this registry, addressed by its sha256 (e.g. oci://ghcr.io/go-pkgx). 57% of this pantry builds from tarballs GitHub GENERATES on request rather than stores, so for those it is the first stored artefact they have ever had")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -292,7 +295,13 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		keepBuildTrees:   *keepBuildTrees,
 		skippedOverrides: skippedOverrides,
 		requested:        requested,
-		stdout:           stdout, stderr: stderr,
+		// A mirror run copies a bottle somebody else built and does not
+		// install it here, so there is nothing to test — asking would
+		// report "not run" for every package and say nothing.
+		runTests:    *runTests && *mirrorFrom == "",
+		testTimeout: *testTimeout,
+		testCounts:  map[testState]int{},
+		stdout:      stdout, stderr: stderr,
 	}
 	if f.mirror != "" {
 		setUpstreamDist(f.mirror)
@@ -352,6 +361,11 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	if err := os.WriteFile(*failuresDetail, f.failuresDetail.Bytes(), 0o644); err != nil {
 		fmt.Fprintln(stderr, "factory:", err)
 	}
+	if f.runTests {
+		if err := os.WriteFile(*testsFile, f.tests.Bytes(), 0o644); err != nil {
+			fmt.Fprintln(stderr, "factory:", err)
+		}
+	}
 	// Once the batch is over the other publishers have finished too, so a
 	// repair sticks — which is the whole reason this runs here rather than
 	// after each push.
@@ -359,6 +373,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "=== %d index(es) repaired after a concurrent publisher dropped a platform ===\n", n)
 	}
 	fmt.Fprintf(stdout, "=== summary (%s): %d built, %d skipped, %d failed ===\n", *platform, f.ok, f.skipped, f.failed)
+	f.reportTests(stdout)
 	if f.failures.Len() > 0 {
 		fmt.Fprint(stdout, "failures:\n", f.failures.String())
 	}
@@ -406,9 +421,19 @@ type factory struct {
 	stdout    io.Writer
 	stderr    io.Writer
 
+	// runTests records each published package's own test: block. It never
+	// changes ok/skipped/failed or the exit status — see testPublished.
+	runTests    bool
+	testTimeout time.Duration
+
 	ok, skipped, failed int
 	failures            bytes.Buffer
 	failuresDetail      bytes.Buffer
+	// tests holds one line per package tested, in all four states. Kept
+	// apart from failures.txt because a test outcome is not a build outcome
+	// and merging them would make "the chunk failed" ambiguous.
+	tests      bytes.Buffer
+	testCounts map[testState]int
 
 	// pushed is what this run put in the registry, walked once at the end to
 	// check no concurrent publisher dropped a platform from an index.
@@ -586,6 +611,11 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 	fmt.Fprintf(f.stdout, "✅ OK %s %s %s\n", proj, flavoredTag(proj, res.Version, f.glibc), f.platform)
 	f.ok++
 	f.pushed = append(f.pushed, published{project: proj, tag: tag, desc: desc})
+	// Before dropBuildTree, though the test reads the INSTALLED prefix and
+	// not the tree: if a test ever does reach for a source file, failing
+	// with it present is a legible failure and failing with it deleted is a
+	// puzzle.
+	f.testPublished(rec, proj, res.Version)
 	f.dropBuildTree(proj, res.Version)
 }
 
@@ -1200,4 +1230,76 @@ func satisfyingAll(vers, cs []string) []string {
 		}
 	}
 	return kept
+}
+
+// testPublished runs a just-published package's own test: block and RECORDS
+// what it said. It cannot fail the run.
+//
+// That is the shape go-pkgx/bk#246 settled on, and the measurement behind it
+// is why: of 12 failures in the first sweep of 120 packages, only two were a
+// package that does not work. The rest were a test calling a tool its recipe
+// never declared, or wanting a host config file this sandbox has no business
+// providing. A gate on that would stop a chunk over `/etc/containers/policy.json`.
+//
+// So: one line per package, in all four states, in a file of its own. A
+// reader can then ask the question a gate would have answered badly — which
+// of these is a bottle nobody can run — with the evidence in front of them.
+// factoryTestRunner builds the run function a recorded test executes under.
+// A seam, so a test of testPublished's four outcomes does not need pkgx on
+// the machine — the first version of these tests stubbed testRun instead,
+// which this call bypasses, and every case came back "fail" because `pkgx`
+// was not on PATH. Including the deadline case, which then passed without
+// any deadline being reached.
+var factoryTestRunner = runBashLimited
+
+func (f *factory) testPublished(rec *pantry.Recipe, proj, ver string) {
+	if !f.runTests {
+		return
+	}
+	fmt.Fprintf(f.stdout, "::group::test %s %s (%s)\n", proj, ver, f.platform)
+	tw := &tailWriter{w: f.stdout, max: failTailLines}
+	state, err := runRecipeTest(testRequest{
+		Recipe: rec, RecipeDir: f.runner.RecipeDir, Project: proj,
+		Version: ver, Target: f.tgt, PkgxBin: f.runner.PkgxBin,
+		Run: factoryTestRunner(f.testTimeout, tw, tw),
+	}, tw, tw)
+	fmt.Fprintln(f.stdout, "::endgroup::")
+
+	f.testCounts[state]++
+	fmt.Fprintf(&f.tests, "%s %s %s %s\n", state, proj, ver, f.platform)
+	switch state {
+	case testPassed:
+		fmt.Fprintf(f.stdout, "🧪 TEST PASS %s %s\n", proj, ver)
+	case testNoBlock:
+		// Said out loud rather than left silent: 1905 of 1907 recipes carry
+		// a test, so the two that do not are worth seeing, and a package
+		// nobody checked must not look like one that passed.
+		fmt.Fprintf(f.stdout, "🧪 TEST NONE %s %s — the recipe declares no test\n", proj, ver)
+	case testFailed:
+		fmt.Fprintf(f.stdout, "🧪 TEST FAIL %s %s: %v (recorded, the build stands)\n", proj, ver, err)
+	default:
+		fmt.Fprintf(f.stdout, "🧪 TEST NOT-RUN %s %s: %v\n", proj, ver, err)
+	}
+}
+
+// reportTests prints the tallies, and the failures by name.
+//
+// Printed even when every count is zero, as long as testing was on: a silent
+// section reads as "nothing was wrong" and this one has to be able to say
+// "nothing was tried".
+func (f *factory) reportTests(stdout io.Writer) {
+	if !f.runTests {
+		return
+	}
+	fmt.Fprintf(stdout, "=== tests (%s): %d passed, %d failed, %d with no test, %d not run ===\n",
+		f.platform, f.testCounts[testPassed], f.testCounts[testFailed],
+		f.testCounts[testNoBlock], f.testCounts[testNotRun])
+	if f.tests.Len() == 0 {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimRight(f.tests.String(), "\n"), "\n") {
+		if strings.HasPrefix(line, string(testFailed)+" ") {
+			fmt.Fprintln(stdout, "  "+line)
+		}
+	}
 }

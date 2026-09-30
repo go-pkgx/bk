@@ -37,9 +37,13 @@ type publishedBottle struct {
 // factoryHarness stubs every factory seam (network, pantry, compiler) and
 // collects what the run did.
 type factoryHarness struct {
-	pantry    string
-	failures  string
-	detail    string
+	pantry   string
+	failures string
+	detail   string
+	// tests is where the recorded test outcomes go. Given a path like the
+	// other two, because the flag's default writes into the CURRENT
+	// directory and the suite was leaving a cmd/bk/tests.txt behind.
+	tests     string
 	published []publishedBottle
 	checked   []string // "project@tag" the publish-check was asked about
 	built     []string // "project@constraint"
@@ -55,6 +59,7 @@ func newFactoryHarness(t *testing.T) *factoryHarness {
 		pantry:   t.TempDir(),
 		failures: filepath.Join(t.TempDir(), "failures.txt"),
 		detail:   filepath.Join(t.TempDir(), "failures-detail.txt"),
+		tests:    filepath.Join(t.TempDir(), "tests.txt"),
 	}
 	ov, li, re, pu, bu, hp, bf, lp := factoryOverrides, factoryList, factoryResolve, factoryPublish, factoryBuild, factoryHasPlatform, buildFactory, lookPath
 	t.Cleanup(func() {
@@ -101,6 +106,7 @@ func (h *factoryHarness) args(extra ...string) []string {
 		"--overrides", "",
 		"--failures", h.failures,
 		"--failures-detail", h.detail,
+		"--tests", h.tests,
 	}, extra...)
 }
 
@@ -599,16 +605,19 @@ func TestRunFactoryPkgxLookupFallback(t *testing.T) {
 }
 
 // TestRunFactoryFailureFileWriteErrors: an unwritable report path is reported,
-// not fatal — the bottles are already published.
+// not fatal — the bottles are already published. All three reports, because
+// a chunk whose tests.txt could not be written must say so rather than leave
+// a reader thinking no test ran.
 func TestRunFactoryFailureFileWriteErrors(t *testing.T) {
 	h := newFactoryHarness(t)
 	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
 	h.failures = filepath.Join(t.TempDir(), "absent-dir", "failures.txt")
 	h.detail = filepath.Join(t.TempDir(), "absent-dir", "detail.txt")
+	h.tests = filepath.Join(t.TempDir(), "absent-dir", "tests.txt")
 	if code := h.run(t, "--recipes", "lib.org", "--max-versions", "1"); code != 0 {
 		t.Fatalf("code = %d", code)
 	}
-	if n := strings.Count(h.errb.String(), "no such file or directory"); n != 2 {
+	if n := strings.Count(h.errb.String(), "no such file or directory"); n != 3 {
 		t.Fatalf("stderr = %s", h.errb.String())
 	}
 	if !strings.Contains(h.out.String(), "1 built") {
@@ -893,7 +902,7 @@ func TestFactoryDispatch(t *testing.T) {
 	h := newFactoryHarness(t)
 	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
 	code, out, errs := run2(t, "factory", "--platform", "linux/x86-64", "--pantry", h.pantry,
-		"--overrides", "", "--failures", h.failures, "--failures-detail", h.detail,
+		"--overrides", "", "--failures", h.failures, "--failures-detail", h.detail, "--tests", h.tests,
 		"--recipes", "lib.org", "--max-versions", "1")
 	if code != 0 {
 		t.Fatalf("dispatch factory code=%d err=%q", code, errs)
