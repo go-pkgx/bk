@@ -38,6 +38,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `bottlepkg` | package an install tree into a pkgx bottle + dist layout |
 | `build` | the pipeline orchestrator (`Runner`): dep-closure, base toolchain, sanitized env, autotools maintainer-mode defeat |
 | `overrides` | applies the factory's local recipe-override patches to a pantry checkout in pure Go — a `git diff` parsed and applied without shelling out to `git apply`, and idempotent (it resets the files it touches first) |
+| `tools` | which external commands a recipe set invokes, parsed rather than grepped. `--scope build\|test\|all` separates the two surfaces: a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs — and they disagree, e.g. 260 tests call a compiler where 6 declare one |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
 | `cmd/bk` | `target`, `fixup`, `versions`, `build`, `test`, `publish`, `closure`, `depgaps`, `builder`, `factory` |
 
@@ -50,9 +51,10 @@ overrides, and publishes each bottle signed with an SBOM and provenance.
 
 `bk test` runs a recipe's own `test:` block against the INSTALLED package, in an
 emptied sandbox holding that package, its `test.dependencies` and the recipe's
-own files (recipes name fixtures by bare relative name: `cc test.c -lz`) — none of
-the build's flags, compiler or source tree, because the question is whether what
-we published works and not whether the build did. It answers in four states, not
+own files (recipes name fixtures by bare relative name: `cc test.c -lz`) — and a
+compiler when the test's own script calls one, which 260 of them do. What it does
+not get is the build's flags, its dependencies or its source tree, because the
+question is whether what we published works and not whether the build did. It answers in four states, not
 two: `0` passed, `1` ran and failed, `3` the recipe declares no test, and `4`
 the test never ran (an unresolvable version, an unreachable version source, a
 sandbox that could not be made). A 503 from a version source is not a broken

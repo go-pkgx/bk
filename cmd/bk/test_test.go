@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -539,5 +540,47 @@ func TestTheFourOutcomesAreDistinct(t *testing.T) {
 	}
 	if len(seen) != 5 {
 		t.Errorf("want five distinct codes, got %d", len(seen))
+	}
+}
+
+// needsCompiler reads the COMMAND position, so a compiler named in prose or
+// in a string does not pull llvm.org into the sandbox.
+func TestNeedsCompilerAsksTheParserNotTheText(t *testing.T) {
+	for _, tc := range []struct {
+		name, script string
+		want         bool
+	}{
+		{"cc in command position", "cc test.c -lz", true},
+		{"c++ behind a pipe", "cat x | c++ -x c++ -", true},
+		{"clang++", "clang++ -std=c++17 t.cpp", true},
+		{"named in a comment", "# build it with gcc first\ngawk --version", false},
+		{"named in a string", `echo "compiled with cc"`, false},
+		{"no compiler at all", "gawk --version | grep 5", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := needsCompiler(tc.script); got != tc.want {
+				t.Errorf("needsCompiler(%q) = %v, want %v", tc.script, got, tc.want)
+			}
+		})
+	}
+}
+
+// End to end: the flag reaches the generated script.
+func TestRunTestGivesACompilingTestACompiler(t *testing.T) {
+	testTestbed(t)
+	got := stubRun(t, nil)
+	t.Setenv("BREWKIT_TARGET", "linux/x86-64")
+	p := writeTestRecipe(t, "versions:\n  - 1.2.3\nbuild: make\ntest: cc test.c\n")
+	var out, errOut bytes.Buffer
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 0 {
+		t.Fatalf("want 0, got %d (%s)", code, errOut.String())
+	}
+	script, err := os.ReadFile(*got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Host, not target, decides: WrapTest asks whether the MACHINE has one.
+	if runtime.GOOS != "darwin" && !strings.Contains(string(script), "llvm.org") {
+		t.Errorf("no compiler reached the script:\n%s", script)
 	}
 }

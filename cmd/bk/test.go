@@ -199,6 +199,7 @@ func renderTest(rec *pantry.Recipe, project, ver, tag string, tgt target.Target,
 		// build from the one the operator named.
 		Package:  build.DepSpecs(map[string]any{project: "=" + ver}, tgt)[0],
 		Deps:     testDepSpecs(rec.Test, tgt),
+		Compiler: needsCompiler(user),
 		Home:     paths.Home,
 		Sandbox:  box,
 		PkgxDir:  config.PkgxDir(),
@@ -275,4 +276,29 @@ func stageRecipeFiles(recipeDir, sandbox string) error {
 		}
 	}
 	return nil
+}
+
+// compilerNames are the command names a test uses when it compiles. Taken
+// from the test surface itself rather than guessed: `bk tools --scope test
+// --all` over pantry 2df061b reports cc 193, c++ 38, gcc 13, g++ 7, clang 6
+// and clang++ 6 — 260 distinct recipes, not the sum of 263, because three
+// call two spellings. Every name here was counted; none is a guess.
+var compilerNames = map[string]bool{
+	"cc": true, "c++": true, "gcc": true, "g++": true, "clang": true, "clang++": true,
+}
+
+// needsCompiler reports whether the rendered test script calls one.
+//
+// It PARSES, for the reason runTools already gives: a regex asked this
+// question of the pantry once and reported `grep` 1231 times by counting the
+// word in prose. scriptCommands returns the name in COMMAND position only,
+// with shell builtins and script-defined functions subtracted, so a recipe
+// whose test merely mentions gcc in a comment does not pull llvm.org in.
+func needsCompiler(script string) bool {
+	for _, c := range scriptCommands(script) {
+		if compilerNames[c] {
+			return true
+		}
+	}
+	return false
 }

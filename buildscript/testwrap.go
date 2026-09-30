@@ -16,21 +16,22 @@ import (
 //
 // What a build script has and a test script must not:
 //
-//	CFLAGS/LDFLAGS/rpath  a test compiles nothing. A flag set that made the
-//	                      artefact link would only mask a bottle that cannot
-//	                      be linked against as shipped.
-//	the default llvm.org  Wrap adds a compiler when no dependency names one.
-//	                      A consumer installing this package gets no compiler,
-//	                      so neither may the test.
+//	CFLAGS/LDFLAGS/rpath  a test may COMPILE — 260 recipes' do — but against
+//	                      the package as shipped. A flag set that made the
+//	                      artefact link would mask a bottle whose own headers
+//	                      or rpath are wrong, which is the thing worth
+//	                      catching. The compiler itself is supplied; the
+//	                      build's flags are not.
 //	CMAKE_PREFIX_PATH     the whole store (go-pkgx/bk#164). A test that found
 //	                      a header there would be finding it by accident.
 //	$SRCROOT / the build  the sources are gone by then, and a test that reads
 //	                      tree                  them is testing the tree and
 //	                      not the package.
 //
-// What it keeps is exactly what a user has: the package itself, whatever the
-// recipe declares under test.dependencies, a fresh HOME and an empty
-// directory to work in.
+// What it keeps is close to what a user has: the package itself, whatever the
+// recipe declares under test.dependencies, the recipe's own fixture files, a
+// fresh HOME and an empty directory to work in — plus a compiler when the
+// test's own script calls one.
 type TestWrapOptions struct {
 	UserScript string // the test node, already rendered by Generate
 	// Package is the pkgspec of the package UNDER TEST, and it must name an
@@ -42,7 +43,23 @@ type TestWrapOptions struct {
 	// and rendered as pkgspecs. They are a SEPARATE map from build and runtime
 	// dependencies: a test may need a fixture generator or a diff tool that
 	// the package itself must not carry.
-	Deps     []string
+	Deps []string
+	// Compiler asks for one in the test environment.
+	//
+	// The first version of this file said a test may not have a compiler,
+	// because "a consumer installing this package gets none". Measured
+	// against pantry 2df061b with `bk tools --scope test --all`, that is
+	// wrong: 260 recipes' tests call a compiler (cc 193, c++ 38, gcc 13,
+	// g++ 7, clang 6, clang++ 6 — 260 distinct, not the sum of 263, because
+	// three call two of them), and only 6 declare llvm.org. A recipe's test
+	// compiling a five-line program against the headers it just shipped IS
+	// the convention here — zlib.net's is `cc test.c -lz` — and a sandbox
+	// that refuses would have reported 260 false failures.
+	//
+	// Asked per test rather than always, from the rendered script's own
+	// command set, so the 1500-odd tests that compile nothing do not install
+	// a compiler to not use it.
+	Compiler bool
 	Home     string        // a fresh HOME, created by the script
 	Sandbox  string        // the empty directory the test runs in
 	PkgxDir  string        // $PKGX_DIR, so the eval resolves where the build published
@@ -108,6 +125,13 @@ func (o TestWrapOptions) testPlus() string {
 	}
 	for _, d := range o.Deps {
 		parts = append(parts, `"+`+d+`"`)
+	}
+	// Last, and only where the machine does not already have one: Wrap makes
+	// the same exception for a darwin host, which builds with the system
+	// toolchain. Appended after the recipe's own dependencies so a recipe
+	// that names a compiler keeps the version it named.
+	if o.Compiler && o.Host.Platform != "darwin" {
+		parts = append(parts, `"+llvm.org"`)
 	}
 	return strings.Join(parts, " ")
 }

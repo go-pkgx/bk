@@ -113,3 +113,43 @@ func TestWrapTestWithNothingToInstallEmitsNoEval(t *testing.T) {
 		t.Errorf("emitted an eval with nothing to install:\n%s", s)
 	}
 }
+
+// 260 recipes' tests compile. A sandbox that refuses a compiler reports them
+// all as failing packages.
+func TestWrapTestAsksForACompilerWhenTheTestCompiles(t *testing.T) {
+	s := WrapTest(TestWrapOptions{
+		UserScript: "cc test.c -lz", Package: "zlib.net@1.3.2", Compiler: true,
+		Home: "/h", Sandbox: "/box", PkgxBin: "pkgx", Host: linuxHost(),
+	})
+	if !strings.Contains(s, `"+llvm.org"`) {
+		t.Errorf("no compiler in the eval:\n%s", s)
+	}
+	// After the recipe's own, so a recipe that names a compiler keeps its
+	// version.
+	if i, j := strings.Index(s, `"+zlib.net@1.3.2"`), strings.Index(s, `"+llvm.org"`); i > j {
+		t.Errorf("the compiler came before the package under test:\n%s", s)
+	}
+}
+
+func TestWrapTestAsksForNoCompilerWhenTheTestDoesNot(t *testing.T) {
+	s := WrapTest(TestWrapOptions{
+		UserScript: "gawk --version", Package: "gnu.org/gawk@5.4.1",
+		Home: "/h", Sandbox: "/box", PkgxBin: "pkgx", Host: linuxHost(),
+	})
+	if strings.Contains(s, "llvm.org") {
+		t.Errorf("installed a compiler for a test that compiles nothing:\n%s", s)
+	}
+}
+
+// darwin builds with the system toolchain and Wrap makes the same exception;
+// adding llvm.org there would give the test a compiler the build never used.
+func TestWrapTestTakesDarwinsCompilerFromTheHost(t *testing.T) {
+	s := WrapTest(TestWrapOptions{
+		UserScript: "cc test.c", Package: "p@1", Compiler: true,
+		Home: "/h", Sandbox: "/box", PkgxBin: "pkgx",
+		Host: target.Target{Platform: "darwin", Arch: "aarch64"},
+	})
+	if strings.Contains(s, "llvm.org") {
+		t.Errorf("darwin must not pull llvm.org:\n%s", s)
+	}
+}
