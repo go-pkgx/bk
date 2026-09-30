@@ -330,3 +330,100 @@ func TestGenerateNodeLevelProp(t *testing.T) {
 		t.Errorf("no PROP wrapper:\n%s", s)
 	}
 }
+
+// buildscript kept its own copy of the platform names and s390x never
+// reached it. Both consequences were silent, and in opposite directions.
+func TestS390xIsAPlatformLikeTheOthers(t *testing.T) {
+	s390 := target.Target{Platform: "linux", Arch: "s390x"}
+	x86 := target.Target{Platform: "linux", Arch: "x86-64"}
+
+	// 1. An env keyed by s390x selects, rather than exporting a variable
+	//    called "s390x" whose value is a map. gnu.org/glibc's test does
+	//    exactly this, and reported a broken libc on the LinuxONE lane.
+	node := map[string]any{
+		"script": "echo $LDSO",
+		"env": map[string]any{
+			"x86-64": map[string]any{"LDSO": "ld-linux-x86-64.so.2"},
+			"s390x":  map[string]any{"LDSO": "ld64.so.1"},
+		},
+	}
+	got, err := Generate(node, Options{Target: s390, PkgVersion: "1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `LDSO="ld64.so.1"`) {
+		t.Errorf("s390x did not select its own LDSO:\n%s", got)
+	}
+	if strings.Contains(got, "s390x=") {
+		t.Errorf("s390x was exported as a variable:\n%s", got)
+	}
+	if strings.Contains(got, "ld-linux-x86-64") {
+		t.Errorf("another arch's value leaked in:\n%s", got)
+	}
+
+	// 2. A guard naming s390x GATES. It used to let the step through on
+	//    every platform, because matchGuard passes an unrecognised
+	//    condition rather than dropping the step.
+	for _, tc := range []struct {
+		cond string
+		tgt  target.Target
+		want bool
+	}{
+		{"s390x", s390, true},
+		{"s390x", x86, false},
+		{"linux/s390x", s390, true},
+		{"linux/s390x", x86, false},
+		{"darwin/s390x", s390, false},
+		// unchanged for the arches that always worked
+		{"linux/x86-64", x86, true},
+		{"aarch64", x86, false},
+		// and a semver range is still a semver range
+		{">=1", x86, true},
+	} {
+		got, err := Generate([]any{map[string]any{"if": tc.cond, "run": "echo hit"}},
+			Options{Target: tc.tgt, PkgVersion: "1.0.0"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ran := strings.Contains(got, "echo hit"); ran != tc.want {
+			t.Errorf("if:%s on %s/%s ran=%v, want %v", tc.cond, tc.tgt.Platform, tc.tgt.Arch, ran, tc.want)
+		}
+	}
+}
+
+// An os/arch pair naming an arch this factory does not build is NOT a
+// platform key, and matchGuard then lets the step through — because an
+// unrecognised condition does not gate, which is a deliberate choice older
+// than this change and not one it makes.
+//
+// Pinned rather than left implicit: after unifying the vocabulary it is the
+// only way a platform-shaped guard can still run everywhere, and the next
+// reader should see it was noticed.
+func TestAnUnbuiltArchIsNotAPlatformKey(t *testing.T) {
+	if _, _, ok := platformKey("linux/riscv64"); ok {
+		t.Error("linux/riscv64 must not read as a platform key")
+	}
+	if _, _, ok := platformKey("notanos/x86-64"); ok {
+		t.Error("notanos/x86-64 must not read as a platform key")
+	}
+	// As an ENV key it is therefore a variable name, not a selector.
+	got, err := Generate(map[string]any{
+		"script": "true",
+		"env":    map[string]any{"linux/riscv64": "x"},
+	}, Options{Target: target.Target{Platform: "linux", Arch: "x86-64"}, PkgVersion: "1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "linux/riscv64=") {
+		t.Errorf("want it treated as a literal name:\n%s", got)
+	}
+	// As a GUARD it does not gate, which is the pre-existing rule.
+	got, err = Generate([]any{map[string]any{"if": "linux/riscv64", "run": "echo hit"}},
+		Options{Target: target.Target{Platform: "linux", Arch: "x86-64"}, PkgVersion: "1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "echo hit") {
+		t.Errorf("an unrecognised condition must not gate the step:\n%s", got)
+	}
+}

@@ -126,6 +126,24 @@ func nativeTripleFor(goos, goarch string) string {
 }
 
 // Host is the platform/arch/triple of the machine bk is running on.
+// IsPlatform and IsArch are the ONE vocabulary of platform names.
+//
+// There were two. buildscript kept its own `platforms`/`arches` maps to
+// decide what a recipe's `env: {aarch64: …}` key and its `if: linux/x86-64`
+// guard mean, and when s390x was added here that copy was not. The
+// consequences were silent in both directions: an `env` keyed by s390x
+// became a literal variable of that name, and a step guarded `if: s390x`
+// ran on EVERY platform, because matchGuard lets an unrecognised condition
+// through rather than dropping the step.
+//
+// Predicates rather than the maps, so a caller cannot hold a reference and
+// drift again.
+func IsPlatform(s string) bool { return supportedPlatforms[s] }
+
+// IsArch reports whether s is an architecture this factory builds for, in
+// pkgx's spelling (`x86-64`, not `amd64` — see pkgxArch).
+func IsArch(s string) bool { return supportedArches[s] }
+
 func Host() Target {
 	p := runtime.GOOS
 	return Target{Platform: p, Arch: pkgxArch(runtime.GOARCH), Triple: nativeTriple()}
