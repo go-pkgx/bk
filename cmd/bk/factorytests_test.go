@@ -166,3 +166,94 @@ func TestFactoryNamesTheFailingTests(t *testing.T) {
 		t.Errorf("a pass was listed among the failures: %q", rep.String())
 	}
 }
+
+// --test-only builds nothing and tests what the registry already holds.
+// The factory tests what it publishes ONCE; this is how a bottle that
+// stopped working — a dependency whose signature went bad, say — gets
+// noticed after the fact.
+func TestFactoryTestOnlyBuildsNothing(t *testing.T) {
+	var out bytes.Buffer
+	rec, dir := parseRecipe(t, "versions:\n  - 1.2.3\nbuild: make\ntest: true\n")
+	f := testFactory(t, &out, dir)
+	f.testOnly = true
+
+	prevHas, prevRun := factoryHasPlatform, factoryTestRunner
+	factoryHasPlatform = func(string, string, string, string, string) (bool, error) { return true, nil }
+	factoryTestRunner = func(time.Duration, io.Writer, io.Writer) func(string, []string) error {
+		return func(string, []string) error { return nil }
+	}
+	built := false
+	prevBuild := factoryBuild
+	factoryBuild = func(*build.Runner, *pantry.Recipe, string, string, target.Target, target.Target, string) (build.Result, error) {
+		built = true
+		return build.Result{}, nil
+	}
+	t.Cleanup(func() { factoryHasPlatform, factoryTestRunner, factoryBuild = prevHas, prevRun, prevBuild })
+
+	f.buildOne(rec, "proj.org", "1.2.3")
+	if built {
+		t.Error("--test-only built something")
+	}
+	if f.testCounts[testPassed] != 1 {
+		t.Errorf("counts = %v", f.testCounts)
+	}
+	if f.ok != 0 || f.skipped != 0 || f.failed != 0 {
+		t.Errorf("ok=%d skipped=%d failed=%d", f.ok, f.skipped, f.failed)
+	}
+}
+
+// A platform with no bottle and a registry that would not answer are BOTH
+// "not run", and neither is a failure — an unobtained answer must not read
+// as a negative one.
+func TestFactoryTestOnlyDistinguishesAbsentFromUnreachable(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		published bool
+		err       error
+		wantIn    string
+	}{
+		{"no bottle here", false, nil, "no bottle here"},
+		{"registry unreachable", false, errors.New("dial tcp: refused"), "publish-check"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			rec, dir := parseRecipe(t, "versions:\n  - 1.2.3\nbuild: make\ntest: true\n")
+			f := testFactory(t, &out, dir)
+			f.testOnly = true
+			prev := factoryHasPlatform
+			factoryHasPlatform = func(string, string, string, string, string) (bool, error) {
+				return tc.published, tc.err
+			}
+			t.Cleanup(func() { factoryHasPlatform = prev })
+
+			f.buildOne(rec, "proj.org", "1.2.3")
+			if f.testCounts[testNotRun] != 1 {
+				t.Errorf("counts = %v", f.testCounts)
+			}
+			if f.failed != 0 {
+				t.Errorf("an unobtained answer was counted as a failure")
+			}
+			if !strings.Contains(out.String(), tc.wantIn) {
+				t.Errorf("want %q in:\n%s", tc.wantIn, out.String())
+			}
+		})
+	}
+}
+
+// An override that did not apply still stops --test-only: the test: block is
+// part of the recipe, so one rendered from an unpatched recipe asks a
+// different question than the operator thinks.
+func TestFactoryTestOnlyStillHonoursASkippedOverride(t *testing.T) {
+	var out bytes.Buffer
+	rec, dir := parseRecipe(t, "versions:\n  - 1.2.3\nbuild: make\ntest: true\n")
+	f := testFactory(t, &out, dir)
+	f.testOnly = true
+	f.skippedOverrides = map[string][]string{"proj.org": {"a.patch"}}
+	f.buildOne(rec, "proj.org", "1.2.3")
+	if f.failed != 1 {
+		t.Errorf("failed = %d, want 1", f.failed)
+	}
+	if len(f.testCounts) != 0 {
+		t.Errorf("a test was recorded for a recipe we refused: %v", f.testCounts)
+	}
+}

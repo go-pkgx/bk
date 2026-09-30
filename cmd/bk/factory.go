@@ -125,6 +125,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	runTests := fs.Bool("test", true, "run each published package's own test: block and RECORD the outcome (never changes the run's result)")
 	testsFile := fs.String("tests", "tests.txt", "write one line per package's test outcome here")
 	testTimeout := fs.Duration("test-timeout", 5*time.Minute, "give up on one package's test after this long")
+	testOnly := fs.Bool("test-only", false, "build NOTHING: run the recorded test for each project's already-published version. What the factory publishes it tests once, and never again — this is how a bottle that stopped working gets noticed")
 	sourceMirror := fs.String("source-mirror", envOr("SOURCE_MIRROR", ""), "keep every source archive a build downloads in this registry, addressed by its sha256 (e.g. oci://ghcr.io/go-pkgx). 57% of this pantry builds from tarballs GitHub GENERATES on request rather than stores, so for those it is the first stored artefact they have ever had")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -298,7 +299,10 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		// A mirror run copies a bottle somebody else built and does not
 		// install it here, so there is nothing to test — asking would
 		// report "not run" for every package and say nothing.
-		runTests:    *runTests && *mirrorFrom == "",
+		// --test-only is a request to test, so it turns testing on rather
+		// than silently doing nothing when --test=false is also passed.
+		runTests:    (*runTests || *testOnly) && *mirrorFrom == "",
+		testOnly:    *testOnly && *mirrorFrom == "",
 		testTimeout: *testTimeout,
 		testCounts:  map[testState]int{},
 		stdout:      stdout, stderr: stderr,
@@ -425,6 +429,8 @@ type factory struct {
 	// changes ok/skipped/failed or the exit status — see testPublished.
 	runTests    bool
 	testTimeout time.Duration
+	// testOnly builds nothing and tests what the registry already holds.
+	testOnly bool
 
 	ok, skipped, failed int
 	failures            bytes.Buffer
@@ -569,6 +575,25 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 		return
 	}
 	tag := flavoredTag(proj, ver, f.glibc)
+	// --test-only stops here. The override guard above still applies: an
+	// override that did not apply changes the recipe, and the test: block is
+	// part of the recipe, so a test rendered from an unpatched one is asking
+	// a different question than the operator thinks.
+	if f.testOnly {
+		switch published, err := factoryHasPlatform(f.dist, proj, tag, f.osn, f.arch); {
+		case err != nil:
+			// NOT treated as "not published and therefore broken". A registry
+			// we could not reach has told us nothing, and the whole reason
+			// testNotRun exists is that an unobtained answer must not read as
+			// a negative one.
+			f.recordTest(testNotRun, proj, ver, fmt.Errorf("publish-check: %w", err))
+		case !published:
+			f.recordTest(testNotRun, proj, ver, errors.New("no bottle here for this platform — nothing to test"))
+		default:
+			f.testPublished(rec, proj, ver)
+		}
+		return
+	}
 	if !f.forcing(proj) {
 		switch published, err := factoryHasPlatform(f.dist, proj, tag, f.osn, f.arch); {
 		case err != nil:
@@ -1264,7 +1289,15 @@ func (f *factory) testPublished(rec *pantry.Recipe, proj, ver string) {
 		Run: factoryTestRunner(f.testTimeout, tw, tw),
 	}, tw, tw)
 	fmt.Fprintln(f.stdout, "::endgroup::")
+	f.recordTest(state, proj, ver, err)
+}
 
+// recordTest writes one outcome down, in all four states.
+//
+// Separate from testPublished because --test-only reaches two of them
+// without running anything: a registry that could not be reached and a
+// platform with no bottle are both "not run", and neither is a failure.
+func (f *factory) recordTest(state testState, proj, ver string, err error) {
 	f.testCounts[state]++
 	fmt.Fprintf(&f.tests, "%s %s %s %s\n", state, proj, ver, f.platform)
 	switch state {
