@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -432,6 +433,28 @@ func TestRunTestStagesTheRecipesOwnFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(box, "minizip")); !os.IsNotExist(err) {
 		t.Error("a subproject directory was copied into the sandbox")
+	}
+	// The RECIPE is not a fixture. gnu.org/coreutils' test is
+	// `touch test-file; test "$(ls -1)" = "test-file"`, and a package.yml in
+	// the sandbox failed it on the s390x seed's first sweep.
+	for _, n := range []string{"package.yml", "package.hcl"} {
+		if _, err := os.Stat(filepath.Join(box, n)); !os.IsNotExist(err) {
+			t.Errorf("%s was staged into the sandbox", n)
+		}
+	}
+	// And nothing else of ours: a test that lists its working directory must
+	// see only what the recipe put there.
+	entries, err := os.ReadDir(box)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	if len(names) != 2 || names[0] != "entrypoint.sh" || names[1] != "test.c" {
+		t.Errorf("sandbox holds %v, want exactly the two fixtures", names)
 	}
 }
 
