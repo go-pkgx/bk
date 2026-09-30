@@ -22,12 +22,10 @@ type Options struct {
 	Tokens     []moustache.Token // prefix/version/deps/hw/pkgx/srcroot/props, pre-assembled
 }
 
-var (
-	platforms = map[string]bool{"darwin": true, "linux": true, "windows": true}
-	arches    = map[string]bool{"x86-64": true, "aarch64": true}
-	osArchRE  = regexp.MustCompile(`^(darwin|linux|windows)/(aarch64|x86-64)$`)
-	rangeRE   = regexp.MustCompile(`^[v0-9*^~<>=]`)
-)
+// rangeRE tells a semver condition from a platform one. The platform names
+// themselves come from target, which is the only place that knows them —
+// see target.IsPlatform for what the second copy here used to cost.
+var rangeRE = regexp.MustCompile(`^[v0-9*^~<>=]`)
 
 // Generate renders node (a recipe's build or test value) into a shell script.
 func Generate(node any, opts Options) (string, error) {
@@ -141,14 +139,8 @@ func renderRun(run any, opts Options) (string, error) {
 // package version doesn't satisfy, returns false (the step is dropped).
 func matchGuard(cond string, opts Options) bool {
 	t := opts.Target
-	if platforms[cond] {
-		return t.Platform == cond
-	}
-	if arches[cond] {
-		return t.Arch == cond
-	}
-	if m := osArchRE.FindStringSubmatch(cond); m != nil {
-		return t.Platform == m[1] && t.Arch == m[2]
+	if o, a, ok := platformKey(cond); ok {
+		return (o == "" || t.Platform == o) && (a == "" || t.Arch == a)
 	}
 	if rangeRE.MatchString(cond) {
 		ver, err := semver.ParseVersion(opts.PkgVersion)
@@ -310,13 +302,16 @@ func platformReduce(env map[string]any, t target.Target) map[string]any {
 }
 
 func platformKey(k string) (os, arch string, ok bool) {
-	if m := osArchRE.FindStringSubmatch(k); m != nil {
-		return m[1], m[2], true
+	if o, a, slash := strings.Cut(k, "/"); slash {
+		if target.IsPlatform(o) && target.IsArch(a) {
+			return o, a, true
+		}
+		return "", "", false
 	}
-	if platforms[k] {
+	if target.IsPlatform(k) {
 		return k, "", true
 	}
-	if arches[k] {
+	if target.IsArch(k) {
 		return "", k, true
 	}
 	return "", "", false

@@ -187,3 +187,25 @@ func TestEveryWindowsTripleIsASupportedArch(t *testing.T) {
 		}
 	}
 }
+
+// One vocabulary: buildscript asks these rather than keeping a second copy,
+// which is how s390x came to be a platform here and not there.
+func TestTheVocabularyIsExported(t *testing.T) {
+	for _, p := range []string{"darwin", "linux", "windows"} {
+		if !IsPlatform(p) {
+			t.Errorf("IsPlatform(%q) = false", p)
+		}
+	}
+	for _, a := range []string{"x86-64", "aarch64", "s390x"} {
+		if !IsArch(a) {
+			t.Errorf("IsArch(%q) = false", a)
+		}
+	}
+	// pkgx's spelling, not Go's.
+	if IsArch("amd64") || IsArch("arm64") {
+		t.Error("Go's spellings must not pass: pkgx says x86-64 and aarch64")
+	}
+	if IsPlatform("s390x") || IsArch("linux") {
+		t.Error("the two sets are not interchangeable")
+	}
+}
