@@ -68,6 +68,23 @@ type TestWrapOptions struct {
 	Host     target.Target // where we run — drives TMPDIR
 }
 
+// EnvFailExit is the status the test script exits with when `pkgx +…` could
+// not assemble the environment — as opposed to the test itself failing.
+//
+// The two were one for a while, and the s390x seed's first sweep shows what
+// that costs: of nine reported failures, FIVE never ran a line of their test
+// block. invisible-island.net/ncurses wants github.com/tmux/tmux ^3 as a
+// test dependency and no s390x tmux exists anywhere; gnu.org/readline's
+// closure needs libCNS.so, which pkgx's soname map does not name. Neither is
+// a bottle that does not work, and calling them failures would file bugs
+// against packages for an incomplete registry.
+//
+// 69 is sysexits' EX_UNAVAILABLE, which is what happened. A test that exits
+// 69 on its own would be read as this — and would be saying very nearly the
+// same thing, which is why the collision is tolerable where an arbitrary
+// number would not be.
+const EnvFailExit = 69
+
 // WrapTest renders the runnable script for a recipe's test: block.
 //
 // `set -x` is kept, and it matters more here than in a build: a test block is
@@ -98,7 +115,7 @@ func WrapTest(o TestWrapOptions) string {
 	// test has no artefact and no link step: everything it names is something
 	// that has to RUN, so splitting them would invent a distinction the recipe
 	// never made.
-	writeDepEval(&b, pkgxBin, o.testPlus(), "test")
+	writeDepEval(&b, pkgxBin, o.testPlus(), "test", EnvFailExit)
 	if o.PkgxBin != "" {
 		fmt.Fprintf(&b, "export PKGX=%q\n", o.PkgxBin)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bk/versions"
+	"mvdan.cc/sh/v3/interp"
 )
 
 // exitNoTest is returned when the recipe declares no test: block.
@@ -235,6 +237,17 @@ func runRecipeTest(req testRequest, stdout, stderr io.Writer) (testState, error)
 	}
 	fmt.Fprintf(stdout, "test %s %s (%s/%s) in %s\n", req.Project, ver, req.Target.Platform, req.Target.Arch, box)
 	if err := run(scriptPath, build.SanitizedEnv(paths.Home, config.PkgxDir())); err != nil {
+		// An environment `pkgx` could not assemble is not a test that
+		// failed: not one line of the test block ran. Five of the nine
+		// failures in the s390x seed's first sweep were this — a test
+		// dependency with no bottle for the platform, or a soname pkgx's
+		// map does not name — and reporting them as failures files bugs
+		// against packages for an incomplete registry.
+		var st interp.ExitStatus
+		if errors.As(err, &st) && int(st) == buildscript.EnvFailExit {
+			fmt.Fprintf(stderr, "NOT-RUN %s %s: the test environment could not be assembled\n", req.Project, ver)
+			return testNotRun, err
+		}
 		fmt.Fprintf(stderr, "FAIL %s %s: %v\n", req.Project, ver, err)
 		return testFailed, err
 	}

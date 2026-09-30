@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-pkgx/bk/buildscript"
 	"github.com/go-pkgx/bk/target"
+	"mvdan.cc/sh/v3/interp"
 )
 
 // testbed points bk's path computation at a scratch checkout, so a test never
@@ -605,5 +607,38 @@ func TestRunTestGivesACompilingTestACompiler(t *testing.T) {
 	// Host, not target, decides: WrapTest asks whether the MACHINE has one.
 	if runtime.GOOS != "darwin" && !strings.Contains(string(script), "llvm.org") {
 		t.Errorf("no compiler reached the script:\n%s", script)
+	}
+}
+
+// An environment pkgx could not assemble is NOT-RUN, not FAIL.
+func TestRunTestSeparatesAnUnassemblableEnvironmentFromAFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code int
+		want string
+	}{
+		{"the env would not assemble", buildscript.EnvFailExit, "NOT-RUN"},
+		{"the test ran and failed", 1, "FAIL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testTestbed(t)
+			prev := testRun
+			testRun = func(string, []string) error { return interp.ExitStatus(tc.code) }
+			t.Cleanup(func() { testRun = prev })
+
+			p := writeTestRecipe(t, okRecipe)
+			var out, errOut bytes.Buffer
+			code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut)
+			wantCode := 1
+			if tc.want == "NOT-RUN" {
+				wantCode = exitCannotRun
+			}
+			if code != wantCode {
+				t.Errorf("exit %d, want %d", code, wantCode)
+			}
+			if !strings.Contains(errOut.String(), tc.want) {
+				t.Errorf("want %q in: %q", tc.want, errOut.String())
+			}
+		})
 	}
 }
