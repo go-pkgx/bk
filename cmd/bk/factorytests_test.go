@@ -13,6 +13,7 @@ import (
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/target"
+	"github.com/go-pkgx/bottle"
 )
 
 // testFactory is a factory wired for testPublished and nothing else.
@@ -278,5 +279,113 @@ func TestTestOnlyReadsItsDefaultFromTheEnvironment(t *testing.T) {
 				t.Errorf("envBool = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// --test-only asks the REGISTRY which version to test, not the recipe.
+//
+// The seed's sweep reported openssl.org 4.0.3 and tcl-lang.org 9.1.0 as
+// "no bottle here" — for two projects the registry holds perfectly good
+// bottles of, at other versions. The recipe's resolver names what we would
+// BUILD; the question is what we PUBLISHED.
+func TestTestOnlyTestsTheVersionTheRegistryHolds(t *testing.T) {
+	var out bytes.Buffer
+	// The recipe's newest is 4.0.3; the registry holds 4.0.2.
+	rec, dir := parseRecipe(t, "versions:\n  - 4.0.2\n  - 4.0.3\nbuild: make\ntest: true\n")
+	f := testFactory(t, &out, dir)
+	f.testOnly = true
+
+	prevPub, prevHas, prevRun := factoryPublishedVersion, factoryHasPlatform, factoryTestRunner
+	factoryPublishedVersion = func(project, constraint, osn, arch string) (bottle.Ver, error) {
+		if constraint != "*" {
+			t.Errorf("constraint = %q, want *", constraint)
+		}
+		return bottle.ParseVer("4.0.2"), nil
+	}
+	factoryHasPlatform = func(string, string, string, string, string) (bool, error) { return true, nil }
+	factoryTestRunner = func(time.Duration, io.Writer, io.Writer) func(string, []string) error {
+		return func(string, []string) error { return nil }
+	}
+	t.Cleanup(func() {
+		factoryPublishedVersion, factoryHasPlatform, factoryTestRunner = prevPub, prevHas, prevRun
+	})
+
+	vers, err := f.versionsToVisit(rec, "openssl.org", true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vers) != 1 || vers[0] != "4.0.2" {
+		t.Errorf("versions = %v, want the published 4.0.2", vers)
+	}
+}
+
+// A build asks the recipe, unchanged.
+func TestABuildStillAsksTheRecipe(t *testing.T) {
+	var out bytes.Buffer
+	rec, dir := parseRecipe(t, "versions:\n  - 4.0.2\n  - 4.0.3\nbuild: make\ntest: true\n")
+	f := testFactory(t, &out, dir)
+	f.testOnly = false
+	prev := factoryPublishedVersion
+	factoryPublishedVersion = func(string, string, string, string) (bottle.Ver, error) {
+		t.Error("a build asked the registry which version to build")
+		return bottle.Ver{}, errors.New("must not be called")
+	}
+	t.Cleanup(func() { factoryPublishedVersion = prev })
+
+	vers, err := f.versionsToVisit(rec, "openssl.org", true, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vers) != 1 || vers[0] != "4.0.3" {
+		t.Errorf("versions = %v, want the recipe's newest 4.0.3", vers)
+	}
+}
+
+// A project the registry does not hold is NOT-RUN with the reason, not a
+// "versions" FAILURE — nothing was going to be built.
+func TestTestOnlyRecordsAProjectTheRegistryDoesNotHold(t *testing.T) {
+	var out bytes.Buffer
+	rec, dir := parseRecipe(t, "versions:\n  - 1.0.0\nbuild: make\ntest: true\n")
+	f := testFactory(t, &out, dir)
+	f.testOnly = true
+	prev := factoryPublishedVersion
+	factoryPublishedVersion = func(string, string, string, string) (bottle.Ver, error) {
+		return bottle.Ver{}, errors.New("no version is published for linux/s390x")
+	}
+	t.Cleanup(func() { factoryPublishedVersion = prev })
+
+	if _, err := f.versionsToVisit(rec, "nowhere.org", true, 0); err == nil {
+		t.Error("want the registry's refusal surfaced")
+	}
+}
+
+// End to end through runFactory: a --test-only run whose version the
+// registry cannot name records NOT-RUN and leaves the chunk's result alone.
+// A "versions" failure there would read as a build that broke.
+func TestRunFactoryTestOnlyRecordsAVersionItCannotName(t *testing.T) {
+	h := newFactoryHarness(t)
+	writeClosureRecipe(t, h.pantry, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\ntest: true\n")
+	prev := factoryPublishedVersion
+	factoryPublishedVersion = func(string, string, string, string) (bottle.Ver, error) {
+		return bottle.Ver{}, errors.New("no version is published for linux/x86-64")
+	}
+	t.Cleanup(func() { factoryPublishedVersion = prev })
+
+	if code := h.run(t, "--recipes", "lib.org", "--test-only"); code != 0 {
+		t.Fatalf("code = %d: %s", code, h.errb.String())
+	}
+	out := h.out.String()
+	if !strings.Contains(out, "TEST NOT-RUN lib.org") {
+		t.Errorf("want a NOT-RUN line:\n%s", out)
+	}
+	if strings.Contains(out, "0 built, 0 skipped, 1 failed") {
+		t.Errorf("a version the registry cannot name was counted as a failure:\n%s", out)
+	}
+	rec, err := os.ReadFile(h.tests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(rec), "not-run lib.org ") {
+		t.Errorf("tests.txt = %q", rec)
 	}
 }

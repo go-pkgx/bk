@@ -65,6 +65,9 @@ var (
 	factoryBuild     = func(r *build.Runner, rec *pantry.Recipe, project, constraint string, tgt, host target.Target, out string) (build.Result, error) {
 		return r.Build(rec, project, constraint, tgt, host, out)
 	}
+	// factoryPublishedVersion is the newest version of a project the REGISTRY
+	// holds for this platform, membership checked — what --test-only tests.
+	factoryPublishedVersion = bottle.PickVersionFor
 	factoryUpstreamVersions = bottle.VersionsFor
 	factoryRemoveAll        = os.RemoveAll
 	factoryDownload         = bottle.DownloadBottle
@@ -348,8 +351,14 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 			f.skipped++
 			continue
 		}
-		vers, err := f.versionsFor(rec, proj, requested[proj], *maxVersions)
+		vers, err := f.versionsToVisit(rec, proj, requested[proj], *maxVersions)
 		if err != nil {
+			// In --test-only a version we cannot name is a test that never
+			// ran, not a build that failed: nothing was going to be built.
+			if f.testOnly {
+				f.recordTest(testNotRun, proj, "", err)
+				continue
+			}
 			f.fail(proj, "", "versions", err)
 			continue
 		}
@@ -444,6 +453,46 @@ type factory struct {
 	// pushed is what this run put in the registry, walked once at the end to
 	// check no concurrent publisher dropped a platform from an index.
 	pushed []published
+}
+
+// versionsToVisit is versionsFor, except that --test-only asks the REGISTRY.
+//
+// The recipe's resolver names the version this factory WOULD build, which is
+// the right question for a build and the wrong one for a test: --test-only
+// exists to say whether what we PUBLISHED works. The seed's sweep reported
+//
+//	not-run openssl.org 4.0.3   no bottle here for this platform
+//	not-run tcl-lang.org 9.1.0  no bottle here for this platform
+//
+// for two projects the registry holds perfectly good bottles of, at other
+// versions. A test of a version nobody published is a test of nothing, and
+// reporting it as "no bottle here" reads as a gap in the registry when the
+// gap was in the question.
+//
+// bottle.PickVersionFor checks that the version is actually installable for
+// this platform, which our registry's tag listing does not imply — it spans
+// every platform. Where it falls back to the upstream dist (a project we
+// have never published) it cannot check, and buildOne's own publish check
+// catches that one step later.
+//
+// One version, not --max-versions of them: the question is whether the
+// bottle a consumer gets works, and that is the newest published one.
+func (f *factory) versionsToVisit(rec *pantry.Recipe, proj string, requested bool, max int) ([]string, error) {
+	if !f.testOnly {
+		return f.versionsFor(rec, proj, requested, max)
+	}
+	// constraintFor already answers "what is this project held to here" —
+	// its `project@constraint` word, else --versions. Empty means unheld,
+	// and PickVersionFor spells that "*".
+	constraint := f.constraintFor(proj)
+	if constraint == "" {
+		constraint = "*"
+	}
+	v, err := factoryPublishedVersion(proj, constraint, f.osn, f.arch)
+	if err != nil {
+		return nil, err
+	}
+	return []string{v.Raw}, nil
 }
 
 // versionsFor lists the versions to build for a project: every candidate
