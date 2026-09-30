@@ -342,3 +342,68 @@ func TestClosureFailsOnARootItCannotRead(t *testing.T) {
 		}
 	}
 }
+
+// The seed order writes `project@constraint`, and until now only two of its
+// three readers understood it: pinning gnu.org/gawk@~5.3 made the closure
+// gate report it as a project nobody has.
+func TestClosureRootsAcceptTheOrdersPinnedForm(t *testing.T) {
+	var said []string
+	got := closureRoots([]string{"gnu.org/gawk@~5.3", "zlib.net", "perl.org@~5.44", "tcl-lang.org@=9.0.4"},
+		func(s string) { said = append(said, s) })
+	want := []string{"gnu.org/gawk", "zlib.net", "perl.org", "tcl-lang.org"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("root %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+	// Said out loud: the walk does not apply the constraint, and a reader
+	// must not assume it did.
+	if len(said) != 1 || !strings.Contains(said[0], "3 root(s) carry a version constraint") {
+		t.Errorf("the dropped pins were not named: %v", said)
+	}
+}
+
+// A bare list says nothing, and a leading '@' is not a pin — it is a project
+// name we cannot read, and cutting at index 0 would turn it into the empty
+// string and then into every recipe in the pantry.
+func TestClosureRootsSayNothingWhenNothingIsPinned(t *testing.T) {
+	var said []string
+	got := closureRoots([]string{"zlib.net", "@odd"}, func(s string) { said = append(said, s) })
+	if len(got) != 2 || got[0] != "zlib.net" || got[1] != "@odd" {
+		t.Errorf("got %v", got)
+	}
+	if len(said) != 0 {
+		t.Errorf("said something about nothing: %v", said)
+	}
+}
+
+// warn may be nil.
+func TestClosureRootsToleratesNoWarner(t *testing.T) {
+	if got := closureRoots([]string{"a@1"}, nil); len(got) != 1 || got[0] != "a" {
+		t.Errorf("got %v", got)
+	}
+}
+
+// End to end: the pinned form reaches runClosure, the project is READ rather
+// than reported missing, and the dropped constraint is named on stderr.
+func TestRunClosureReadsAPinnedRoot(t *testing.T) {
+	p := t.TempDir()
+	writeClosureRecipe(t, p, "gnu.org/gawk", "versions:\n  github: a/gawk/tags\nbuild: make\n")
+
+	var out, errb bytes.Buffer
+	if code := runClosure([]string{"--pantry", p, "--platform", "linux/x86-64", "gnu.org/gawk@~5.3"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb.String())
+	}
+	if got := strings.TrimSpace(out.String()); got != "gnu.org/gawk" {
+		t.Errorf("order = %q, want gnu.org/gawk", got)
+	}
+	if strings.Contains(errb.String(), "not read") {
+		t.Errorf("a pinned root was reported missing: %q", errb.String())
+	}
+	if !strings.Contains(errb.String(), "carry a version constraint the walk does not apply") {
+		t.Errorf("the dropped pin was not named: %q", errb.String())
+	}
+}
