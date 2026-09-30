@@ -105,8 +105,8 @@ func Wrap(o WrapOptions) string {
 	}
 	// Tools first: each variable pkgx writes PREPENDS, so whatever is evaluated
 	// last comes first on the path. The link closure must win.
-	writeDepEval(&b, pkgxBin, o.toolPlus(), "tool")
-	writeDepEval(&b, pkgxBin, o.depPlus(), "dependency")
+	writeDepEval(&b, pkgxBin, o.toolPlus(), "tool", 1)
+	writeDepEval(&b, pkgxBin, o.depPlus(), "dependency", 1)
 	if o.BrewkitPath != "" {
 		fmt.Fprintf(&b, "export PATH=\"%s:$PATH\"\n", o.BrewkitPath)
 	}
@@ -155,14 +155,18 @@ func Wrap(o WrapOptions) string {
 // compiler cannot create executables", "cannot find -lncursesw") that costs an
 // hour to trace back. Capture the output, check the status, and say which
 // command failed, naming WHICH of the two closures it was.
-func writeDepEval(b *strings.Builder, pkgx, plus, what string) {
+// The exit code lets a CALLER tell "I could not assemble the environment"
+// from "the thing I ran said no". A build has no use for the distinction —
+// either way it did not build — so it passes 1. A test does: see
+// EnvFailExit.
+func writeDepEval(b *strings.Builder, pkgx, plus, what string, code int) {
 	if plus == "" {
 		return
 	}
 	b.WriteString("set -a\n")
 	fmt.Fprintf(b, "__bk_deps_env=\"$(CLICOLOR_FORCE=1 %s %s)\" || {\n", pkgx, plus)
 	fmt.Fprintf(b, "  echo \"bk: the %s environment failed: %s %s\" >&2\n", what, pkgx, plus)
-	b.WriteString("  exit 1\n}\n")
+	fmt.Fprintf(b, "  exit %d\n}\n", code)
 	b.WriteString("eval \"$__bk_deps_env\"\n")
 	b.WriteString("unset __bk_deps_env\n")
 	b.WriteString("set +a\n")

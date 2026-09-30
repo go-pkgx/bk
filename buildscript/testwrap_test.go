@@ -153,3 +153,30 @@ func TestWrapTestTakesDarwinsCompilerFromTheHost(t *testing.T) {
 		t.Errorf("darwin must not pull llvm.org:\n%s", s)
 	}
 }
+
+// The test eval exits with EnvFailExit, the build's with 1. The caller can
+// then tell "I could not assemble the environment" from "the thing I ran
+// said no" — five of nine failures in the s390x seed's first sweep were the
+// former, and were reported as the latter.
+func TestWrapTestEnvFailureHasItsOwnExitStatus(t *testing.T) {
+	s := WrapTest(TestWrapOptions{
+		UserScript: "true", Package: "p@1",
+		Home: "/h", Sandbox: "/box", PkgxBin: "pkgx", Host: linuxHost(),
+	})
+	if !strings.Contains(s, "exit 69") {
+		t.Errorf("the test eval does not carry EnvFailExit:\n%s", s)
+	}
+	if strings.Contains(s, "  exit 1\n") {
+		t.Errorf("the test eval still exits 1:\n%s", s)
+	}
+	b := Wrap(WrapOptions{
+		UserScript: "make", Deps: []string{"zlib.net"},
+		Target: linuxHost(), Host: linuxHost(), PkgxBin: "pkgx",
+	})
+	if !strings.Contains(b, "  exit 1\n") {
+		t.Errorf("a BUILD must still exit 1 — the distinction is no use to it:\n%s", b)
+	}
+	if strings.Contains(b, "exit 69") {
+		t.Errorf("a build took the test's status:\n%s", b)
+	}
+}
