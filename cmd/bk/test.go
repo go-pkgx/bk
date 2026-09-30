@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/buildscript"
@@ -271,6 +272,41 @@ func renderTest(rec *pantry.Recipe, project, ver, tag string, tgt target.Target,
 		moustache.Token{From: "props", To: recipeDir},
 		moustache.Token{From: "pkgx.prefix", To: config.PkgxDir()},
 	)
+	// {{deps.<project>.prefix}} and .version, for the eleven recipes whose
+	// TEST names one. gnu.org/glibc is among them:
+	//
+	//	gcc -o test-bottle test.c -nostdinc -isystem {{prefix}}/include \
+	//	    -isystem {{deps.gnu.org/gcc.prefix}}/lib/gcc/*/…
+	//
+	// Left verbatim, a moustache reaches the shell and fails somewhere
+	// unrecognisable — the hazard build.Runner guards with its own
+	// unresolved-{{deps.…}} check.
+	//
+	// Resolved only when the recipe names one, because resolving costs a
+	// registry round-trip per dependency and 1894 of the 1905 recipes with
+	// a test block would pay it for nothing — and a 503 would turn a test
+	// that was going to pass into one that never ran.
+	//
+	// The node is scanned BEFORE rendering, which is a superset: a
+	// {{deps.…}} behind an `if: darwin` makes linux resolve a dependency it
+	// will not use. Rendering first would be exact, and it needs a second
+	// Generate whose error cannot happen — the shape has already been
+	// accepted — and an unreachable error arm is worse than resolving a
+	// handful of times too often.
+	//
+	// The maps are the recipe's RUNTIME dependencies and its
+	// test.dependencies: between them they are what the sandbox installs.
+	// Build dependencies are deliberately absent — the test has none of
+	// them, so offering their prefixes would render a path to something
+	// that is not there.
+	if strings.Contains(fmt.Sprint(rec.Test), "{{deps.") {
+		dt, err := build.DepTokens(rec.Dependencies, testDepMap(rec.Test), tgt, config.PkgxDir(), resolveTestDep)
+		if err != nil {
+			return "", fmt.Errorf("resolve test deps: %w", err)
+		}
+		toks = append(toks, dt...)
+	}
+
 	user, err := buildscript.Generate(rec.Test, buildscript.Options{
 		Target: tgt, PkgVersion: ver, Tokens: toks,
 	})
@@ -295,16 +331,26 @@ func renderTest(rec *pantry.Recipe, project, ver, tag string, tgt target.Target,
 	}), nil
 }
 
-// testDepSpecs reads test.dependencies, which is its own dep map — separate
+// resolveTestDep maps a dependency to a version for the {{deps.…}} tokens.
+// A seam: a test of this file must not depend on a registry answering.
+var resolveTestDep = pickVersion
+
+// testDepMap reads test.dependencies, which is its own dep map — separate
 // from the recipe's runtime and build dependencies, and platform-keyed like
 // them. A test node written as a plain string or list has none.
-func testDepSpecs(node any, tgt target.Target) []string {
+func testDepMap(node any) map[string]any {
 	m, ok := node.(map[string]any)
 	if !ok {
 		return nil
 	}
-	deps, ok := m["dependencies"].(map[string]any)
-	if !ok {
+	deps, _ := m["dependencies"].(map[string]any)
+	return deps
+}
+
+// testDepSpecs renders those dependencies as pkgspecs for the eval.
+func testDepSpecs(node any, tgt target.Target) []string {
+	deps := testDepMap(node)
+	if deps == nil {
 		return nil
 	}
 	return build.DepSpecs(deps, tgt)
