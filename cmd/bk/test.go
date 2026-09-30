@@ -6,12 +6,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/buildscript"
 	"github.com/go-pkgx/bk/config"
 	"github.com/go-pkgx/bk/moustache"
 	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bk/versions"
 )
@@ -319,9 +321,18 @@ var dirEntryInfo = func(e os.DirEntry) (os.FileInfo, error) { return e.Info() }
 // is ANOTHER PROJECT (zlib.net/minizip has its own package.yml), and copying
 // one into the sandbox would put a second package's sources under test.
 //
-// package.yml goes in with the rest. Leaving it out would be a rule about one
-// name rather than about the directory, and the three recipes that mention
-// package.yml at all do so in a comment.
+// The RECIPE ITSELF is left out, and the first version of this had it wrong.
+// It went in on the reasoning that excluding it "would be a rule about one
+// name rather than about the directory" — and then gnu.org/coreutils failed
+// the first sweep of the s390x seed:
+//
+//	touch test-file
+//	test "$(ls -1)" = "test-file"
+//
+// A test that LISTS its working directory sees whatever we put there. The
+// same hazard is why the generated script goes beside the sandbox rather
+// than in it; the recipe is the thing that DECLARES the fixtures, not one of
+// them, and recipefile.Names is where its spellings already live.
 //
 // The mode travels, because some of these fixtures are meant to be executed
 // (agpt.co ships `entrypoint.sh`).
@@ -331,6 +342,9 @@ func stageRecipeFiles(recipeDir, sandbox string) error {
 		return err
 	}
 	for _, e := range entries {
+		if slices.Contains(recipefile.Names, e.Name()) {
+			continue
+		}
 		info, err := dirEntryInfo(e)
 		if err != nil {
 			return err

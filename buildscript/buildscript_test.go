@@ -287,26 +287,35 @@ func TestGenerateNodeLevelFixture(t *testing.T) {
 	}
 }
 
-// The cd and the exports stay OUTSIDE the fixture wrapper, which is the
-// nesting a per-step fixture already gets.
-func TestGenerateNodeLevelFixtureNestsInsideEnvAndWorkingDirectory(t *testing.T) {
+// The fixture is OUTERMOST: the exports and the cd happen inside it.
+//
+// This asserted the opposite until the s390x seed's first test sweep, where
+// gnu.org/make declares `env: {MAKEFLAGS: --file=$FIXTURE}` and the export
+// ran before the mktemp — MAKEFLAGS said `--file=`, make printed its usage
+// and exited 2. An env that NAMES the fixture is the recipe saying it is in
+// scope for everything, the environment included.
+func TestGenerateNodeLevelFixtureWrapsEnvAndWorkingDirectory(t *testing.T) {
 	s, err := Generate(map[string]any{
 		"script":            "cat $FIXTURE",
 		"fixture":           "x",
-		"env":               map[string]any{"K": "v"},
+		"env":               map[string]any{"K": "$FIXTURE"},
 		"working-directory": "sub",
 	}, Options{Target: target.Target{Platform: "linux", Arch: "x86-64"}, PkgVersion: "1.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	iFix := strings.Index(s, "FIXTURE=$(mktemp)")
 	iEnv := strings.Index(s, "K=")
 	iCd := strings.Index(s, "cd sub")
-	iFix := strings.Index(s, "FIXTURE=$(mktemp)")
-	if iEnv < 0 || iCd < 0 || iFix < 0 {
-		t.Fatalf("a piece is missing (env=%d cd=%d fixture=%d):\n%s", iEnv, iCd, iFix, s)
+	if iFix < 0 || iEnv < 0 || iCd < 0 {
+		t.Fatalf("a piece is missing (fixture=%d env=%d cd=%d):\n%s", iFix, iEnv, iCd, s)
 	}
-	if !(iEnv < iCd && iCd < iFix) {
-		t.Errorf("want env, then cd, then the fixture; got %d %d %d:\n%s", iEnv, iCd, iFix, s)
+	if !(iFix < iEnv && iEnv < iCd) {
+		t.Errorf("want the fixture, then env, then cd; got %d %d %d:\n%s", iFix, iEnv, iCd, s)
+	}
+	// And the cleanup comes after everything, so nothing runs without it.
+	if i := strings.Index(s, "rm -f $FIXTURE*"); i < iCd {
+		t.Errorf("the fixture is removed before the script runs:\n%s", s)
 	}
 }
 

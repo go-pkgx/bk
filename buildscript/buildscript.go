@@ -36,32 +36,35 @@ func Generate(node any, opts Options) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		// A fixture declared on the NODE covers the whole script, where one
-		// declared on a step covers that step. scriptItem has always handled
-		// the second; this is the first, and it was missing.
-		//
-		// Nothing found it because nothing ran a test: `test: {script, fixture}`
-		// is the shape 115 of this pantry's 1897 recipes use, and ZERO use it
-		// on build — measured on pantry 2df061b, which is also why this cannot
-		// change what any recipe here compiles. The first sweep of `bk test`
-		// reported crates.io/fd-find as a failing package:
-		//
-		//	+ mv test.cpp
-		//	usage: mv [-f | -i | -n] [-hv] source target
-		//
-		// `mv $FIXTURE test.cpp` with $FIXTURE unset. The package was fine.
-		//
-		// Wrapped BEFORE working-directory and env below, so the cd and the
-		// exports stay outside it — the same nesting a per-step fixture gets.
-		if fx, key := fixtureOf(m); fx != nil {
-			raw = wrapFixture(fx, key, raw, opts)
-		}
 		if wd, ok := m["working-directory"].(string); ok && wd != "" {
 			wd = moustache.Apply(wd, opts.Tokens)
 			raw = fmt.Sprintf("mkdir -p %s\ncd %s\n\n%s", wd, wd, raw)
 		}
 		if env, ok := m["env"].(map[string]any); ok {
 			raw = expandEnv(env, opts) + "\n\n" + raw
+		}
+		// A fixture declared on the NODE covers the whole script, where one
+		// declared on a step covers that step. scriptItem has always handled
+		// the second; this is the first, and it was missing. Nothing found it
+		// because nothing ran a test: `test: {script, fixture}` is the shape
+		// 115 of this pantry's 1897 recipes use, and ZERO use it on build
+		// (measured on pantry 2df061b), which is also why this cannot change
+		// what any recipe here compiles.
+		//
+		// OUTERMOST — after env and working-directory, not before them. The
+		// first version wrapped the script alone, "the same nesting a
+		// per-step fixture gets", and gnu.org/make failed the s390x seed's
+		// first test sweep on it:
+		//
+		//	test:
+		//	  env: {MAKEFLAGS: --file=$FIXTURE}
+		//
+		// The export ran before the mktemp, so MAKEFLAGS said `--file=` and
+		// make printed its usage and exited 2. An env that names the fixture
+		// is the recipe saying the fixture is in scope for everything,
+		// including the environment.
+		if fx, key := fixtureOf(m); fx != nil {
+			raw = wrapFixture(fx, key, raw, opts)
 		}
 		return raw, nil
 	}
