@@ -52,7 +52,10 @@ each publish it runs that package's own `test:` block and RECORDS the outcome in
 `tests.txt` — four states, one line each — without ever changing the chunk's
 result: measured over 120 packages, only 2 of 12 test failures were a package
 that does not work, so a gate would stop a run over a missing host config file.
-`--test=false` turns it off, `--test-timeout` bounds one package's test.
+`--test=false` turns it off, `--test-timeout` bounds one package's test, and
+`--test-only` builds nothing and tests what the registry already holds — the
+factory tests what it publishes once, and that is how a bottle which stopped
+working gets noticed afterwards.
 
 `bk test` runs a recipe's own `test:` block against the INSTALLED package, in an
 emptied sandbox holding that package, its `test.dependencies` and the recipe's
