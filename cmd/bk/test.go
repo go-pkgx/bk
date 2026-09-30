@@ -246,7 +246,17 @@ func runRecipeTest(req testRequest, stdout, stderr io.Writer) (testState, error)
 		// against packages for an incomplete registry.
 		var st interp.ExitStatus
 		if errors.As(err, &st) && int(st) == buildscript.EnvFailExit {
-			fmt.Fprintf(stderr, "NOT-RUN %s %s: the test environment could not be assembled\n", req.Project, ver)
+			// The REASON, not the number. A caller records what comes back
+			// here, and the s390x sweep's summary read
+			//
+			//	🧪 TEST NOT-RUN openssl.org 4.0.2: exit status 69
+			//
+			// three times — a status nobody can look up, for three
+			// different missing test dependencies. The pkgx line naming
+			// which one is in the group above, and the line a reader scans
+			// has to point at it.
+			err = errors.New("the test environment could not be assembled — see the pkgx error above")
+			fmt.Fprintf(stderr, "NOT-RUN %s %s: %v\n", req.Project, ver, err)
 			return testNotRun, err
 		}
 		fmt.Fprintf(stderr, "FAIL %s %s: %v\n", req.Project, ver, err)

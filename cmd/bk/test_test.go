@@ -640,6 +640,15 @@ func TestRunTestSeparatesAnUnassemblableEnvironmentFromAFailure(t *testing.T) {
 			if !strings.Contains(errOut.String(), tc.want) {
 				t.Errorf("want %q in: %q", tc.want, errOut.String())
 			}
+			// The reason, not the number: a caller records what comes back.
+			if tc.want == "NOT-RUN" {
+				if strings.Contains(errOut.String(), "exit status") {
+					t.Errorf("reported a status nobody can look up: %q", errOut.String())
+				}
+				if !strings.Contains(errOut.String(), "could not be assembled") {
+					t.Errorf("want the reason: %q", errOut.String())
+				}
+			}
 		})
 	}
 }
