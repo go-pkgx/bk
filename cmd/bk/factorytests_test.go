@@ -257,3 +257,26 @@ func TestFactoryTestOnlyStillHonoursASkippedOverride(t *testing.T) {
 		t.Errorf("a test was recorded for a recipe we refused: %v", f.testCounts)
 	}
 }
+
+// --test-only takes its default from the environment like every other
+// boolean the factory has (FORCE, NO_CLOSURE, PIN_TO_DEPENDENTS,
+// KEEP_BUILD_TREES). A workflow exports a variable; it does not assemble a
+// command line with ${VAR:+--flag}, which would turn TEST_ONLY=0 ON.
+func TestTestOnlyReadsItsDefaultFromTheEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		set  string
+		want bool
+	}{{"1", true}, {"true", true}, {"0", false}, {"false", false}, {"", false}} {
+		t.Run("TEST_ONLY="+tc.set, func(t *testing.T) {
+			if tc.set == "" {
+				t.Setenv("TEST_ONLY", "")
+				os.Unsetenv("TEST_ONLY")
+			} else {
+				t.Setenv("TEST_ONLY", tc.set)
+			}
+			if got := envBool("TEST_ONLY"); got != tc.want {
+				t.Errorf("envBool = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

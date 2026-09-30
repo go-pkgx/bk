@@ -125,7 +125,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	runTests := fs.Bool("test", true, "run each published package's own test: block and RECORD the outcome (never changes the run's result)")
 	testsFile := fs.String("tests", "tests.txt", "write one line per package's test outcome here")
 	testTimeout := fs.Duration("test-timeout", 5*time.Minute, "give up on one package's test after this long")
-	testOnly := fs.Bool("test-only", false, "build NOTHING: run the recorded test for each project's already-published version. What the factory publishes it tests once, and never again — this is how a bottle that stopped working gets noticed")
+	testOnly := fs.Bool("test-only", envBool("TEST_ONLY"), "build NOTHING: run the recorded test for each project's already-published version. What the factory publishes it tests once, and never again — this is how a bottle that stopped working gets noticed")
 	sourceMirror := fs.String("source-mirror", envOr("SOURCE_MIRROR", ""), "keep every source archive a build downloads in this registry, addressed by its sha256 (e.g. oci://ghcr.io/go-pkgx). 57% of this pantry builds from tarballs GitHub GENERATES on request rather than stores, so for those it is the first stored artefact they have ever had")
 	if err := fs.Parse(args); err != nil {
 		return 2
