@@ -45,13 +45,14 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	}
 	osn, arch, _ := strings.Cut(*platform, "/")
 	tgt := target.Target{Platform: osn, Arch: arch}
+	roots := closureRoots(fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
 
 	// The plain runtime walk keeps going through closureOf, which the factory
 	// also calls: one path, so `bk closure` cannot describe an order the
 	// factory would not build.
 	if !*withBuild && !*constraints && !*implicit && !*pins && !*cycles && *checkOrderPath == "" {
-		order, _ := closureOf(lset, *overlayDir, *pantryDir, tgt, fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
-		if code := reportUnreadableRoots(fs.Args(), order, stderr); code != 0 {
+		order, _ := closureOf(lset, *overlayDir, *pantryDir, tgt, roots, func(s string) { fmt.Fprintln(stderr, s) })
+		if code := reportUnreadableRoots(roots, order, stderr); code != 0 {
 			return code
 		}
 		for _, p := range order {
@@ -63,10 +64,10 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	// asking it for cycles is asking a question with one possible answer.
 	g := newClosureGraph(lset, *pantryDir, tgt, *withBuild || *cycles || *checkOrderPath != "", func(s string) { fmt.Fprintln(stderr, s) })
 	g.overlay = *overlayDir
-	for _, p := range fs.Args() {
+	for _, p := range roots {
 		g.visit(p)
 	}
-	if code := reportUnreadableRoots(fs.Args(), g.order, stderr); code != 0 {
+	if code := reportUnreadableRoots(roots, g.order, stderr); code != 0 {
 		return code
 	}
 	if *checkOrderPath != "" {
@@ -241,4 +242,40 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// closureRoots turns the words a caller passed into project names, accepting
+// the `project@constraint` form the seed order is written in.
+//
+// The order file has three readers and only two understood it. readOrder
+// (--check-order) cuts at the first `@`, and the factory's splitPin does the
+// same for a dispatch — but the closure walk took the whole word as a project
+// name, so pinning gnu.org/gawk@~5.3 in seed/order.txt made go-pkgx/packages'
+// own gate say
+//
+//	closure: 2 project(s) asked for and not read: gnu.org/gawk@~5.3 perl.org@~5.44
+//
+// which since #233 is an error. A form one reader accepts and another reports
+// as missing is not a form.
+//
+// The constraint is DROPPED for the walk, and said out loud rather than
+// quietly: a root's version can change its dependencies, so a walk that
+// silently ignored the pin would be answering a slightly different question
+// than the one asked. Naming them costs one line and stops the next reader
+// assuming the walk was version-aware.
+func closureRoots(args []string, warn func(string)) []string {
+	out := make([]string, 0, len(args))
+	var pinned []string
+	for _, a := range args {
+		if i := strings.IndexByte(a, '@'); i > 0 {
+			pinned = append(pinned, a)
+			a = a[:i]
+		}
+		out = append(out, a)
+	}
+	if len(pinned) > 0 && warn != nil {
+		warn(fmt.Sprintf("closure: %d root(s) carry a version constraint the walk does not apply: %s",
+			len(pinned), strings.Join(pinned, " ")))
+	}
+	return out
 }
