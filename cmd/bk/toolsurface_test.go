@@ -204,3 +204,60 @@ func TestToolsDispatch(t *testing.T) {
 		t.Errorf("want the tools usage, got %q", errb.String())
 	}
 }
+
+// The build surface and the test surface answer different questions, and
+// pooling them hid one. serf's test calls pkg-config and its recipe declares
+// it nowhere; pooled with the build's commands that reads as a build tool.
+func TestRunToolsScopeSeparatesBuildFromTest(t *testing.T) {
+	p := t.TempDir()
+	writeClosureRecipe(t, p, "serf.org",
+		"build:\n  script: scons install\ntest:\n  script: pkg-config --modversion serf-1\n")
+
+	for _, tc := range []struct {
+		scope        string
+		want, absent string
+	}{
+		{"build", "scons", "pkg-config"},
+		{"test", "pkg-config", "scons"},
+		{"all", "pkg-config", ""},
+	} {
+		t.Run(tc.scope, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			code := runTools([]string{"--pantry", p, "--platform", "linux/x86-64", "--scope", tc.scope, "serf.org"}, &out, &errb)
+			if code != 0 {
+				t.Fatalf("code = %d: %s", code, errb.String())
+			}
+			got := out.String()
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("want %q in:\n%s", tc.want, got)
+			}
+			if tc.absent != "" && strings.Contains(got, tc.absent) {
+				t.Errorf("%q leaked into the %s scope:\n%s", tc.absent, tc.scope, got)
+			}
+		})
+	}
+	// "all" is the default and must stay it, or every existing caller changes
+	// meaning without being edited.
+	var out, errb bytes.Buffer
+	if code := runTools([]string{"--pantry", p, "--platform", "linux/x86-64", "serf.org"}, &out, &errb); code != 0 {
+		t.Fatalf("code = %d: %s", code, errb.String())
+	}
+	for _, want := range []string{"scons", "pkg-config"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the default scope dropped %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// An unknown scope is refused rather than silently treated as "all": a typo
+// that reported the whole surface as the test surface would be a measurement
+// nobody could tell was wrong.
+func TestRunToolsRefusesAnUnknownScope(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := runTools([]string{"--pantry", t.TempDir(), "--scope", "tests", "x.org"}, &out, &errb); code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "unknown --scope") {
+		t.Errorf("the refusal must name the flag: %q", errb.String())
+	}
+}

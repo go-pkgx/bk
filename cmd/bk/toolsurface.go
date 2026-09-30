@@ -42,7 +42,12 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 	platform := fset.String("platform", envOr("PLATFORM", "linux/x86-64"), "target os/arch")
 	all := fset.Bool("all", false, "every project in the pantry, rather than the ones named")
 	byProject := fset.Bool("by-project", false, "list which projects need each command, not just the count")
+	scope := fset.String("scope", "all", `which scripts to read: "build", "test" or "all"`)
 	if err := fset.Parse(args); err != nil {
+		return 2
+	}
+	if *scope != "all" && *scope != "build" && *scope != "test" {
+		fmt.Fprintf(stderr, "tools: unknown --scope %q (build, test or all)\n", *scope)
 		return 2
 	}
 	osn, arch, _ := strings.Cut(*platform, "/")
@@ -69,7 +74,7 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "tools: skip %s: %v\n", proj, err)
 			continue
 		}
-		for _, cmd := range recipeCommands(rec, tgt) {
+		for _, cmd := range recipeCommands(rec, tgt, *scope) {
 			needs[cmd] = append(needs[cmd], proj)
 		}
 	}
@@ -97,11 +102,32 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// recipeCommands is every external command a recipe's build and test scripts
-// call, for this target.
-func recipeCommands(rec *pantry.Recipe, tgt target.Target) []string {
+// recipeCommands is every external command a recipe's scripts call, for this
+// target, within the chosen scope.
+//
+// The two scopes answer different questions and pooling them hid one of them.
+// A build's surface is what the IMAGE must contain; a test's surface is what
+// the package's own acceptance check needs in a sandbox that deliberately has
+// neither the compiler nor the build dependencies — see buildscript.WrapTest.
+//
+// The question that wants it apart, from go-pkgx/bk#246: apache.org/serf's
+// test runs `pkg-config --modversion serf-1`, and the recipe declares
+// pkg-config in NO dependency map. Pooled with the build surface that reads
+// as a build tool, which it also is, and the test's undeclared use of it
+// disappears. It failed the first real sweep, and how many recipes do the
+// same decides whether wiring tests into the factory drowns in them.
+func recipeCommands(rec *pantry.Recipe, tgt target.Target, scope string) []string {
+	var sources []any
+	switch scope {
+	case "build":
+		sources = []any{rec.Build}
+	case "test":
+		sources = []any{rec.Test}
+	default:
+		sources = []any{rec.Build, rec.Test}
+	}
 	var out []string
-	for _, src := range []any{rec.Build, rec.Test} {
+	for _, src := range sources {
 		script, err := buildscript.Generate(src, buildscript.Options{Target: tgt})
 		if err != nil || strings.TrimSpace(script) == "" {
 			continue
