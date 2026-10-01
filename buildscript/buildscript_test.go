@@ -1,6 +1,7 @@
 package buildscript
 
 import (
+	"mvdan.cc/sh/v3/syntax"
 	"strings"
 	"testing"
 
@@ -425,5 +426,55 @@ func TestAnUnbuiltArchIsNotAPlatformKey(t *testing.T) {
 	}
 	if !strings.Contains(got, "echo hit") {
 		t.Errorf("an unrecognised condition must not gate the step:\n%s", got)
+	}
+}
+
+// An empty env value must be an empty STRING, not an unterminated one.
+//
+// posixQuote's prefix/suffix loops collapse a pre-quoted value, and on `""`
+// they ate the pair and left a single quote — so `env: {X: ""}` generated
+//
+//	export X="
+//
+// and the build failed to parse, 80 columns into a line far from the cause.
+// No recipe in the pantry sets an empty env value; the first thing that did
+// was an override.
+func TestAnEmptyEnvValueIsAnEmptyString(t *testing.T) {
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	for _, tc := range []struct {
+		name string
+		val  any
+	}{
+		{"empty string", ""},
+		{"blank string", "   "},
+		{"empty list", []any{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Generate(map[string]any{"script": "true", "env": map[string]any{"X": tc.val}},
+				Options{Target: tgt, PkgVersion: "1.0.0"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(got, `export X=""`) {
+				t.Errorf("want an empty string:\n%s", got)
+			}
+			// And the script still parses, which is the thing that broke.
+			if _, err := syntax.NewParser().Parse(strings.NewReader(got), ""); err != nil {
+				t.Errorf("the generated script does not parse: %v\n%s", err, got)
+			}
+		})
+	}
+}
+
+// The collapsing the loops exist for still works: a recipe that quotes its
+// own value must not come out doubly quoted.
+func TestAPreQuotedEnvValueIsNotDoubled(t *testing.T) {
+	got, err := Generate(map[string]any{"script": "true", "env": map[string]any{"X": `"abc"`}},
+		Options{Target: target.Target{Platform: "linux", Arch: "x86-64"}, PkgVersion: "1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `export X="abc"`) || strings.Contains(got, `""abc""`) {
+		t.Errorf("got:\n%s", got)
 	}
 }
