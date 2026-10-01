@@ -327,7 +327,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 			}
 			continue
 		}
-		rec, err := recipefile.LoadBuildRecipe(logicalSet, *overlayDir, *pantryDir, proj)
+		rec, recDir, err := recipefile.LoadBuildRecipe(logicalSet, *overlayDir, *pantryDir, proj)
 		switch {
 		case errors.Is(err, recipefile.ErrNoRecipe):
 			// A pantry need not be complete: the closure walk names projects
@@ -340,7 +340,6 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 			f.fail(proj, "", "recipe", err)
 			continue
 		}
-		recDir := recipefile.Dir(*pantryDir, proj)
 		// `platforms:` was parsed and consulted by nobody, so a darwin run
 		// attempted every linux-only recipe and collected the failures. Of the
 		// 81 recipes whose platforms: excludes darwin, seven do have a darwin
