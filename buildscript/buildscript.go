@@ -349,6 +349,22 @@ func transformScalar(v any, opts Options) string {
 // posixQuote mirrors brewkit's env escaping: wrap in double quotes, double any
 // embedded quote, then trim redundant leading/trailing empty-quote pairs.
 func posixQuote(value string) string {
+	// An EMPTY value is quoted and returned at once. The loops below collapse
+	// a pre-quoted value — a recipe writing `"foo"` must not come out as
+	// `""foo""` — and on `""` they eat the pair and leave ONE quote, which is
+	// an unterminated string:
+	//
+	//	export LDFLAGS="
+	//
+	//	build.sh:115:82: a command can only contain words and redirects
+	//
+	// Latent until something set one: no recipe in the pantry assigns an empty
+	// env value, and the first thing that did was an override clearing
+	// LDFLAGS for gnu.org/glibc (go-pkgx/packages#291). The build failed to
+	// PARSE, which is a long way from the line that caused it.
+	if strings.TrimSpace(value) == "" {
+		return `""`
+	}
 	value = `"` + strings.ReplaceAll(strings.TrimSpace(value), `"`, `""`) + `"`
 	for strings.HasPrefix(value, `""`) {
 		value = value[1:]
