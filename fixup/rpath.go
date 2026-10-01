@@ -83,7 +83,7 @@ func SetRunpath(path, value string) error {
 	}
 	f.Close()
 
-	strOff, ok := runpathStrOffset(dyn, class, order)
+	strOff, rpathAt, ok := runpathStrOffset(dyn, class, order)
 	if !ok {
 		return ErrNoRunpath
 	}
@@ -110,6 +110,38 @@ func SetRunpath(path, value string) error {
 	if len(value) > oldLen {
 		return ErrNoSpace
 	}
+	// The TAG first, when the slot we are about to write into is a DT_RPATH.
+	// Writing the value and leaving the tag is how this function put its own
+	// `$ORIGIN/..` into a tag that must not be there:
+	//
+	//	$ readelf -d …/gnu.org/glibc/v2.44/lib/glibc-2.44/libc.so.6
+	//	0x…0f (RPATH)  Library rpath: [$ORIGIN/..]
+	//	ld.so: elf_get_dynamic_info: Assertion `info[DT_RPATH] == NULL' failed!
+	//
+	// glibc's own loader refuses a DT_RPATH on the objects it processes, so a
+	// libc bottle fixed up this way cannot load its own libc — and since
+	// gnu.org/glibc provides bin/ldd and bottle puts glibc in every linux
+	// closure, `ldd` stops working for everything we publish there
+	// (go-pkgx/bk#256).
+	//
+	// Converting rather than removing, and measured rather than assumed: of
+	// 393 shared objects in the s390x store, 295 already carry DT_RUNPATH and
+	// 71 carry DT_RPATH, none both. DT_RUNPATH is what three quarters of the
+	// fleet already depends on, so this moves the minority onto the majority's
+	// semantics rather than inventing one. What differs is that DT_RUNPATH
+	// does not apply to a dependency's own dependencies — which those 295 have
+	// never had either.
+	//
+	// AFTER the ErrNoSpace check, so a value that cannot fit leaves the file
+	// untouched rather than half-converted; and BEFORE the string write, so
+	// the two error arms are reachable one at a time. One word, in place:
+	// nothing moves and no other offset changes.
+	if rpathAt >= 0 {
+		if _, err := fh.WriteAt(dynTagBytes(class, order, elf.DT_RUNPATH), int64(dynSec.Offset)+int64(rpathAt)); err != nil {
+			return err
+		}
+	}
+
 	buf := make([]byte, oldLen+1) // value + NUL, zero-padded to the old length
 	copy(buf, value)
 	if _, err := fh.WriteAt(buf, base); err != nil {
@@ -118,10 +150,29 @@ func SetRunpath(path, value string) error {
 	return nil
 }
 
+// dynTagBytes encodes one d_tag for this ELF class and byte order. A 32-bit
+// entry is two 4-byte words and a 64-bit one two 8-byte words, so writing
+// eight bytes over a 32-bit tag would take the d_val with it.
+func dynTagBytes(class elf.Class, order binary.ByteOrder, tag elf.DynTag) []byte {
+	if class == elf.ELFCLASS32 {
+		b := make([]byte, 4)
+		order.PutUint32(b, uint32(tag))
+		return b
+	}
+	b := make([]byte, 8)
+	order.PutUint64(b, uint64(tag))
+	return b
+}
+
 // runpathStrOffset scans a raw .dynamic section for DT_RUNPATH (preferred) or
 // DT_RPATH and returns its d_val (a .dynstr byte offset).
-func runpathStrOffset(dyn []byte, class elf.Class, order binary.ByteOrder) (uint64, bool) {
+//
+// rpathAt is the byte offset WITHIN .dynamic of a DT_RPATH tag that was used
+// for want of a DT_RUNPATH, and -1 otherwise. SetRunpath converts it; see
+// there for why writing a value into DT_RPATH is not enough.
+func runpathStrOffset(dyn []byte, class elf.Class, order binary.ByteOrder) (val uint64, rpathAt int, ok bool) {
 	var rpath uint64
+	rpathIdx := -1
 	haveRPath := false
 	step := 16
 	if class == elf.ELFCLASS32 {
@@ -139,21 +190,21 @@ func runpathStrOffset(dyn []byte, class elf.Class, order binary.ByteOrder) (uint
 		}
 		switch elf.DynTag(tag) {
 		case elf.DT_RUNPATH:
-			return val, true // RUNPATH wins outright
+			return val, -1, true // RUNPATH wins outright, and needs no conversion
 		case elf.DT_RPATH:
-			rpath, haveRPath = val, true
+			rpath, rpathIdx, haveRPath = val, i, true
 		case elf.DT_NULL:
 			// end of the dynamic array
 			if haveRPath {
-				return rpath, true
+				return rpath, rpathIdx, true
 			}
-			return 0, false
+			return 0, -1, false
 		}
 	}
 	if haveRPath {
-		return rpath, true
+		return rpath, rpathIdx, true
 	}
-	return 0, false
+	return 0, -1, false
 }
 
 // fixRpaths walks bin/lib/libexec and rewrites each dynamic ELF's RUNPATH to

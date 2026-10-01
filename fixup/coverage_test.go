@@ -90,7 +90,7 @@ func TestRunpathStrOffsetNoNull(t *testing.T) {
 	var d [16]byte
 	le.PutUint64(d[0:], uint64(elf.DT_NEEDED))
 	le.PutUint64(d[8:], 5)
-	if _, ok := runpathStrOffset(d[:], elf.ELFCLASS64, le); ok {
+	if _, _, ok := runpathStrOffset(d[:], elf.ELFCLASS64, le); ok {
 		t.Error("expected no offset")
 	}
 }
