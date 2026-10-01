@@ -107,12 +107,25 @@ func overridden(set *logical.Set, project string, b []byte, name string) (*pantr
 // Measured on 2026-09-28: 8 projects were written both ways, and exactly 8 of
 // the overlay's 183 are absent upstream, so this reaches those and nothing
 // else.
-func LoadBuildRecipe(set *logical.Set, overlayDir, pantryDir, project string) (*pantry.Recipe, error) {
+// It returns the DIRECTORY it read from as well as the recipe, because the
+// two must not be worked out separately. The factory computed the directory
+// as Dir(pantryDir, project) regardless of where the recipe came from, so
+// for the eight projects whose recipe exists only in the overlay —
+// gnu.org/gzip, openucx.org, kernel.org/linux and five more — it named a
+// path that is not there. Nothing broke: none of the eight carries a file
+// beside its recipe and none references props/, so the copy copied nothing
+// that was wanted. It is the day one of them gains a fixture that the build
+// silently loses it, and `bk factory --test-only` already reports
+//
+//	NOT-RUN gnu.org/gzip 1.15: open pantry/projects/gnu.org/gzip:
+//	                           no such file or directory
+func LoadBuildRecipe(set *logical.Set, overlayDir, pantryDir, project string) (*pantry.Recipe, string, error) {
 	r, err := LoadOverridden(set, pantryDir, project)
 	if !errors.Is(err, ErrNoRecipe) || overlayDir == "" {
-		return r, err
+		return r, Dir(pantryDir, project), err
 	}
-	return Load(overlayDir, project)
+	r, err = Load(overlayDir, project)
+	return r, Dir(overlayDir, project), err
 }
 
 // LoadMerged reads the overlay MERGED over the pantry recipe as WE build it —
