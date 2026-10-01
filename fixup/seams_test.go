@@ -1,6 +1,8 @@
 package fixup
 
 import (
+	"debug/elf"
+	"encoding/binary"
 	"errors"
 	"io/fs"
 	"os"
@@ -116,5 +118,33 @@ func TestSeamSetRunpathWriteError(t *testing.T) {
 	p := buildELF64LE(t, "/opt/placeholder/aaaaaaaaaaaaaaaaaaaa", "libc.so.6", 40)
 	if err := SetRunpath(p, "$ORIGIN/x"); err == nil {
 		t.Error("expected WriteAt error via read-only handle")
+	}
+}
+
+// The TAG write has its own error arm, and it is reached before the string
+// write — so a read-only handle exercises it only with a DT_RPATH fixture.
+// With a DT_RUNPATH one there is no tag to convert and the string write
+// fails instead, which is what the test above covers.
+func TestSeamSetRunpathTagWriteError(t *testing.T) {
+	defer restore()
+	osOpenFile = func(name string, _ int, _ fs.FileMode) (*os.File, error) {
+		return os.OpenFile(name, os.O_RDONLY, 0)
+	}
+	p := buildELFTag(t, elf.DT_RPATH, "/opt/placeholder/aaaaaaaaaaaaaaaaaaaa", "libc.so.6", 40)
+	if err := SetRunpath(p, "$ORIGIN/x"); err == nil {
+		t.Error("expected the tag WriteAt to fail through a read-only handle")
+	}
+}
+
+// dynTagBytes is two words wide at 64 bits and one at 32: writing eight
+// bytes over a 32-bit d_tag would take the d_val with it.
+func TestDynTagBytesIsClassWidth(t *testing.T) {
+	if got := dynTagBytes(elf.ELFCLASS64, binary.LittleEndian, elf.DT_RUNPATH); len(got) != 8 ||
+		binary.LittleEndian.Uint64(got) != uint64(elf.DT_RUNPATH) {
+		t.Errorf("64-bit: %v", got)
+	}
+	if got := dynTagBytes(elf.ELFCLASS32, binary.BigEndian, elf.DT_RUNPATH); len(got) != 4 ||
+		binary.BigEndian.Uint32(got) != uint32(elf.DT_RUNPATH) {
+		t.Errorf("32-bit: %v", got)
 	}
 }

@@ -192,22 +192,22 @@ func TestRunpathStrOffsetVariants(t *testing.T) {
 
 	// RUNPATH wins over a preceding RPATH
 	d := build(elf.ELFCLASS64, binary.LittleEndian, [][2]uint64{{rp, 5}, {run, 9}, {null, 0}})
-	if off, ok := runpathStrOffset(d, elf.ELFCLASS64, binary.LittleEndian); !ok || off != 9 {
+	if off, _, ok := runpathStrOffset(d, elf.ELFCLASS64, binary.LittleEndian); !ok || off != 9 {
 		t.Errorf("64LE RUNPATH: %d %v", off, ok)
 	}
 	// ELFCLASS32 big-endian, only RPATH → fallback at DT_NULL
 	d = build(elf.ELFCLASS32, binary.BigEndian, [][2]uint64{{rp, 7}, {null, 0}})
-	if off, ok := runpathStrOffset(d, elf.ELFCLASS32, binary.BigEndian); !ok || off != 7 {
+	if off, _, ok := runpathStrOffset(d, elf.ELFCLASS32, binary.BigEndian); !ok || off != 7 {
 		t.Errorf("32BE RPATH fallback: %d %v", off, ok)
 	}
 	// none present
 	d = build(elf.ELFCLASS64, binary.LittleEndian, [][2]uint64{{null, 0}})
-	if _, ok := runpathStrOffset(d, elf.ELFCLASS64, binary.LittleEndian); ok {
+	if _, _, ok := runpathStrOffset(d, elf.ELFCLASS64, binary.LittleEndian); ok {
 		t.Error("expected no offset when none present")
 	}
 	// RPATH with no DT_NULL terminator → still found at end-of-array
 	d = build(elf.ELFCLASS64, binary.LittleEndian, [][2]uint64{{rp, 3}})
-	if off, ok := runpathStrOffset(d, elf.ELFCLASS64, binary.LittleEndian); !ok || off != 3 {
+	if off, _, ok := runpathStrOffset(d, elf.ELFCLASS64, binary.LittleEndian); !ok || off != 3 {
 		t.Errorf("64LE RPATH no-null: %d %v", off, ok)
 	}
 }
@@ -384,4 +384,77 @@ func TestUnstage(t *testing.T) {
 	if got := unstage("/elsewhere/lib", Options{Prefix: "/p"}); got != "/elsewhere/lib" {
 		t.Errorf("no staging prefix configured: %q", got)
 	}
+}
+
+// Writing a value into a DT_RPATH and leaving the TAG is how this package
+// put its own `$ORIGIN/..` into a tag that must not be there:
+//
+//	$ readelf -d …/gnu.org/glibc/v2.44/lib/glibc-2.44/libc.so.6
+//	0x…0f (RPATH)  Library rpath: [$ORIGIN/..]
+//	ld.so: elf_get_dynamic_info: Assertion `info[DT_RPATH] == NULL' failed!
+//
+// glibc's loader refuses a DT_RPATH on what it processes, so a libc bottle
+// fixed this way cannot load its own libc — and `ldd` comes from that bottle
+// (go-pkgx/bk#256).
+func TestSetRunpathModernisesADtRpathTag(t *testing.T) {
+	p := buildELFTag(t, elf.DT_RPATH, "/opt/rpath/only", "libc.so.6", 32)
+
+	// Before: a DT_RPATH and no DT_RUNPATH.
+	if tags := dynTags(t, p); !tags[elf.DT_RPATH] || tags[elf.DT_RUNPATH] {
+		t.Fatalf("fixture is not what the test needs: %v", tags)
+	}
+
+	if err := SetRunpath(p, "$ORIGIN/.."); err != nil {
+		t.Fatal(err)
+	}
+
+	tags := dynTags(t, p)
+	if tags[elf.DT_RPATH] {
+		t.Error("DT_RPATH survived: glibc's loader aborts on it")
+	}
+	if !tags[elf.DT_RUNPATH] {
+		t.Error("the entry did not become DT_RUNPATH")
+	}
+	// And the value still reads back, through the tag it now carries.
+	got, err := ReadRunpath(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "$ORIGIN/.." {
+		t.Errorf("runpath = %q", got)
+	}
+}
+
+// A DT_RUNPATH is already right and must not be touched: 295 of the 393
+// shared objects measured in the s390x store carry one, and rewriting a tag
+// that is already correct is a change nobody asked for.
+func TestSetRunpathLeavesADtRunpathTagAlone(t *testing.T) {
+	p := buildELF64LE(t, "/opt/longer/old", "libc.so.6", 32)
+	if err := SetRunpath(p, "$ORIGIN/.."); err != nil {
+		t.Fatal(err)
+	}
+	tags := dynTags(t, p)
+	if tags[elf.DT_RPATH] {
+		t.Error("a DT_RPATH appeared from nowhere")
+	}
+	if !tags[elf.DT_RUNPATH] {
+		t.Error("the DT_RUNPATH was lost")
+	}
+}
+
+// dynTags reports which rpath-class tags an ELF's .dynamic carries.
+func dynTags(t *testing.T, path string) map[elf.DynTag]bool {
+	t.Helper()
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	out := map[elf.DynTag]bool{}
+	for _, tag := range []elf.DynTag{elf.DT_RPATH, elf.DT_RUNPATH} {
+		if v, err := f.DynString(tag); err == nil && len(v) > 0 {
+			out[tag] = true
+		}
+	}
+	return out
 }
