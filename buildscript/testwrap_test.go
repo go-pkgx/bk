@@ -22,7 +22,7 @@ func TestWrapTestRunsThePackageInAnEmptySandbox(t *testing.T) {
 	})
 	wants := []string{
 		"#!/opt/bash\n",
-		"set -eo pipefail",
+		"set -e",
 		`export HOME="/bk/home"`,
 		`export PKGX_DIR="/opt/pkgx"`,
 		`export TMPDIR="$HOME/tmp"; mkdir -p "$TMPDIR"`,
@@ -178,5 +178,26 @@ func TestWrapTestEnvFailureHasItsOwnExitStatus(t *testing.T) {
 	}
 	if strings.Contains(b, "exit 69") {
 		t.Errorf("a build took the test's status:\n%s", b)
+	}
+}
+
+// pipefail is a BUILD's rule. A test is a list of assertions and
+// `cmd | head -1` is how several read one line; under pipefail the producer
+// takes SIGPIPE when head closes and the assertion fails for writing too
+// much. 38 of the pantry's 1897 test blocks pipe into head or tail.
+func TestWrapTestDoesNotSetPipefail(t *testing.T) {
+	s := WrapTest(TestWrapOptions{
+		UserScript: "true", Package: "p@1", Home: "/h", Sandbox: "/box", Host: linuxHost(),
+	})
+	if strings.Contains(s, "pipefail") {
+		t.Errorf("a test script must not set pipefail:\n%s", s)
+	}
+	if !strings.Contains(s, "set -e\n") {
+		t.Errorf("set -e is still wanted:\n%s", s)
+	}
+	// A build keeps it: there the rule is right.
+	b := Wrap(WrapOptions{UserScript: "make", Target: linuxHost(), Host: linuxHost()})
+	if !strings.Contains(b, "set -eo pipefail") {
+		t.Errorf("a build must keep pipefail:\n%s", b)
 	}
 }
