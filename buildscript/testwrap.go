@@ -100,7 +100,27 @@ func WrapTest(o TestWrapOptions) string {
 		pkgxBin = "pkgx"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "#!%s\n\nset -eo pipefail\n\n", bash)
+	// `set -e`, and NOT pipefail. A build is one long script where a stage
+	// failing mid-pipeline must stop it; a test is a list of assertions, and
+	// `cmd | head -1` is how several of them read one line. Under pipefail
+	// the producer takes SIGPIPE when head closes, and the assertion fails
+	// for writing too much:
+	//
+	//	+ head -1
+	//	FAIL gnu.org/glibc 2.44: exit status 141
+	//
+	// Measured on pantry 2df061b: 38 of the 1897 recipes with a test block
+	// pipe into head or tail. None of them is broken.
+	//
+	// What pipefail would have caught — a producer dying while a later stage
+	// succeeds — the common test shape catches anyway: in `foo | grep x`, a
+	// dead foo writes nothing and grep fails on its own. That is exactly the
+	// case go-pkgx/bk#162 opened with, muscle's
+	// `(muscle --version 2>&1 || true) | grep '{{version.raw}}'`, where grep
+	// is what reports the kill.
+	//
+	// Copied from Wrap when this file was written, which was not a decision.
+	fmt.Fprintf(&b, "#!%s\n\nset -e\n\n", bash)
 	fmt.Fprintf(&b, "export HOME=%q\n", o.Home)
 	b.WriteString("export PKGX_HOME=\"$HOME\"\n")
 	b.WriteString("mkdir -p \"$HOME\"\n")
