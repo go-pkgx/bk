@@ -29,7 +29,6 @@ func TestWrapTestRunsThePackageInAnEmptySandbox(t *testing.T) {
 		`__bk_deps_env="$(CLICOLOR_FORCE=1 /opt/pkgx/bin/pkgx "+gnu.org/gawk@5.4.1" "+gnu.org/diffutils")" || {`,
 		`bk: the test environment failed`,
 		`export PKGX="/opt/pkgx/bin/pkgx"`,
-		"set -x",
 		`cd "/bk/testbed"`,
 		"gawk --version | grep 5.4.1",
 	}
@@ -199,5 +198,23 @@ func TestWrapTestDoesNotSetPipefail(t *testing.T) {
 	b := Wrap(WrapOptions{UserScript: "make", Target: linuxHost(), Host: linuxHost()})
 	if !strings.Contains(b, "set -eo pipefail") {
 		t.Errorf("a build must keep pipefail:\n%s", b)
+	}
+}
+
+// The xtrace goes to stderr, and 31 of the pantry's test blocks capture
+// stderr into a substitution — so a trace would become the value they test.
+// gnu.org/glibc reported a broken iconv on nothing else.
+func TestWrapTestDoesNotTrace(t *testing.T) {
+	s := WrapTest(TestWrapOptions{
+		UserScript: `out=$(iconv --version 2>&1 | head -1)`, Package: "p@1",
+		Home: "/h", Sandbox: "/box", Host: linuxHost(),
+	})
+	if strings.Contains(s, "set -x") {
+		t.Errorf("a test script must not trace into what it captures:\n%s", s)
+	}
+	// A build still traces: nothing there captures its own stderr.
+	b := Wrap(WrapOptions{UserScript: "make", Target: linuxHost(), Host: linuxHost()})
+	if !strings.Contains(b, "set -x") {
+		t.Errorf("a build must keep its trace:\n%s", b)
 	}
 }

@@ -87,9 +87,25 @@ const EnvFailExit = 69
 
 // WrapTest renders the runnable script for a recipe's test: block.
 //
-// `set -x` is kept, and it matters more here than in a build: a test block is
-// a list of assertions with no output of its own, so without the trace a
-// failure says only that something in it returned non-zero.
+// NO `set -x`, and the first version of this had it with a reason that was
+// right about diagnosis and wrong about correctness.
+//
+// The trace goes to stderr, and a test that captures stderr captures it:
+//
+//	out=$("{{prefix}}/bin/iconv" --version 2>&1 | head -1)
+//	→ out='+ /…/bin/iconv --version'
+//
+// gnu.org/glibc reported a broken iconv on nothing but that. Measured on
+// pantry 2df061b: 31 of the 1897 recipes with a test block capture stderr
+// into a substitution, and every one of them would read its own trace.
+//
+// BASH_XTRACEFD would have kept both — the trace on a descriptor `2>&1`
+// cannot reach — and mvdan.cc/sh ignores it, measured rather than assumed.
+//
+// So the trace is dropped. A missing trace makes a failure slower to read;
+// a contaminated capture makes a WORKING package report FAIL, and a wrong
+// answer is worse than a slow one. The generated script stays on disk beside
+// the sandbox, which is where the commands can still be read.
 func WrapTest(o TestWrapOptions) string {
 	bash := o.BashPath
 	if bash == "" {
@@ -140,7 +156,7 @@ func WrapTest(o TestWrapOptions) string {
 		fmt.Fprintf(&b, "export PKGX=%q\n", o.PkgxBin)
 	}
 
-	b.WriteString("\nset -x\n")
+	b.WriteString("\n")
 	fmt.Fprintf(&b, "mkdir -p %q\n", o.Sandbox)
 	fmt.Fprintf(&b, "cd %q\n\n", o.Sandbox)
 	b.WriteString(strings.TrimRight(o.UserScript, "\n"))
