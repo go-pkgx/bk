@@ -911,3 +911,112 @@ func TestBuilderDistinguishesAnUnknownArchFromAMissingGlibc(t *testing.T) {
 		})
 	}
 }
+
+// "Not found" is a fact about the LOOKUP as much as about the tree, and the
+// two readings send a person to different places. The error now carries the
+// listing, so a bottle that puts its loader one directory over is told apart
+// from one that has none — without a round trip to a runner.
+func TestBuilderLoaderErrorListsWhatIsThere(t *testing.T) {
+	fakeStage(t)
+	old := findLoaderFor
+	findLoaderFor = func(string, string) string { return "" }
+	t.Cleanup(func() { findLoaderFor = old })
+
+	root := t.TempDir()
+	// fakeStage's installFor lays glibc down under lib/glibc-2.44, so the
+	// listing has something real to report. Put a loader-shaped file there
+	// under the WRONG name: that is the case the listing exists for.
+	var out, errb bytes.Buffer
+	rc := runBuilder([]string{"--out", root, "--platform", "linux/aarch64"}, &out, &errb)
+	if rc != 1 {
+		t.Fatalf("rc = %d, want 1", rc)
+	}
+	got := errb.String()
+	for _, w := range []string{"glibc-2.44", "entr(y/ies)", "ld*:"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("the error does not carry the listing (%q missing):\n%s", w, got)
+		}
+	}
+}
+
+// Nothing staged at all is its own answer, and it must not read as an empty
+// listing — "no gnu.org/glibc directory" is what a caller can act on.
+func TestGlibcLayoutWithNothingStaged(t *testing.T) {
+	got := glibcLayout(t.TempDir())
+	if !strings.Contains(got, "no gnu.org/glibc directory") {
+		t.Errorf("got %q", got)
+	}
+}
+
+// A lib dir that cannot be read is skipped rather than reported as empty: the
+// listing is a diagnostic and must not invent a fact.
+func TestGlibcLayoutSkipsAnUnreadableDir(t *testing.T) {
+	dir := t.TempDir()
+	lib := filepath.Join(dir, bottle.GlibcProject, "v2.44.0", "lib")
+	if err := os.MkdirAll(filepath.Join(lib, "glibc-2.44"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(lib, "glibc-2.44"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(lib, "glibc-2.44"), 0o755) })
+	// As root the mode is advisory: the FreeBSD, NetBSD and OpenBSD lanes run
+	// as root, ReadDir succeeds, and "0 entr(y/ies)" is then the TRUTH about
+	// that directory rather than an invented fact. Asserting otherwise there
+	// would be asserting that root cannot read, which it can.
+	// TestSetupScratchRootfsAtReadOnlyDir in go-pkgx/bottle skips for the
+	// same reason, in the same words.
+	if _, err := os.ReadDir(filepath.Join(lib, "glibc-2.44")); err == nil {
+		t.Skip("this filesystem lets root read a mode-000 directory")
+	}
+	got := glibcLayout(dir)
+	if !strings.Contains(got, "glibc-2.44") {
+		t.Errorf("the outer listing went missing: %q", got)
+	}
+	if strings.Contains(got, "0 entr(y/ies)") {
+		t.Errorf("an unreadable dir was reported as empty: %q", got)
+	}
+}
+
+// More entries than the cap: the listing is an error message, not a report.
+func TestGlibcLayoutCapsTheListing(t *testing.T) {
+	dir := t.TempDir()
+	lib := filepath.Join(dir, bottle.GlibcProject, "v2.44.0", "lib")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		if err := os.WriteFile(filepath.Join(lib, fmt.Sprintf("f%02d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := glibcLayout(dir)
+	if !strings.Contains(got, "…") {
+		t.Errorf("an unbounded listing went into an error: %q", got)
+	}
+}
+
+// The case the listing exists for: a loader IS there under another name, so
+// "not found" was about the lookup and not about the tree. Naming the ld*
+// files turns one round trip to a runner into a glance.
+func TestGlibcLayoutNamesTheLoaderFilesItFound(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, bottle.GlibcProject, "v2.44.0", "lib", "glibc-2.44")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"ld64.so.1", "libc.so.6", "ld-linux-x86-64.so.2"} {
+		if err := os.WriteFile(filepath.Join(sub, f), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := glibcLayout(dir)
+	for _, w := range []string{"ld64.so.1", "ld-linux-x86-64.so.2", "3 entr(y/ies)"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("missing %q in: %s", w, got)
+		}
+	}
+	if strings.Contains(got, "ld*: libc.so.6") {
+		t.Errorf("a non-loader file was listed as one: %s", got)
+	}
+}
