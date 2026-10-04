@@ -41,10 +41,11 @@ func runBuilder(args []string, stdout, stderr io.Writer) int {
 	overlay := fs.String("overlay", "", "pantry overlay consulted before the upstream pantry (default $PKGX_PANTRY_OVERLAY)")
 	microvm := fs.Bool("microvm", false, "also write .weft-microvm/config.json so `weft microvm run` can boot the directory as-is")
 	container := fs.Bool("container", false, "also write /etc/ld.so.conf listing every staged library directory, so the tree runs as a CONTAINER root and not only under bk's build wrapper")
+	dryRun := fs.Bool("dry-run", false, "resolve the toolchain closure for --platform, print it, and stage nothing")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *out == "" {
+	if *out == "" && !*dryRun {
 		fmt.Fprintln(stderr, "usage: bk builder --out <dir> [--platform linux/aarch64] [--toolchain file]")
 		return 2
 	}
@@ -66,6 +67,10 @@ func runBuilder(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	if *dryRun {
+		return dryRunClosure(roots, osn, arch, stdout, stderr)
+	}
+
 	if err := stageBuilder(stageOptions{
 		Root:      *out,
 		OS:        osn,
@@ -83,6 +88,77 @@ func runBuilder(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// dryRunClosure answers one question, and it is the question asked before every
+// sovereign job: does this ARCHITECTURE have the bottles the toolchain names?
+//
+// Resolution is the phase that fails when it does not. On 2026-08 the s390x
+// lane died ninety seconds in with
+//
+//	builder: resolve closure: GET https://dist.pkgx.dev/gnu.org/glibc/linux/s390x/versions.txt: Not Found
+//
+// — a complete and correct answer, paid for with a runner, a checkout and a
+// Go toolchain build. The same answer costs one HTTP round trip per project
+// here, because PickVersionForAll reads a version list that is already
+// per-platform: a version picked for linux/s390x is a version the registry
+// lists for linux/s390x.
+//
+// What it does NOT prove is that each bottle can be unpacked and run — only
+// staging and then building do that. It is a NECESSARY condition reported
+// cheaply, not a sufficient one, and saying so is the difference between a
+// pre-flight check and a false green.
+func dryRunClosure(roots map[string]string, osn, arch string, stdout, stderr io.Writer) int {
+	fmt.Fprintf(stdout, "builder: resolving the toolchain closure for %s/%s (staging nothing)\n", osn, arch)
+	closure, err := resolveClosureFor(roots, osn, arch)
+	if err == nil {
+		for _, r := range closure {
+			fmt.Fprintf(stdout, "%s %s\n", r.Project, r.Version.Raw)
+		}
+		fmt.Fprintf(stdout, "builder: %d packages resolve for %s/%s; none was downloaded\n", len(closure), osn, arch)
+		return 0
+	}
+	fmt.Fprintln(stderr, "builder: resolve closure:", err)
+	reportRootGaps(roots, osn, arch, stdout)
+	return 1
+}
+
+// reportRootGaps names EVERY root that cannot resolve, not the first.
+//
+// The joint resolution above is the authoritative answer and it stops at the
+// first refusal, which is right for a build and useless for planning: on an
+// architecture being brought up, each run then names one missing package and
+// the next gap is only visible once that one is built. Learning a 25-entry
+// toolchain's gaps that way costs 25 builds, serially, with a human between
+// each.
+//
+// So on failure each root is resolved ON ITS OWN. A root's walk still covers
+// its transitive dependencies, so a shared dependency that is missing shows up
+// against every root that needs it — which reads as more gaps than there are
+// packages to build, and is the truth: that is how many roots are blocked.
+//
+// This is diagnosis, not the verdict. A run where every root resolves alone
+// can still fail jointly, because two roots may demand versions that do not
+// intersect — that is what the error above says and this does not replace it.
+func reportRootGaps(roots map[string]string, osn, arch string, stdout io.Writer) {
+	names := make([]string, 0, len(roots))
+	for p := range roots {
+		names = append(names, p)
+	}
+	sort.Strings(names)
+	var missing []string
+	for _, p := range names {
+		if _, err := resolveClosureFor(map[string]string{p: roots[p]}, osn, arch); err != nil {
+			missing = append(missing, p)
+			fmt.Fprintf(stdout, "  BLOCKED %s: %v\n", p, err)
+		}
+	}
+	if len(missing) == 0 {
+		fmt.Fprintf(stdout, "builder: every root resolves on its own — the refusal above is a CONFLICT between them, not a missing bottle\n")
+		return
+	}
+	fmt.Fprintf(stdout, "builder: %d of %d roots cannot resolve for %s/%s: %s\n",
+		len(missing), len(names), osn, arch, strings.Join(missing, " "))
 }
 
 // guestPkgxDir is where the staged bottles live once the rootfs is the root:
