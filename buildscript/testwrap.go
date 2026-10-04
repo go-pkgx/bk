@@ -156,6 +156,16 @@ func WrapTest(o TestWrapOptions) string {
 		fmt.Fprintf(&b, "export PKGX=%q\n", o.PkgxBin)
 	}
 
+	// After the eval, so the bottles are on disk and $PKGX_DIR is set; before
+	// the sandbox, so a test that compiles finds CC already pointing at a
+	// libc it can use.
+	if o.Compiler && o.Host.Platform == "linux" {
+		b.WriteString("\n")
+		for _, l := range sysrootPreamble() {
+			b.WriteString(l + "\n")
+		}
+	}
+
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "mkdir -p %q\n", o.Sandbox)
 	fmt.Fprintf(&b, "cd %q\n\n", o.Sandbox)
@@ -185,6 +195,62 @@ func (o TestWrapOptions) testPlus() string {
 	// that names a compiler keeps the version it named.
 	if o.Compiler && o.Host.Platform != "darwin" {
 		parts = append(parts, `"+llvm.org"`)
+		// And the libc it compiles against, on linux. A compiler with no libc
+		// is not a compiler: in a SCRATCH rootfs there is no /usr/include and
+		// no crt1.o, and clang reports
+		//
+		//	'stdlib.h' file not found
+		//	cannot open Scrt1.o: No such file or directory
+		//	C compiler cannot create executables
+		//
+		// which is nineteen of the twenty-seven gen1 test failures: the
+		// environment, not the package. On a distribution these bottles are
+		// installed and then UNUSED, because the sysroot flags below are
+		// emitted only when the host has no libc of its own.
+		if o.Host.Platform == "linux" {
+			parts = append(parts, `"+gnu.org/glibc"`, `"+kernel.org/linux-headers"`,
+				`"+gnu.org/binutils"`, `"+libcxx.llvm.org"`)
+		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// sysrootPreamble gives the test's compiler a libc WHEN THE HOST HAS NONE.
+//
+// The file comment above says a test gets the compiler and not the build's
+// flags, because a flag set that made the artefact link would mask a bottle
+// whose own headers or rpath are wrong. That is still true, and this does not
+// weaken it: what is emitted here is the sysroot — where libc's headers and
+// crt files are — and nothing the recipe chose. No recipe CFLAGS, no rpath,
+// no CMAKE_PREFIX_PATH. A test must be able to produce a binary at all; it
+// must not be handed the flags that made the artefact link.
+//
+// The reasoning the file was written with assumed a DISTRIBUTION, where the
+// system supplies libc and withholding the build's flags leaves a working
+// compiler. In the sovereign generation the rootfs is scratch and nothing
+// supplies it, so withholding meant the test could not compile anything —
+// and the assertion failed for the sandbox rather than for the package.
+//
+// Guarded at RUN TIME on the absence of a system header, not at generation
+// time, for two reasons. The generator does not know what rootfs the script
+// will run in — the same bk builds on a distribution and inside the chroot.
+// And a distribution's script stays byte-for-byte what it was: the branch is
+// not taken, so nothing about the 260 recipes that compile today changes.
+func sysrootPreamble() []string {
+	out := []string{
+		`# A compiler with no libc is not a compiler. On a distribution the`,
+		`# system supplies one and this is skipped entirely; in a scratch`,
+		`# rootfs the bottles installed above are the only libc there is.`,
+		`if [ ! -e /usr/include/stdlib.h ]; then`,
+	}
+	for _, l := range sysrootResolve {
+		out = append(out, "  "+l)
+	}
+	out = append(out,
+		`  export CC="${CC:-cc} `+SysrootCC+`"`,
+		`  export CXX="${CXX:-c++} `+SysrootCXX+`"`,
+		`  echo "test sandbox: no system libc, compiling against ${BK_GLIBC_PREFIX}" >&2`,
+		`fi`,
+	)
+	return out
 }

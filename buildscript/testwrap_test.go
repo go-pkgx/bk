@@ -218,3 +218,88 @@ func TestWrapTestDoesNotTrace(t *testing.T) {
 		t.Errorf("a build must keep its trace:\n%s", b)
 	}
 }
+
+// Nineteen of the twenty-seven gen1 test failures were the sandbox and not
+// the package: clang with no libc reports `'stdlib.h' file not found` and
+// `C compiler cannot create executables`, and the assertion never ran.
+func TestATestThatCompilesGetsALibcOnLinux(t *testing.T) {
+	linux := target.Target{Platform: "linux", Arch: "x86-64"}
+	got := WrapTest(TestWrapOptions{
+		UserScript: "cc t.c -lz && ./a.out",
+		Package:    "zlib.net@1.3.1",
+		Compiler:   true,
+		Host:       linux,
+		Home:       "/h", Sandbox: "/s", PkgxDir: "/pkgx",
+	})
+
+	// The compiler alone is not enough: it needs headers, crt files, an `ar`
+	// that is not llvm-ar, and a C++ runtime.
+	for _, want := range []string{`"+llvm.org"`, `"+gnu.org/glibc"`,
+		`"+kernel.org/linux-headers"`, `"+gnu.org/binutils"`, `"+libcxx.llvm.org"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the environment does not ask for %s", want)
+		}
+	}
+
+	// The sysroot is applied only where there is no system one. This is the
+	// whole reason a distribution's behaviour does not change.
+	if !strings.Contains(got, `if [ ! -e /usr/include/stdlib.h ]; then`) {
+		t.Error("the sysroot is not guarded by the absence of a system libc")
+	}
+	// CC must be set INSIDE the guard, never above it.
+	guard := strings.Index(got, "if [ ! -e /usr/include/stdlib.h ]")
+	cc := strings.Index(got, `export CC=`)
+	if cc < 0 || cc < guard {
+		t.Errorf("CC is set outside the guard (guard at %d, CC at %d)", guard, cc)
+	}
+	if fi := strings.Index(got[guard:], "\nfi\n"); fi >= 0 && guard+fi < cc {
+		t.Error("CC is set after the guard closes")
+	}
+}
+
+// What the test wrapper must still NOT have. The file's own contract: a test
+// gets a compiler, not the flags that made the artefact link — otherwise a
+// bottle whose headers or rpath are wrong would pass.
+func TestTheSysrootCarriesNoRecipeFlags(t *testing.T) {
+	got := WrapTest(TestWrapOptions{
+		UserScript: "cc t.c",
+		Compiler:   true,
+		Host:       target.Target{Platform: "linux", Arch: "x86-64"},
+		Home:       "/h", Sandbox: "/s", PkgxDir: "/pkgx",
+	})
+	for _, forbidden := range []string{"CMAKE_PREFIX_PATH", "-Wl,-rpath", "$SRCROOT"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("the test wrapper leaked %s, which would mask a broken bottle", forbidden)
+		}
+	}
+}
+
+// A test that compiles nothing installs nothing to not use.
+func TestATestThatCompilesNothingGetsNoToolchain(t *testing.T) {
+	got := WrapTest(TestWrapOptions{
+		UserScript: "zlib-flate --version",
+		Compiler:   false,
+		Host:       target.Target{Platform: "linux", Arch: "x86-64"},
+		Home:       "/h", Sandbox: "/s", PkgxDir: "/pkgx",
+	})
+	for _, unwanted := range []string{`"+llvm.org"`, `"+gnu.org/glibc"`, "/usr/include/stdlib.h"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("a test that compiles nothing asked for %s", unwanted)
+		}
+	}
+}
+
+// darwin builds with the system toolchain, and Wrap makes the same exception.
+func TestDarwinGetsNeitherCompilerNorSysroot(t *testing.T) {
+	got := WrapTest(TestWrapOptions{
+		UserScript: "cc t.c",
+		Compiler:   true,
+		Host:       target.Target{Platform: "darwin", Arch: "aarch64"},
+		Home:       "/h", Sandbox: "/s", PkgxDir: "/pkgx",
+	})
+	for _, unwanted := range []string{`"+llvm.org"`, `"+gnu.org/glibc"`, "/usr/include/stdlib.h"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("darwin asked for %s", unwanted)
+		}
+	}
+}
