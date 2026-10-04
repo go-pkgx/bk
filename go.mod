@@ -1,6 +1,6 @@
 module github.com/go-pkgx/bk
 
-go 1.26.4
+go 1.27.1
 
 require (
 	github.com/bluekeyes/go-gitdiff v0.9.0
