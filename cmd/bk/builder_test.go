@@ -1020,3 +1020,53 @@ func TestGlibcLayoutNamesTheLoaderFilesItFound(t *testing.T) {
 		t.Errorf("a non-loader file was listed as one: %s", got)
 	}
 }
+
+// A tree inherited from an earlier run is reused in silence, and the log said
+// "42 packages" while installing none of them. Three s390x pilots in a row
+// were read as progress on that line.
+func TestBuilderSaysWhenItReusesAStagedTree(t *testing.T) {
+	calls := fakeStage(t)
+	_ = calls
+	root := t.TempDir()
+	// Pose the closure's prefixes, as a half-finished run leaves them.
+	// fakeStage resolves glibc 2.44.0 and bash 5.3.
+	for _, p := range []string{
+		filepath.Join("pkgx", bottle.GlibcProject, "v2.44.0"),
+		filepath.Join("pkgx", "gnu.org/bash", "v5.3"),
+	} {
+		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var logged []string
+	err := stageBuilder(stageOptions{
+		Root: root, OS: "linux", Arch: "aarch64",
+		Roots: map[string]string{"gnu.org/bash": ""},
+		Log:   func(s string) { logged = append(logged, s) },
+	})
+	// The staging goes on to fail for want of a loader in the posed tree,
+	// which is fine: the line under test comes before that.
+	_ = err
+	joined := strings.Join(logged, "\n")
+	for _, w := range []string{"2 of them are ALREADY in", "will not be re-installed"} {
+		if !strings.Contains(joined, w) {
+			t.Errorf("missing %q in:\n%s", w, joined)
+		}
+	}
+}
+
+// A fresh tree says nothing: a line that appears every time is a line nobody
+// reads, and "nothing was reused" is the normal case.
+func TestBuilderSaysNothingWhenTheTreeIsFresh(t *testing.T) {
+	fakeStage(t)
+	var logged []string
+	_ = stageBuilder(stageOptions{
+		Root: t.TempDir(), OS: "linux", Arch: "aarch64",
+		Roots: map[string]string{"gnu.org/bash": ""},
+		Log:   func(s string) { logged = append(logged, s) },
+	})
+	if strings.Contains(strings.Join(logged, "\n"), "ALREADY in") {
+		t.Errorf("a fresh tree reported a reuse:\n%s", strings.Join(logged, "\n"))
+	}
+}

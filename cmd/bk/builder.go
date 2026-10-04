@@ -222,6 +222,18 @@ func glibcLayout(pkgxDir string) string {
 	return b.String()
 }
 
+// alreadyStaged counts the closure members whose prefix is already on disk,
+// which is exactly what bottle.InstallFor will skip.
+func alreadyStaged(pkgxDir string, closure []bottle.Resolved) int {
+	n := 0
+	for _, r := range closure {
+		if st, err := os.Stat(filepath.Join(pkgxDir, r.Project, "v"+r.Version.Raw)); err == nil && st.IsDir() {
+			n++
+		}
+	}
+	return n
+}
+
 // guestPkgxDir is where the staged bottles live once the rootfs is the root:
 // the stubs, the loader symlinks and PKGX_DIR must all agree on it.
 const guestPkgxDir = "/pkgx"
@@ -343,6 +355,27 @@ func stageBuilder(o stageOptions) error {
 		return fmt.Errorf("resolve closure: %w", err)
 	}
 	o.Log(fmt.Sprintf("builder: %d packages", len(closure)))
+	if n := alreadyStaged(pkgxDir, closure); n > 0 {
+		// bottle.InstallFor takes the EXISTENCE of <project>/v<ver> as "already
+		// present" and returns without fetching:
+		//
+		//	if st, err := os.Stat(prefix); err == nil && st.IsDir() {
+		//		return false, nil // already present
+		//	}
+		//
+		// So a tree left half-written by a run that died mid-install is
+		// indistinguishable from a complete one — and on a SELF-HOSTED runner,
+		// which reuses $RUNNER_TEMP between jobs, that tree is inherited in
+		// silence. Three successive s390x pilots reported "42 packages" and
+		// installed nothing, staging a gnu.org/glibc whose lib/glibc-2.44 held
+		// two files where a real one has two hundred.
+		//
+		// Said, not refused: re-staging into a complete tree is the ordinary
+		// case and is why the skip exists. What was missing is that the log
+		// claimed a number it had not fetched.
+		o.Log(fmt.Sprintf("builder: %d of them are ALREADY in %s and will not be re-installed — "+
+			"a tree left by an earlier run is reused as-is, however it ended", n, pkgxDir))
+	}
 
 	for _, r := range closure {
 		fresh, err := installFor(r, pkgxDir, o.OS, o.Arch)
