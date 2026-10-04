@@ -32,8 +32,20 @@ import (
 // useful census into a gate nobody can land a change past. The build that
 // follows is the verdict.
 func auditStagedSonames(pkgxDir string) string {
-	provided := map[string]bool{}
-	needed := map[string][]string{} // soname -> the files that ask for it
+	provided, needed := scanSonames(pkgxDir)
+	return reportSonames("builder", provided, needed, pkgxDir)
+}
+
+// scanSonames walks a tree and returns what it PROVIDES and what it NEEDS.
+//
+// Separate from the report because the same two sets answer the question over
+// a registry, where each bottle is unpacked on its own: the 78 projects of a
+// seed order cannot be installed together — cmake wants curl `>=5<8.13` and
+// cargo wants `8` — so a union over separate trees is the only way to ask
+// "which soname does NOBODY here provide".
+func scanSonames(pkgxDir string) (provided map[string]bool, needed map[string][]string) {
+	provided = map[string]bool{}
+	needed = map[string][]string{} // soname -> the files that ask for it
 
 	_ = filepath.WalkDir(pkgxDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !d.Type().IsRegular() {
@@ -69,6 +81,13 @@ func auditStagedSonames(pkgxDir string) string {
 		return nil
 	})
 
+	return provided, needed
+}
+
+// reportSonames names every soname that is needed and not provided, with who
+// asks. `trim` is stripped from the asker paths, so a report over a staged
+// tree reads as project/version/bin/name.
+func reportSonames(who string, provided map[string]bool, needed map[string][]string, trim string) string {
 	var missing []string
 	for name := range needed {
 		if !provided[name] {
@@ -76,12 +95,12 @@ func auditStagedSonames(pkgxDir string) string {
 		}
 	}
 	if len(missing) == 0 {
-		return fmt.Sprintf("builder: every NEEDED soname is provided by the tree (%d distinct)", len(needed))
+		return fmt.Sprintf("%s: every NEEDED soname is provided (%d distinct)", who, len(needed))
 	}
 	sort.Strings(missing)
 	var b strings.Builder
-	fmt.Fprintf(&b, "builder: %d soname(s) are NEEDED and not in the tree — a binary that wants one cannot start:",
-		len(missing))
+	fmt.Fprintf(&b, "%s: %d soname(s) are NEEDED and provided by nothing here — a binary that wants one cannot start:",
+		who, len(missing))
 	for _, name := range missing {
 		who := needed[name]
 		sort.Strings(who)
@@ -93,7 +112,7 @@ func auditStagedSonames(pkgxDir string) string {
 			shown, more = shown[:3], fmt.Sprintf(" (+%d more)", len(who)-3)
 		}
 		for i, w := range shown {
-			shown[i] = strings.TrimPrefix(w, pkgxDir+string(filepath.Separator))
+			shown[i] = strings.TrimPrefix(w, trim+string(filepath.Separator))
 		}
 		fmt.Fprintf(&b, "\n  %s <- %s%s", name, strings.Join(shown, " "), more)
 	}

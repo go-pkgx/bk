@@ -106,7 +106,7 @@ func TestAuditStagedSonamesNamesWhatIsMissingAndWhoAsks(t *testing.T) {
 	writeELFNeeded(t, filepath.Join(dir, "gnu.org/glibc/v2.44/lib/glibc-2.44/libc.so.6"))
 
 	got := auditStagedSonames(dir)
-	for _, w := range []string{"1 soname(s) are NEEDED and not in the tree", "libselinux.so.1",
+	for _, w := range []string{"1 soname(s) are NEEDED and provided by nothing here", "libselinux.so.1",
 		"gnu.org/coreutils/v9.12/bin/mkdir", "gnu.org/sed/v4.10/bin/sed"} {
 		if !strings.Contains(got, w) {
 			t.Errorf("missing %q in:\n%s", w, got)
