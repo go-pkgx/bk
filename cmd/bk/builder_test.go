@@ -861,3 +861,53 @@ func TestBuilderDryRunDistinguishesAConflictFromAMissingBottle(t *testing.T) {
 		t.Errorf("a conflict was reported as a missing bottle:\n%s", out.String())
 	}
 }
+
+// Two failures wear one symptom — "no loader" — and they are nothing alike.
+//
+// On linux/s390x this refused with "is gnu.org/glibc in the toolchain?" while
+// gnu.org/glibc was plainly in it and all 42 packages had installed: the
+// loader TABLE had no entry for the architecture. The message sent its reader
+// to the toolchain file, which was correct, and cost a detour.
+func TestBuilderDistinguishesAnUnknownArchFromAMissingGlibc(t *testing.T) {
+	for _, tc := range []struct {
+		name, arch string
+		want       string
+		notWant    string
+	}{
+		{
+			// An architecture bottle has no loader name for. ppc64le is a real
+			// one: bk is tested on it and builds no bottle for it.
+			name: "unknown arch", arch: "ppc64le",
+			want:    "no loader name is known for ppc64le",
+			notWant: "is gnu.org/glibc in the toolchain",
+		},
+		{
+			// A known arch whose loader is simply not in the tree: the
+			// toolchain question is the right one, and the message now names
+			// the FILE it looked for.
+			name: "known arch, absent file", arch: "aarch64",
+			want:    "no aarch64 loader (ld-linux-aarch64.so.1) in the staged glibc",
+			notWant: "no loader name is known",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := fakeStage(t)
+			_ = calls
+			old := findLoaderFor
+			findLoaderFor = func(string, string) string { return "" }
+			t.Cleanup(func() { findLoaderFor = old })
+
+			var out, errb bytes.Buffer
+			rc := runBuilder([]string{"--out", t.TempDir(), "--platform", "linux/" + tc.arch}, &out, &errb)
+			if rc != 1 {
+				t.Fatalf("rc = %d, want 1", rc)
+			}
+			if !strings.Contains(errb.String(), tc.want) {
+				t.Errorf("missing %q in: %s", tc.want, errb.String())
+			}
+			if strings.Contains(errb.String(), tc.notWant) {
+				t.Errorf("the wrong half of the diagnosis: %q in %s", tc.notWant, errb.String())
+			}
+		})
+	}
+}
