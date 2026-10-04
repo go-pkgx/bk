@@ -254,3 +254,102 @@ func TestApplyStopsAtTheFirstFailure(t *testing.T) {
 		t.Error("the operation after the failure must not have run")
 	}
 }
+
+// A step written as a LIST of lines was invisible to every override: substMap
+// only looked at string fields, so `run:` as a list was copied through. The
+// same step as a `|` block was reachable. 404 of the pantry's script steps
+// are written the first way, across 223 recipes.
+func TestSubstituteReachesARunWrittenAsAList(t *testing.T) {
+	doc := map[string]any{
+		"build": map[string]any{
+			"script": []any{
+				map[string]any{
+					"run": []any{
+						"for s in $SCRIPTS; do",
+						"test -f $s || continue",
+						"done",
+					},
+					"working-directory": "${{prefix}}/bin",
+				},
+			},
+		},
+	}
+	ov, err := Parse([]byte(`
+project = "p.org"
+why     = "a step written as a list was out of reach"
+edits   = [{ path = "build.script", from = "test -f $s || continue", to = "test -f $s || continue\nsed -i 'x' $s" }]
+`), "p.hcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Apply(doc, ov.Ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Outcome != Applied {
+		t.Fatalf("outcome = %v (%s)", res[0].Outcome, res[0].Detail)
+	}
+	run := doc["build"].(map[string]any)["script"].([]any)[0].(map[string]any)["run"].([]any)
+	if got := run[1].(string); !strings.Contains(got, "sed -i 'x' $s") {
+		t.Errorf("the line was not edited: %q", got)
+	}
+	// The sibling fields are untouched.
+	if wd := doc["build"].(map[string]any)["script"].([]any)[0].(map[string]any)["working-directory"]; wd != "${{prefix}}/bin" {
+		t.Errorf("working-directory changed: %v", wd)
+	}
+}
+
+// And a `run:` that is a plain string still works, which is the form that
+// always did.
+func TestSubstituteStillReachesARunWrittenAsAString(t *testing.T) {
+	doc := map[string]any{
+		"build": map[string]any{
+			"script": []any{
+				map[string]any{"run": "make --jobs 4\nmake install"},
+			},
+		},
+	}
+	ov, err := Parse([]byte(`
+project = "p.org"
+why     = "the string form always worked and must keep working"
+edits   = [{ path = "build.script", from = "make --jobs", to = "make AUTOCONF=no --jobs" }]
+`), "p.hcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(doc, ov.Ops); err != nil {
+		t.Fatal(err)
+	}
+	got := doc["build"].(map[string]any)["script"].([]any)[0].(map[string]any)["run"].(string)
+	if !strings.Contains(got, "make AUTOCONF=no --jobs") {
+		t.Errorf("got %q", got)
+	}
+}
+
+// substAny's recursion has to be complete, or the fix stops one level above
+// wherever the next recipe writes its step. No shape in this pantry nests a
+// mapping inside a script step's list today; the arm is pinned so it cannot
+// rot into the defect it replaces.
+func TestSubstAnyRecursesThroughEveryShape(t *testing.T) {
+	in := map[string]any{
+		"run": []any{
+			"keep me",
+			map[string]any{"inner": []any{"find me here"}},
+		},
+		"n":    42,
+		"flag": true,
+	}
+	got, n, already := substAny(in, "find me", "found it")
+	if n != 1 || already {
+		t.Fatalf("n = %d already = %v", n, already)
+	}
+	m := got.(map[string]any)
+	inner := m["run"].([]any)[1].(map[string]any)["inner"].([]any)[0].(string)
+	if inner != "found it here" {
+		t.Errorf("inner = %q", inner)
+	}
+	// Non-string scalars come back untouched rather than stringified.
+	if m["n"] != 42 || m["flag"] != true {
+		t.Errorf("a scalar was altered: %v %v", m["n"], m["flag"])
+	}
+}

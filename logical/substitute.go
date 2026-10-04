@@ -104,15 +104,62 @@ func substMap(m map[string]any, from, to string) (map[string]any, int, bool) {
 	out := make(map[string]any, len(m))
 	total, already := 0, false
 	for k, v := range m {
-		s, ok := v.(string)
-		if !ok {
-			out[k] = v
-			continue
-		}
-		r, n, a := subst1(s, from, to)
+		r, n, a := substAny(v, from, to)
 		total += n
 		already = already || a
 		out[k] = r
 	}
 	return out, total, already
+}
+
+// substAny is substMap's recursion, and the reason it exists is a step
+// written one of the two equivalent ways:
+//
+//   - run: |              <- a STRING: reachable
+//     for s in $SCRIPTS; do
+//     sed -i …
+//     done
+//
+//   - run:                <- a LIST: was copied through untouched
+//
+//   - for s in $SCRIPTS; do
+//
+//   - sed -i …
+//
+//   - done
+//
+// substMap only looked at string FIELDS, so the second form was invisible to
+// every override and the attempt reported PremiseGone — an error, at least,
+// rather than a silent miss. Measured on pantry 2df061b: 404 `run:` steps
+// across 223 recipes are written as a list and 1539 as a string, so better
+// than a fifth of the script surface could not be edited for a reason that
+// is about YAML style and nothing else.
+//
+// The reach is now the same at any depth, which is what substMap's own
+// comment already claimed: "reach into its own string fields rather than
+// skipping it, or every conditional build step becomes unreachable."
+func substAny(v any, from, to string) (any, int, bool) {
+	switch x := v.(type) {
+	case string:
+		r, n, a := subst1(x, from, to)
+		return r, n, a
+	case []any:
+		out := make([]any, len(x))
+		total, already := 0, false
+		for i, e := range x {
+			r, n, a := substAny(e, from, to)
+			total += n
+			already = already || a
+			out[i] = r
+		}
+		return out, total, already
+	case map[string]any:
+		// A mapping nested inside the targeted node. No recipe shape in this
+		// pantry reaches here today — a `run:` list holds strings — but
+		// stopping at one level is the defect being fixed, one level down.
+		out, n, a := substMap(x, from, to)
+		return out, n, a
+	default:
+		return v, 0, false
+	}
 }
