@@ -54,6 +54,14 @@ func FixUp(opts Options) error {
 	if err := fixRpaths(opts); err != nil {
 		return err
 	}
+	// After fixRpaths and before everything else that unstages: it is the same
+	// act one program header over, and keeping the two ELF rewrites adjacent
+	// is how the next person finds the second one.
+	if opts.Platform == "linux" && !has(opts.Skips, "fix-patchelf") {
+		if err := fixInterp(opts); err != nil {
+			return err
+		}
+	}
 	if err := fixPCFiles(opts.Prefix, opts.BuildInstall, opts.log); err != nil {
 		return err
 	}
