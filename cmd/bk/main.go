@@ -181,6 +181,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runToHCL(rest[1:], stdout, stderr)
 	case "tools":
 		return runTools(rest[1:], stdout, stderr)
+	case "sonames":
+		return runSonames(rest[1:], stdout, stderr)
 	case "weather":
 		return runWeather(rest[1:], stdout, stderr)
 	case "builder":
