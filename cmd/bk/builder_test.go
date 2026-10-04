@@ -960,6 +960,15 @@ func TestGlibcLayoutSkipsAnUnreadableDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(filepath.Join(lib, "glibc-2.44"), 0o755) })
+	// As root the mode is advisory: the FreeBSD, NetBSD and OpenBSD lanes run
+	// as root, ReadDir succeeds, and "0 entr(y/ies)" is then the TRUTH about
+	// that directory rather than an invented fact. Asserting otherwise there
+	// would be asserting that root cannot read, which it can.
+	// TestSetupScratchRootfsAtReadOnlyDir in go-pkgx/bottle skips for the
+	// same reason, in the same words.
+	if _, err := os.ReadDir(filepath.Join(lib, "glibc-2.44")); err == nil {
+		t.Skip("this filesystem lets root read a mode-000 directory")
+	}
 	got := glibcLayout(dir)
 	if !strings.Contains(got, "glibc-2.44") {
 		t.Errorf("the outer listing went missing: %q", got)
