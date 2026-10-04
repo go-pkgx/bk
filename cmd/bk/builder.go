@@ -437,6 +437,9 @@ func stageBuilder(o stageOptions) error {
 		}
 		o.Log("builder: .weft-microvm/config.json written — `weft microvm run` can boot this directory")
 	}
+	// Before the container file and after everything is on disk: the census
+	// is about the tree as it will be ENTERED.
+	o.Log(auditStagedSonames(pkgxDir))
 	if o.Container {
 		n, err := writeLdSoConf(o, pkgxDir)
 		if err != nil {
