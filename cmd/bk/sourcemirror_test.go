@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/go-pkgx/bk/fetch"
+	"github.com/go-pkgx/bottle"
 )
 
 type fakeStore struct {
@@ -18,6 +20,19 @@ type fakeStore struct {
 	uris    map[string]string
 	hasErr  error
 	pushErr error
+
+	pins   map[string]string // uri -> the digest it served before
+	pinErr error
+}
+
+func (f *fakeStore) PinnedDigest(_, uri string) (string, error) {
+	if f.pinErr != nil {
+		return "", f.pinErr
+	}
+	if d, ok := f.pins[uri]; ok {
+		return d, nil
+	}
+	return "", fmt.Errorf("%w: %s", bottle.ErrSourceAbsent, uri)
 }
 
 func (f *fakeStore) HasSource(_, sha string) (bool, error) {
@@ -41,14 +56,18 @@ func (f *fakeStore) PushSource(_ string, data []byte, uri string) error {
 }
 
 func withStore(t *testing.T, s *fakeStore) *bytes.Buffer {
+	return withStoreStrict(t, s, false)
+}
+
+func withStoreStrict(t *testing.T, s *fakeStore, strict bool) *bytes.Buffer {
 	t.Helper()
 	old := newSourceStore
 	newSourceStore = func(string) (sourceStore, error) { return s, nil }
 	var log bytes.Buffer
-	if err := installSourceMirror("oci://example.invalid/go-pkgx", &log); err != nil {
+	if err := installSourceMirror("oci://example.invalid/go-pkgx", &log, strict); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { newSourceStore = old; fetch.Mirror = nil })
+	t.Cleanup(func() { newSourceStore = old; fetch.Mirror = nil; fetch.Pin = nil })
 	return &log
 }
 
@@ -131,7 +150,7 @@ func TestInstallSourceMirrorReportsAConstructionFailure(t *testing.T) {
 	old := newSourceStore
 	newSourceStore = func(string) (sourceStore, error) { return nil, errors.New("bad base") }
 	defer func() { newSourceStore = old; fetch.Mirror = nil }()
-	if err := installSourceMirror("nonsense", io.Discard); err == nil {
+	if err := installSourceMirror("nonsense", io.Discard, false); err == nil {
 		t.Error("installSourceMirror accepted a store it could not build")
 	}
 }
@@ -149,6 +168,9 @@ func TestOCISourceStoreAdapters(t *testing.T) {
 	}
 	if err := s.PushSource(sourceMirrorProject, []byte("x"), "https://example.invalid/x"); err == nil {
 		t.Error("PushSource reported success against a registry that is not there")
+	}
+	if _, err := s.PinnedDigest(sourceMirrorProject, "https://example.invalid/x"); err == nil {
+		t.Error("PinnedDigest reported an answer from a registry that is not there")
 	}
 }
 
@@ -181,4 +203,86 @@ func TestNewSourceStoreRefusesABaseItCannotParse(t *testing.T) {
 	if _, err := newSourceStore("oci://ghcr.io/go-pkgx"); err != nil {
 		t.Errorf("a well-formed base was refused: %v", err)
 	}
+}
+
+// The three outcomes of a pin check, each asserted separately because the
+// third is a decision and not an oversight.
+
+// First use: a URL nobody has fetched before is recorded, not refused. A
+// version bump lands here — the version is in the URL — which is why there is
+// no escape hatch for one.
+func TestPinAllowsAUrlItHasNeverSeen(t *testing.T) {
+	s := &fakeStore{}
+	log := withStore(t, s)
+	if err := fetch.Pin("https://example.invalid/thing-2.0.tar.gz", "abc123"); err != nil {
+		t.Fatalf("Pin on a new URL: %v", err)
+	}
+	if strings.Contains(log.String(), "cannot read") {
+		t.Errorf("an absent pin was reported as unreadable: %q", log.String())
+	}
+}
+
+// The case this exists for: the SAME URL serving different bytes.
+func TestPinRefusesAUrlThatNowServesSomethingElse(t *testing.T) {
+	const uri = "https://example.invalid/rolling.tar.gz"
+	s := &fakeStore{pins: map[string]string{uri: "theoldone"}}
+	withStore(t, s)
+	err := fetch.Pin(uri, "thenewone")
+	if !errors.Is(err, fetch.ErrSourcePinMismatch) {
+		t.Fatalf("Pin = %v; want ErrSourcePinMismatch", err)
+	}
+	// Both digests must be in the message: "it changed" without saying from
+	// what to what cannot be acted on.
+	for _, want := range []string{"theoldone", "thenewone", uri} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %q: %v", want, err)
+		}
+	}
+}
+
+func TestPinMatchingIsSaidOutLoud(t *testing.T) {
+	const uri = "https://example.invalid/stable.tar.gz"
+	s := &fakeStore{pins: map[string]string{uri: "samebytes"}}
+	log := withStore(t, s)
+	if err := fetch.Pin(uri, "samebytes"); err != nil {
+		t.Fatalf("Pin on a match: %v", err)
+	}
+	// A control that never says it ran is indistinguishable from one that is
+	// not wired up.
+	if !strings.Contains(log.String(), "matches what") {
+		t.Errorf("a matching pin said nothing: %q", log.String())
+	}
+}
+
+// An unreadable store is NOT an absent pin, and which of the two is fatal is
+// the operator's choice. Both directions are asserted, because a default that
+// nobody can change is not a choice.
+func TestAnUnreadableStoreWarnsByDefaultAndRefusesWhenStrict(t *testing.T) {
+	broken := func() *fakeStore {
+		return &fakeStore{pinErr: errors.New("500 from the registry")}
+	}
+
+	t.Run("default: warn and continue", func(t *testing.T) {
+		log := withStore(t, broken())
+		if err := fetch.Pin("https://example.invalid/x.tgz", "abc"); err != nil {
+			t.Fatalf("Pin = %v; want the build to continue", err)
+		}
+		if !strings.Contains(log.String(), "cannot read the pin") {
+			t.Errorf("the warning was not printed: %q", log.String())
+		}
+		if !strings.Contains(log.String(), "-source-pin-strict") {
+			t.Errorf("the warning does not say how to make it fatal: %q", log.String())
+		}
+	})
+
+	t.Run("strict: refuse", func(t *testing.T) {
+		withStoreStrict(t, broken(), true)
+		err := fetch.Pin("https://example.invalid/x.tgz", "abc")
+		if err == nil {
+			t.Fatal("Pin = nil under -source-pin-strict; want a refusal")
+		}
+		if errors.Is(err, fetch.ErrSourcePinMismatch) {
+			t.Error("an unreadable store was reported as a MISMATCH, which accuses an upstream of something it did not do")
+		}
+	})
 }

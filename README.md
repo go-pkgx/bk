@@ -140,6 +140,48 @@ Completes the pure-Go [`go-pkgx`](https://github.com/go-pkgx) family (bottle / p
 pkgx / mirror) with the last Deno piece — a single static binary that builds pantry
 recipes with no Deno/Ruby/patchelf runtime, and cross-builds cleanly.
 
+## Where the source came from, and whether it changed
+
+`bk` extracts tarballs from **233 distinct upstream hosts**, and in the
+sovereign lane the build that consumes them runs as root inside a chroot. What
+checks that?
+
+Almost nothing, before this. `bk` does verify a source checksum when a recipe
+declares one — but measured over a fresh `pkgxdev/pantry`, exactly **one recipe
+of 904** declares one, and that one (`openssl.org`) points at a `.sha256`
+served by the *same host* as the tarball: it detects corruption, not
+substitution. The same recipe declares `sig: ${{url}}.asc`, and nothing in bk
+reads that field at all.
+
+So `--source-mirror` grew a second job. It already kept every archive a build
+downloads, addressed by its sha256; now it also records **which digest each URL
+served**, and refuses bytes that disagree:
+
+```
+source pin: 9f86d0…  matches what https://ftp.gnu.org/…/sed-4.10.tar.xz served before
+fetch: this URL has served different bytes before: https://…/x-1.2.tar.gz
+  now serves 2c26b4…, and served 9f86d0… before
+```
+
+Trust on first use. It does not make an upstream trustworthy — it makes a
+**change** visible, which is the part nobody had.
+
+A version bump is not a change here: the version is in the URL, so a new
+release asks a question that has never been asked and is recorded rather than
+refused. What fires is the *same* URL serving *different* bytes — a re-cut
+release, a compromised mirror, a hijacked domain.
+
+The uncomfortable third case is a store that cannot be **asked**. That is not
+an absent pin, and treating the two alike is how trust-on-first-use quietly
+becomes trust-every-time. They are distinguished, said out loud, and
+`--source-pin-strict` decides which one is fatal — warn and continue by
+default, because an unreachable registry is not evidence of tampering and a
+build must not die because ghcr hiccuped.
+
+Still open (go-pkgx/bk#282): nothing reads `sig:`. Verifying a detached
+signature needs a key policy — *whose* key — and that is a decision, not a
+patch.
+
 ## The ELF RUNPATH rewriter
 
 `fixup.SetRunpath` overwrites an ELF's `DT_RUNPATH`/`DT_RPATH` string **in place**
