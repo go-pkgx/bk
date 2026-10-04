@@ -40,7 +40,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `overrides` | applies the factory's local recipe-override patches to a pantry checkout in pure Go — a `git diff` parsed and applied without shelling out to `git apply`, and idempotent (it resets the files it touches first) |
 | `tools` | which external commands a recipe set invokes, parsed rather than grepped. `--scope build\|test\|all` separates the two surfaces: a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs — and they disagree, e.g. 260 tests call a compiler where 6 declare one |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | `target`, `fixup`, `versions`, `build`, `test`, `publish`, `closure`, `depgaps`, `builder`, `factory` |
+| `cmd/bk` | twenty subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `tools`, `overrides`, `tohcl`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -78,6 +78,27 @@ binaries plus toolchain bottles from the signed registry, nothing else.
 
 [`docs/from-scratch-toolchain.md`](docs/from-scratch-toolchain.md) is the design
 note behind it, kept because its hazard list is still the one that bites.
+
+A scratch tree has nothing underneath it, so `bk builder` answers three
+questions a build would otherwise answer hours later and attributed to the
+wrong thing:
+
+- `--dry-run` resolves the toolchain for `--platform` and stages nothing, so
+  "does this architecture have the bottles" costs a round trip rather than a
+  runner. On a refusal it names **every** blocked root, not the first — on an
+  architecture being brought up, one gap per build is one build per gap — and
+  it tells a CONFLICT between roots apart from a missing bottle.
+- after staging, it reports every `NEEDED` soname the tree does **not**
+  contain, naming who asks. A binary that wants one cannot start, and it says
+  so only when something runs it. The s390x second generation met
+  `libselinux.so.1` twice, a full build apart, before this existed.
+- it says when a prefix is **already** on disk and will not be re-installed.
+  `bottle.InstallFor` treats the existence of `<project>/v<ver>` as "already
+  present", so a tree left half-written by a run that died — and inherited by
+  the next job on a self-hosted runner — is indistinguishable from a complete
+  one. Three runs reported "42 packages" and installed none.
+
+None of the three refuses anything: the build that follows is the verdict.
 
 ### Recipes in YAML or HCL2
 
