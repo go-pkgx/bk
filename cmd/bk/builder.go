@@ -161,6 +161,67 @@ func reportRootGaps(roots map[string]string, osn, arch string, stdout io.Writer)
 		len(missing), len(names), osn, arch, strings.Join(missing, " "))
 }
 
+// glibcLayout lists what the staged glibc actually contains, for the error
+// that says the loader is not there.
+//
+// "Not found" is a fact about the LOOKUP as much as about the tree, and the
+// two readings send a person to different places. FindLoaderFor globs
+// `<dir>/gnu.org/glibc/v*/lib/glibc-*/<name>`; a bottle that puts its loader
+// one directory over satisfies none of it and looks exactly like a bottle
+// that has no loader at all.
+//
+// Measured need: the s390x lane refused with this message AFTER the loader
+// NAME had been fixed (go-pkgx/bottle#105), so the name was right and the
+// path was the question — and the log said nothing about the path. One round
+// trip to a runner to learn a directory listing is one too many.
+//
+// Names only, and capped: this goes in an error, not a report.
+func glibcLayout(pkgxDir string) string {
+	roots, _ := filepath.Glob(filepath.Join(pkgxDir, bottle.GlibcProject, "v*"))
+	if len(roots) == 0 {
+		return "\n  (no gnu.org/glibc directory under " + pkgxDir + ")"
+	}
+	var b strings.Builder
+	for _, r := range roots {
+		for _, sub := range []string{"lib", "lib64"} {
+			dir := filepath.Join(r, sub)
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				names = append(names, e.Name())
+				if len(names) == 12 {
+					names = append(names, "…")
+					break
+				}
+			}
+			fmt.Fprintf(&b, "\n  %s: %s", dir, strings.Join(names, " "))
+			// And one level into a versioned subdir, which is where the
+			// loader belongs and where the glob looks.
+			for _, e := range entries {
+				if !e.IsDir() || !strings.HasPrefix(e.Name(), "glibc-") {
+					continue
+				}
+				inner, err := os.ReadDir(filepath.Join(dir, e.Name()))
+				if err != nil {
+					continue
+				}
+				var ld []string
+				for _, f := range inner {
+					if strings.HasPrefix(f.Name(), "ld") {
+						ld = append(ld, f.Name())
+					}
+				}
+				fmt.Fprintf(&b, "\n  %s: %d entr(y/ies), ld*: %s",
+					filepath.Join(dir, e.Name()), len(inner), strings.Join(ld, " "))
+			}
+		}
+	}
+	return b.String()
+}
+
 // guestPkgxDir is where the staged bottles live once the rootfs is the root:
 // the stubs, the loader symlinks and PKGX_DIR must all agree on it.
 const guestPkgxDir = "/pkgx"
@@ -315,8 +376,8 @@ func stageBuilder(o stageOptions) error {
 				"(s390x's is ld64.so.1, not ld-linux-s390x.so.1): read it off a published "+
 				"bottle for %s and add it there", o.Arch, o.Arch)
 		}
-		return fmt.Errorf("no %s loader (%s) in the staged glibc — is gnu.org/glibc in the toolchain?",
-			o.Arch, bottle.LoaderNameFor(o.Arch))
+		return fmt.Errorf("no %s loader (%s) in the staged glibc — is gnu.org/glibc in the toolchain?%s",
+			o.Arch, bottle.LoaderNameFor(o.Arch), glibcLayout(pkgxDir))
 	}
 	shell := bottle.FindClosureBin(closure, pkgxDir, "gnu.org/bash", "bash")
 	if err := bottle.SetupScratchRootfsAt(o.Root,
