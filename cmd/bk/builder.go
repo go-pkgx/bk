@@ -298,7 +298,25 @@ func stageBuilder(o stageOptions) error {
 	// recipe line through /bin/sh. Both symlinks must point at GUEST paths.
 	loader := findLoaderFor(pkgxDir, o.Arch)
 	if loader == "" {
-		return fmt.Errorf("no %s loader in the staged glibc — is gnu.org/glibc in the toolchain?", o.Arch)
+		// TWO failures wear this one symptom, and they are nothing alike.
+		//
+		// On linux/s390x this said "is gnu.org/glibc in the toolchain?" with
+		// gnu.org/glibc plainly in it and all 42 packages installed: the
+		// loader table simply had no entry for the architecture, because
+		// s390x's loader is ld64.so.1 and not ld-linux-s390x.so.1. The
+		// message sent its reader to look at the toolchain file, which was
+		// correct, and cost a detour.
+		//
+		// So name the architecture FIRST when it is the architecture, and
+		// keep the toolchain question for the case it actually describes.
+		if bottle.LoaderNameFor(o.Arch) == "" {
+			return fmt.Errorf("no loader name is known for %s — bottle.LoaderNameFor has no entry, "+
+				"and the name cannot be derived from the other architectures' "+
+				"(s390x's is ld64.so.1, not ld-linux-s390x.so.1): read it off a published "+
+				"bottle for %s and add it there", o.Arch, o.Arch)
+		}
+		return fmt.Errorf("no %s loader (%s) in the staged glibc — is gnu.org/glibc in the toolchain?",
+			o.Arch, bottle.LoaderNameFor(o.Arch))
 	}
 	shell := bottle.FindClosureBin(closure, pkgxDir, "gnu.org/bash", "bash")
 	if err := bottle.SetupScratchRootfsAt(o.Root,
