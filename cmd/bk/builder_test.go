@@ -1011,7 +1011,7 @@ func TestGlibcLayoutNamesTheLoaderFilesItFound(t *testing.T) {
 		}
 	}
 	got := glibcLayout(dir)
-	for _, w := range []string{"ld64.so.1", "ld-linux-x86-64.so.2", "3 entr(y/ies)"} {
+	for _, w := range []string{"ld64.so.1", "ld-linux-x86-64.so.2", "3 entr(y/ies)", "libc.so.6"} {
 		if !strings.Contains(got, w) {
 			t.Errorf("missing %q in: %s", w, got)
 		}
@@ -1068,5 +1068,38 @@ func TestBuilderSaysNothingWhenTheTreeIsFresh(t *testing.T) {
 	})
 	if strings.Contains(strings.Join(logged, "\n"), "ALREADY in") {
 		t.Errorf("a fresh tree reported a reuse:\n%s", strings.Join(logged, "\n"))
+	}
+}
+
+// The count alone was not enough, measured the hard way: the s390x tree
+// reported "2 entr(y/ies), ld*:" and a real glibc has two hundred. That says
+// the bottle is nearly empty and says nothing about WHICH two — the next
+// question every time. The names are capped, and the cap is visible.
+func TestGlibcLayoutNamesSomeInnerEntriesAndSaysWhenItTruncated(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, bottle.GlibcProject, "v2.44", "lib", "glibc-2.44")
+	if err := os.MkdirAll(filepath.Join(sub, "gconv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(sub, "audit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := glibcLayout(dir)
+	for _, w := range []string{"2 entr(y/ies)", "audit", "gconv"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("missing %q in: %s", w, got)
+		}
+	}
+	if strings.Contains(got, "…") {
+		t.Errorf("two entries are not a truncation: %s", got)
+	}
+
+	for i := 0; i < 12; i++ {
+		if err := os.WriteFile(filepath.Join(sub, fmt.Sprintf("x%02d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := glibcLayout(dir); !strings.Contains(got, "…") {
+		t.Errorf("fourteen entries were listed without saying so: %s", got)
 	}
 }
