@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -758,5 +759,105 @@ func TestToolchainPinsMeanWhatTheySay(t *testing.T) {
 			t.Errorf("%s %q satisfied by %s = %v, want %v (%s)",
 				tc.project, c, tc.version, got, tc.want, tc.why)
 		}
+	}
+}
+
+// --dry-run is the pre-flight for a lane that costs hours. It must RESOLVE and
+// must not INSTALL: an install that happened anyway would write 2 GiB into a
+// directory the caller never named.
+func TestBuilderDryRunResolvesAndStagesNothing(t *testing.T) {
+	calls := fakeStage(t)
+	var out, errb bytes.Buffer
+	if rc := runBuilder([]string{"--dry-run", "--platform", "linux/s390x"}, &out, &errb); rc != 0 {
+		t.Fatalf("rc = %d, stderr: %s", rc, errb.String())
+	}
+	if calls.resolvedFor != "linux/s390x" {
+		t.Errorf("resolved for %q, want linux/s390x", calls.resolvedFor)
+	}
+	if len(calls.installed) != 0 {
+		t.Errorf("a dry run installed %v", calls.installed)
+	}
+	for _, w := range []string{"gnu.org/bash", "2 packages resolve for linux/s390x"} {
+		if !strings.Contains(out.String(), w) {
+			t.Errorf("missing %q in:\n%s", w, out.String())
+		}
+	}
+}
+
+// --out is what a staging run writes into, so a dry run must not demand one —
+// the whole point is to ask the question before choosing where to put the
+// answer.
+func TestBuilderDryRunNeedsNoOutputDirectory(t *testing.T) {
+	fakeStage(t)
+	var out, errb bytes.Buffer
+	if rc := runBuilder([]string{"--dry-run"}, &out, &errb); rc != 0 {
+		t.Fatalf("rc = %d, stderr: %s", rc, errb.String())
+	}
+	// And a run WITHOUT --dry-run still does.
+	var out2, errb2 bytes.Buffer
+	if rc := runBuilder(nil, &out2, &errb2); rc != 2 {
+		t.Errorf("rc = %d without --out, want 2", rc)
+	}
+}
+
+// A refusal must name EVERY blocked root. Reporting the first one costs one
+// build per gap on an architecture being brought up, which is the whole reason
+// this exists.
+func TestBuilderDryRunNamesEveryBlockedRoot(t *testing.T) {
+	old := resolveClosureFor
+	t.Cleanup(func() { resolveClosureFor = old })
+	// curl.se and gnu.org/tar have no bottle; everything else does. The joint
+	// resolve reports whichever it meets first.
+	absent := map[string]bool{"curl.se": true, "gnu.org/tar": true}
+	resolveClosureFor = func(roots map[string]string, osn, arch string) ([]bottle.Resolved, error) {
+		for p := range roots {
+			if absent[p] {
+				return nil, fmt.Errorf("no version of %s is published for %s/%s", p, osn, arch)
+			}
+		}
+		return []bottle.Resolved{{Project: "gnu.org/bash", Version: bottle.ParseVer("5.3")}}, nil
+	}
+
+	dir := t.TempDir()
+	tc := filepath.Join(dir, "toolchain.txt")
+	if err := os.WriteFile(tc, []byte("curl.se\ngnu.org/bash\ngnu.org/tar\ngnu.org/sed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if rc := runBuilder([]string{"--dry-run", "--platform", "linux/s390x", "--toolchain", tc}, &out, &errb); rc != 1 {
+		t.Fatalf("rc = %d, want 1", rc)
+	}
+	for _, w := range []string{"BLOCKED curl.se", "BLOCKED gnu.org/tar", "2 of 4 roots cannot resolve"} {
+		if !strings.Contains(out.String(), w) {
+			t.Errorf("missing %q in:\n%s", w, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "BLOCKED gnu.org/bash") || strings.Contains(out.String(), "BLOCKED gnu.org/sed") {
+		t.Errorf("a root that resolves was reported blocked:\n%s", out.String())
+	}
+}
+
+// Every root resolving alone while the set does not is a CONFLICT, and saying
+// "0 roots cannot resolve" after refusing would read as a contradiction.
+func TestBuilderDryRunDistinguishesAConflictFromAMissingBottle(t *testing.T) {
+	old := resolveClosureFor
+	t.Cleanup(func() { resolveClosureFor = old })
+	resolveClosureFor = func(roots map[string]string, osn, arch string) ([]bottle.Resolved, error) {
+		if len(roots) > 1 {
+			return nil, fmt.Errorf("demands do not intersect")
+		}
+		return []bottle.Resolved{{Project: "gnu.org/bash", Version: bottle.ParseVer("5.3")}}, nil
+	}
+	dir := t.TempDir()
+	tc := filepath.Join(dir, "toolchain.txt")
+	if err := os.WriteFile(tc, []byte("gnu.org/bash\ngnu.org/sed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if rc := runBuilder([]string{"--dry-run", "--toolchain", tc}, &out, &errb); rc != 1 {
+		t.Fatalf("rc = %d, want 1", rc)
+	}
+	if !strings.Contains(out.String(), "CONFLICT between them") {
+		t.Errorf("a conflict was reported as a missing bottle:\n%s", out.String())
 	}
 }
