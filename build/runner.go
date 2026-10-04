@@ -155,6 +155,25 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	}
 
 	// fetch source
+	//
+	// A recipe with NO distributable fetches nothing, and that is legitimate:
+	// a few generate their whole tree from a script. But the build directory
+	// is then EMPTY, and the first step that reaches for a file in it fails
+	// with the least informative error the kernel has:
+	//
+	//	fork/exec …/gnu.org/gzip/v1.15/build/configure: no such file or
+	//	directory
+	//
+	// which reads as "the script is missing" and sends its reader to look at
+	// the tarball, the extractor and the shebang — three places that are
+	// fine. Measured: that hunt cost six eliminated hypotheses on the s390x
+	// second generation before anyone read this branch.
+	//
+	// So SAY it. One line, on the path where nothing is fetched, naming the
+	// consequence rather than the fact.
+	if recipe.Distributable == nil {
+		logf("recipe declares no distributable: %s stays empty unless a script step fills it", paths.Build)
+	}
 	if recipe.Distributable != nil {
 		srcs, err := sourcesOf(recipe.Distributable, version, tag)
 		if err != nil {

@@ -1060,3 +1060,40 @@ func TestBuildBootstrapDropsAToolWhoseClosureIsNotHere(t *testing.T) {
 		t.Errorf("without the stronger question, nothing changes:\n%s", b)
 	}
 }
+
+// A recipe with no distributable fetches nothing, which is legitimate — and
+// leaves the build directory EMPTY. The first step that reaches for a file in
+// it then fails with the least informative error the kernel has:
+//
+//	fork/exec …/build/configure: no such file or directory
+//
+// which reads as "the script is missing" and sends its reader to the tarball,
+// the extractor and the shebang, all of which are fine. Say it up front.
+func TestRunnerSaysWhenARecipeDeclaresNoSource(t *testing.T) {
+	var lines []string
+	logf = func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }
+	t.Cleanup(func() { logf = origLogf })
+
+	tgt := target.Target{Platform: "linux", Arch: "x86-64", Triple: "x86_64-linux-gnu"}
+	r := okRunner("acme.org/tool", tgt)
+	rec := okRecipe()
+	rec.Distributable = nil
+
+	_, _ = r.Build(rec, "acme.org/tool", "*", tgt, tgt, "")
+
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "declares no distributable") {
+		t.Errorf("nothing said about the empty build dir:\n%s", joined)
+	}
+	if !strings.Contains(joined, "stays empty") {
+		t.Errorf("the message states the fact and not the consequence:\n%s", joined)
+	}
+
+	// And a recipe that DOES fetch says nothing: a line printed every time is
+	// a line nobody reads.
+	lines = nil
+	_, _ = r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, "")
+	if strings.Contains(strings.Join(lines, "\n"), "declares no distributable") {
+		t.Errorf("the notice fired for a recipe with a source:\n%s", strings.Join(lines, "\n"))
+	}
+}
