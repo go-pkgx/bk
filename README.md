@@ -15,10 +15,17 @@ rather than a retrofit.
 
 In production: `bk factory` is what fills
 [`ghcr.io/go-pkgx/packages`](https://github.com/orgs/go-pkgx/packages) —
-**1459 projects, 26 398 signed (project, os, arch, version) bottles** across
-linux/aarch64, linux/x86-64, darwin/aarch64, darwin/x86-64 and windows/x86-64 as
-of 2026-08-24. It is a moving target — re-measure it rather than trusting this
-line: `go run ./catalog` in
+**1585 projects, 42 746 signed (project, os, arch, version) bottles** as of
+2026-10-04 17:00 UTC+2 — linux/aarch64 15 136, linux/x86-64 13 255,
+darwin/x86-64 7 113, darwin/aarch64 6 649, windows/x86-64 554, and
+**linux/s390x 39**, an architecture being brought up now.
+
+It is a moving target, and more literally than that phrasing suggests: the
+same `bk builder --dry-run --platform linux/s390x` reported 25 of 25 toolchain
+roots unresolvable at 11:45 and 21 of 25 at 17:03 the same day, because
+another session was publishing while this was measured. A registry count is
+dated to the HOUR. Re-measure it rather than trusting this line: `go run
+./catalog` in
 [go-pkgx/packages](https://github.com/go-pkgx/packages) enumerates the registry
 itself, and <https://go-pkgx.github.io/packages> browses it.
 
@@ -40,7 +47,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `overrides` | applies the factory's local recipe-override patches to a pantry checkout in pure Go — a `git diff` parsed and applied without shelling out to `git apply`, and idempotent (it resets the files it touches first) |
 | `tools` | which external commands a recipe set invokes, parsed rather than grepped. `--scope build\|test\|all` separates the two surfaces: a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs — and they disagree, e.g. 260 tests call a compiler where 6 declare one |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | twenty subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `tools`, `overrides`, `tohcl`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. |
+| `cmd/bk` | twenty-one subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `tools`, `overrides`, `tohcl`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
