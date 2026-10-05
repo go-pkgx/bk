@@ -10,6 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-attest/sign"
+	"github.com/go-pkgx/bk/build"
+	"github.com/go-pkgx/bk/logical"
+	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bottle"
 )
 
@@ -35,6 +39,16 @@ import (
 // NAMES; a version beside a candidate is a courtesy. `--versions` opts into
 // the sweep for a run that wants it, and says how many requests it will make
 // before it makes them.
+//
+// # PUBLISHED SIGNED
+//
+// `--publish` pushes it through the same path `bk publish` uses, with the
+// same SBOM, provenance and cosign signature. A client with PKGX_VERIFY on
+// — the default — refuses an unsigned catalogue, and should: the catalogue
+// is the list of names a person then TYPES, so whoever decides its contents
+// decides what `<TAB>` offers. With no key (`--sign`, else $SIGNING_KEY) it
+// still publishes, because the seed registry in a sovereign build has none,
+// and says in one line what a verifying client will do with the result.
 func runCatalog(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("catalog", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -42,8 +56,10 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 	overlayDir := fs.String("overlay", envOr("PANTRY_OVERLAY_DIR", ""), "an overlay checkout read beside the pantry")
 	platform := fs.String("platform", envOr("PLATFORM", "linux/x86-64"), "the platform this catalogue is FOR")
 	out := fs.String("o", "", "write the JSON here instead of stdout")
+	overridesDir := fs.String("overrides", envOr("OVERRIDES", ""), "directory of *.hcl logical recipe overrides, applied as the factory applies them")
 	publish := fs.Bool("publish", false, "push it to $PKGX_DIST as a bottle, for this platform")
 	withVersions := fs.Bool("versions", false, "ask the registry what each project has published (one request per project)")
+	signKey := fs.String("sign", "", "sign the published catalogue with this go-attest/sign secret key file (else $SIGNING_KEY)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -67,8 +83,37 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cat := bottle.Catalog{Generated: catalogNow().UTC().Format(time.RFC3339)}
+	lset, err := logical.LoadDir(*overridesDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "catalog:", err)
+		return 2
+	}
+	tgt := target.Target{Platform: osn, Arch: arch}
+	var noRecipe int
 	for _, p := range projects {
-		cat.Projects = append(cat.Projects, bottle.CatalogProject{Project: p})
+		e := bottle.CatalogProject{Project: p}
+		// The RUNTIME dependencies, reduced for this platform, so a reader
+		// can walk the tree with no pantry and no network (bottle#117).
+		// Still no requests: these come off the recipe already on disk.
+		if r, _, err := recipeLoader(lset, *overlayDir, *pantryDir, p); err == nil && r != nil {
+			for _, spec := range build.DepSpecs(r.Dependencies, tgt) {
+				if n := depName(spec); n != "" {
+					e.Deps = append(e.Deps, n)
+				}
+			}
+			sort.Strings(e.Deps)
+		} else {
+			// Counted, not silent. A project the walk NAMED and the reader
+			// cannot load is a hole in the dependency half of the
+			// catalogue, and a catalogue that hid it would show those
+			// projects as having no dependencies at all — which is a
+			// statement, and a false one.
+			noRecipe++
+		}
+		cat.Projects = append(cat.Projects, e)
+	}
+	if noRecipe > 0 {
+		fmt.Fprintf(stderr, "catalog: %d project(s) named but unreadable — listed with no dependencies\n", noRecipe)
 	}
 	if *withVersions {
 		fmt.Fprintf(stderr, "catalog: asking the registry about %d project(s), one request each\n", len(cat.Projects))
@@ -82,16 +127,25 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 	}
 	switch {
 	case *publish:
-		c, err := catalogClient(bottle.DistBase)
+		kp, err := signingKey(*signKey)
 		if err != nil {
-			fmt.Fprintln(stderr, "catalog:", err)
+			fmt.Fprintln(stderr, "catalog: signing key:", err)
 			return 1
 		}
-		if err := publishCatalog(c, cat, osn, arch); err != nil {
+		if err := publishCatalogSigned(bottle.DistBase, cat, osn, arch, kp); err != nil {
 			fmt.Fprintln(stderr, "catalog: publish:", err)
 			return 1
 		}
-		fmt.Fprintf(stderr, "catalog: %d project(s) → %s %s/%s\n", len(cat.Projects), bottle.DistBase, osn, arch)
+		note := " +signature"
+		if kp == nil {
+			// Stated as a consequence, not as a warning about style. A
+			// client with PKGX_VERIFY on — the default — refuses an
+			// unsigned catalogue, so this publish produces something
+			// only the seed registry can read.
+			note = " UNSIGNED: a client with PKGX_VERIFY on will refuse this"
+		}
+		fmt.Fprintf(stderr, "catalog: %d project(s) → %s %s/%s (+SBOM +provenance%s)\n",
+			len(cat.Projects), bottle.DistBase, osn, arch, note)
 	case *out != "":
 		if err := osWriteFile(*out, body, 0o644); err != nil {
 			fmt.Fprintln(stderr, "catalog:", err)
@@ -104,13 +158,41 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// publishCatalogSigned pushes the catalogue the way a bottle is pushed:
+// SBOM, provenance, and — when a key is to hand — a cosign signature.
+//
+// bottle.PublishCatalog pushes the bare tarball, which is what the seed
+// registry inside a sovereign build wants, and was all that existed when
+// nothing checked. A client now refuses an unsigned catalogue by default,
+// and rightly: the catalogue is the list of names a person then TYPES, so
+// deciding its contents is deciding what `<TAB>` offers.
+//
+// It goes out through ociPush, the SAME push `bk publish` and the factory
+// use, with the same referrer builder: the catalogue is not a special
+// artefact and must not get a trust path of its own, because a second path
+// is the thing that was wrong here in the first place.
+func publishCatalogSigned(dist string, cat bottle.Catalog, osn, arch string, kp *sign.Keypair) error {
+	tgz, err := catalogTarball(cat)
+	if err != nil {
+		return err
+	}
+	refs, err := buildReferrers(bottle.CatalogProjectName, bottle.CatalogVersion,
+		osn, arch, tgz, build.SourceRef{}, factoryTime(), kp)
+	if err != nil {
+		return err
+	}
+	_, err = ociPush(dist, bottle.CatalogProjectName, bottle.CatalogVersion,
+		osn, arch, tgz, bottle.ExtTarGz, refs, nil)
+	return err
+}
+
 // seams, so a test needs neither a clock nor a registry.
 var (
 	catalogNow     = time.Now
-	publishCatalog = bottle.PublishCatalog
 	versionsFor    = bottle.VersionsFor
-	catalogClient  = bottle.NewOCIClient
 	marshalCatalog = bottle.MarshalCatalog
+	catalogTarball = bottle.CatalogTarball
+	signingKey     = factorySigningKey
 )
 
 // fillVersions asks the registry what each project has published.
