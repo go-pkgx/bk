@@ -1188,3 +1188,65 @@ func TestBuildDirListingReportsAnUnreadableDirectory(t *testing.T) {
 		t.Errorf("unreadable: %q", got)
 	}
 }
+
+// The fetch line exists because its ABSENCE cost a day: with nothing logged,
+// a successful build and one whose source never landed were indistinguishable
+// at exactly the point that mattered. A line nobody asserts is a line that
+// can quietly change or go away again, so this pins its content.
+func TestBuildSaysWhatItFetchedAndHowMuchArrived(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	r := okRunner("acme.org/tool", tgt)
+
+	// A fetch that puts two things in the build directory, as a real one does.
+	r.Fetch = func(_, dest string, _ int) (string, error) {
+		for _, n := range []string{"configure", "Makefile.in"} {
+			if err := os.WriteFile(filepath.Join(dest, n), nil, 0o644); err != nil {
+				return "", err
+			}
+		}
+		return "deadbeef", nil
+	}
+
+	var log strings.Builder
+	oldLog := logf
+	logf = func(f string, a ...any) { fmt.Fprintf(&log, f+"\n", a...) }
+	t.Cleanup(func() { logf = oldLog })
+
+	if _, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist")); err != nil {
+		t.Fatal(err)
+	}
+	got := log.String()
+	// The URL, so a build that fell through to a mirror is distinguishable
+	// from one that did not; and the COUNT, which is what separates "the
+	// source landed" from "the directory is empty".
+	for _, want := range []string{"fetched https://x/v1.2.3.tar.gz", "2 entries"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the fetch line does not say %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "2 entry") {
+		t.Errorf("mis-pluralised:\n%s", got)
+	}
+}
+
+// A fetch that lands nothing says so, which is the case four gen1 packages
+// needed and nobody could see.
+func TestBuildSaysWhenAFetchLandedNothing(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	r := okRunner("acme.org/tool", tgt)
+	r.Fetch = func(string, string, int) (string, error) { return "cafe", nil } // writes nothing
+
+	var log strings.Builder
+	oldLog := logf
+	logf = func(f string, a ...any) { fmt.Fprintf(&log, f+"\n", a...) }
+	t.Cleanup(func() { logf = oldLog })
+
+	if _, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist")); err != nil {
+		t.Fatal(err)
+	}
+	if got := log.String(); !strings.Contains(got, "0 entries") {
+		t.Errorf("an empty fetch did not say so:\n%s", got)
+	}
+}
