@@ -773,3 +773,49 @@ func TestTheTestSandboxGetsTheTokenAndOnlyWhenThereIsOne(t *testing.T) {
 		})
 	}
 }
+
+// The shims are real symlinks beside the sandbox, not a path in a string.
+// `bk tools --scope test --all` counts 194 pantry tests that call `cc` by
+// name; what they find on PATH is the whole fix.
+func TestRunTestMaterialisesTheCompilerShims(t *testing.T) {
+	testTestbed(t)
+	got := stubRun(t, nil)
+	p := writeTestRecipe(t, okRecipe)
+	var out, errOut bytes.Buffer
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 0 {
+		t.Fatalf("want 0, got %d (%s)", code, errOut.String())
+	}
+	// Beside the sandbox, never inside it: the next run empties the sandbox.
+	shimDir := strings.TrimSuffix(*got, ".test.sh") + ".shims"
+	for _, name := range []string{"cc", "gcc", "c++", "g++"} {
+		fi, err := os.Lstat(filepath.Join(shimDir, name))
+		if err != nil {
+			t.Errorf("%s is not in the shim dir: %v", name, err)
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s is not a symlink to bk", name)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(shimDir, "clang")); err == nil {
+		t.Error("clang is shimmed, and $BK_CC starts with clang — that is an exec loop")
+	}
+}
+
+// A filesystem that refuses the symlinks must not take the other 1700 tests
+// down with it: the run says so and goes on without them.
+func TestRunTestSurvivesShimsItCannotMake(t *testing.T) {
+	testTestbed(t)
+	stubRun(t, nil)
+	prev := writeShims
+	writeShims = func(string, bool, string, string, string) error { return os.ErrPermission }
+	t.Cleanup(func() { writeShims = prev })
+	p := writeTestRecipe(t, okRecipe)
+	var out, errOut bytes.Buffer
+	if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 0 {
+		t.Fatalf("a test was failed by its shims: %d (%s)", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "warning: compiler shims:") {
+		t.Errorf("it did not say the shims are missing: %q", errOut.String())
+	}
+}
