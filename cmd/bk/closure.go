@@ -46,6 +46,10 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	osn, arch, _ := strings.Cut(*platform, "/")
 	tgt := target.Target{Platform: osn, Arch: arch}
 	roots := closureRoots(fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
+	// A root that is a SET becomes the packages it names. Done here, before
+	// anything else looks at the roots, so the walk below and everything it
+	// feeds keep working on discrete projects.
+	roots = expandSets(lset, *overlayDir, *pantryDir, roots, func(s string) { fmt.Fprintln(stderr, s) })
 
 	// The plain runtime walk keeps going through closureOf, which the factory
 	// also calls: one path, so `bk closure` cannot describe an order the

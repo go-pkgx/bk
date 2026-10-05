@@ -29,9 +29,37 @@ type Recipe struct {
 	Companions    map[string]any `yaml:"companions"`
 	Platforms     any            `yaml:"platforms"`
 	Warnings      any            `yaml:"warnings"`
-	DisplayName   string         `yaml:"display-name"`
-	Summary       string         `yaml:"summary"`
-	Description   string         `yaml:"description"`
+	// Members makes a recipe a SET: a named, versionable tree of packages
+	// rather than one discrete package.
+	//
+	// The three systems that solved this agree on the shape and disagree on
+	// almost nothing that matters here:
+	//
+	//	Nix    a tree IS a derivation — `buildEnv` takes a list of packages
+	//	       and its output is a tree of symlinks. No new kind of object.
+	//	Guix   a manifest names packages; a PROFILE is the tree it makes.
+	//	Spack  `spack.yaml` is the abstract set, `spack.lock` the concrete
+	//	       one: "the same root specs... may concretize differently".
+	//
+	// Nix's answer is the one taken: a set is an ordinary recipe. It is
+	// therefore signed, attested, published and installed by everything that
+	// already does those things for a package — rather than a second kind of
+	// artefact to keep in step, which is the defect this repository has paid
+	// for more than once.
+	//
+	// What this does NOT give is Guix's warning: a manifest alone is not
+	// reproducible, because the same names resolve differently against a
+	// different package set. `members` is the ABSTRACT half. The concrete
+	// half — resolved versions and digests, dated — is a separate artefact
+	// and is not here yet.
+	//
+	// The shape is `dependencies`' shape on purpose: a reader who knows one
+	// knows the other, and the resolver already handles it.
+	Members map[string]any `yaml:"members"`
+
+	DisplayName string `yaml:"display-name"`
+	Summary     string `yaml:"summary"`
+	Description string `yaml:"description"`
 }
 
 // Runtime is the environment a package exports to its consumers.

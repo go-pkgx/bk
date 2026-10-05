@@ -6,6 +6,11 @@
   "type": "object",
   "additionalProperties": true,
   "properties": {
+    "members": {
+      "description": "A SET: the packages this recipe names, as project -> version constraint. A recipe with members describes a tree rather than one package, and must not also carry a distributable.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
     "distributable": {
       "description": "Where the source is fetched from (null when the package has no sources).",
       "oneOf": [
