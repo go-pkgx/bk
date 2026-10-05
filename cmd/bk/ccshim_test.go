@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -32,7 +33,10 @@ func TestCCShim(t *testing.T) {
 	// -c compiles and never links, so the link-only flags are dropped: clang
 	// warns about them there, and a caller may ask for that warning back as an
 	// error (the Linux kernel passes -Werror=unused-command-line-argument).
-	if gotName != "clang" || strings.Join(gotArgs, " ") != "--sysroot=/pkgx/glibc -c x.c" {
+	// The driver is RESOLVED to a path now, so assert on the basename: the
+	// shim looks its driver up itself, skipping its own directory, which is
+	// what lets `clang` be a shim without exec'ing itself (#302).
+	if filepath.Base(gotName) != "clang" || strings.Join(gotArgs, " ") != "--sysroot=/pkgx/glibc -c x.c" {
 		t.Fatalf("ran %q %v", gotName, gotArgs)
 	}
 	// c++/g++ take the C++ driver
@@ -40,12 +44,12 @@ func TestCCShim(t *testing.T) {
 		if code := ccShim(n, nil, &errb); code != 0 {
 			t.Fatalf("%s: code = %d", n, code)
 		}
-		if gotName != "clang++" {
+		if filepath.Base(gotName) != "clang++" {
 			t.Fatalf("%s ran %q, want the C++ driver", n, gotName)
 		}
 	}
 	// gcc is the C driver too
-	if code := ccShim("gcc", nil, &errb); code != 0 || gotName != "clang" {
+	if code := ccShim("gcc", nil, &errb); code != 0 || filepath.Base(gotName) != "clang" {
 		t.Fatalf("gcc ran %q (code %d)", gotName, code)
 	}
 }
@@ -101,8 +105,12 @@ func TestCCShimDispatch(t *testing.T) {
 
 	os.Args = []string{"/build/libexec/cc", "-c", "x.c"}
 	main()
-	if got != 0 || ran != "clang" {
+	if got != 0 || filepath.Base(ran) != "clang" {
 		t.Fatalf("dispatch: exit %d, ran %q", got, ran)
+	}
+	// And it did NOT run the shim it was invoked as.
+	if ran == "/build/libexec/cc" {
+		t.Fatal("the shim exec'd itself")
 	}
 }
 

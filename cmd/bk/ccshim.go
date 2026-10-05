@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -21,7 +22,7 @@ import (
 // wrapper.go exported as BK_CC / BK_CXX.
 func ccShim(name string, args []string, stderr io.Writer) int {
 	varName := "BK_CC"
-	if name == "c++" || name == "g++" {
+	if isCXXShim(name) {
 		varName = "BK_CXX"
 	}
 	driver := strings.Fields(os.Getenv(varName))
@@ -33,7 +34,17 @@ func ccShim(name string, args []string, stderr io.Writer) int {
 	if compileOnly(args) {
 		flags = withoutLinkFlags(flags)
 	}
-	cmd := execCommand(driver[0], append(flags, args...)...)
+	// Resolve the driver OURSELVES, skipping the directory this shim was
+	// invoked from. Without that, a shim named after the driver finds
+	// itself and re-execs forever — which is why `clang` and `clang++`
+	// were left unshimmed, and why the 13 recipes that call clang by name
+	// got a bare compiler with no sysroot (go-pkgx/bk#302).
+	bin, err := resolveDriver(driver[0], os.Args[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "bk %s: %v\n", name, err)
+		return 127
+	}
+	cmd := execCommand(bin, append(flags, args...)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, stderr
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
@@ -108,10 +119,80 @@ func errorsAs(err error, target any) bool { return errors.As(err, target) }
 // Matched by suffix so this stays level with buildscript's list without
 // repeating every triple.
 func isCompilerShim(name string) bool {
-	for _, base := range []string{"cc", "gcc", "c++", "g++"} {
+	for _, base := range compilerShimBases {
 		if name == base || strings.HasSuffix(name, "-"+base) {
 			return true
 		}
 	}
 	return false
 }
+
+// isCXXShim picks the C++ driver. By SUFFIX, so a triple-prefixed name is
+// routed like its bare one: `s390x-ibm-linux-gnu-g++` is a C++ compiler and
+// used to fall through to BK_CC, which would have handed a C++ build the C
+// driver with no libc++ headers.
+func isCXXShim(name string) bool {
+	for _, base := range []string{"c++", "g++", "clang++"} {
+		if name == base || strings.HasSuffix(name, "-"+base) {
+			return true
+		}
+	}
+	return false
+}
+
+// compilerShimBases is the single list of names that are shims, shared with
+// buildscript's materialiser so the set that is CREATED and the set that is
+// DISPATCHED cannot drift apart. They did not drift, but they were two
+// literals saying the same thing, which is the same bet.
+var compilerShimBases = []string{"cc", "gcc", "c++", "g++", "clang", "clang++"}
+
+// resolveDriver finds the real compiler for a shim, skipping the directory
+// the shim itself lives in.
+//
+// # WHY A SHIM CANNOT JUST EXEC ITS DRIVER BY NAME
+//
+// $BK_CC is `clang <sovereign flags>`, and the shim dir is FIRST on PATH.
+// So a shim named `clang` that exec'd "clang" would find itself, forever.
+// That is the whole reason `clang` and `clang++` were kept out of the shim
+// set — and the cost of keeping them out is measurable: of the pantry's
+// recipes, 77 set CC or CXX in an `env:` block, overwhelmingly to the bare
+// words `clang`, `gcc`, `clang++`, `g++`. A recipe's env is emitted AFTER
+// the sovereign preamble and replaces the variable whole, so every one of
+// those builds with no --sysroot, no -isystem and no crt path. gnu.org/
+// autoconf and gnu.org/automake fail exactly there:
+//
+//	checking for gcc... clang
+//	checking whether the C compiler works... no
+//	configure: error: C compiler cannot create executables
+//
+// Skipping our own directory removes the loop, so the names can be shimmed
+// and the doctrine holds: a sovereign setting that must apply to every
+// recipe goes where the SHIM imposes it, not in a variable recipes declare.
+//
+// An absolute or relative path is taken as given — only a bare name is
+// looked up, because only a bare name can resolve back to the shim.
+func resolveDriver(driver, self string) (string, error) {
+	if strings.ContainsRune(driver, os.PathSeparator) {
+		return driver, nil
+	}
+	selfDir := ""
+	if abs, err := filepath.Abs(filepath.Dir(self)); err == nil {
+		selfDir = abs
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(dir); err == nil && abs == selfDir {
+			continue // our own shim dir
+		}
+		cand := filepath.Join(dir, driver)
+		if fi, err := osStat(cand); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return cand, nil
+		}
+	}
+	return "", fmt.Errorf("%s is not on PATH outside %s — $BK_CC names a compiler that is not installed", driver, selfDir)
+}
+
+// osStat is a seam.
+var osStat = os.Stat
