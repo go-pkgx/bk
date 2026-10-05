@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -721,5 +722,54 @@ func TestRunTestReportsADependencyItCannotResolve(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "resolve test deps") {
 		t.Errorf("want the step named: %q", errOut.String())
+	}
+}
+
+// Privilege where the measured need is: a TEST gets GITHUB_TOKEN, a build
+// does not.
+//
+// Two recipes of 1899 ask for it — github.com/spencerkimball/stargazers and
+// github.com/mono0926/LicensePlist — and both ask in their `test:` block.
+// No `build:` block in the pantry references it, our overlay has none, and
+// bk's own fetcher never sends it, so SanitizedEnv stopped passing it to
+// third-party build scripts running as root with a token that carries
+// `packages: write` on the organisation.
+func TestTheTestSandboxGetsTheTokenAndOnlyWhenThereIsOne(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		token string
+		want  bool
+	}{
+		{"a token is set", "ghp_example", true},
+		{"no token at all", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testTestbed(t)
+			t.Setenv("GITHUB_TOKEN", tc.token)
+
+			var env []string
+			prev := testRun
+			testRun = func(_ string, e []string) error { env = e; return nil }
+			t.Cleanup(func() { testRun = prev })
+
+			p := writeTestRecipe(t, okRecipe)
+			var out, errOut bytes.Buffer
+			if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 0 {
+				t.Fatalf("runTest = %d (%s)", code, errOut.String())
+			}
+			got := slices.Contains(env, "GITHUB_TOKEN="+tc.token)
+			if got != tc.want {
+				t.Errorf("GITHUB_TOKEN in the test env = %v; want %v (env had %d entries)", got, tc.want, len(env))
+			}
+			// An empty token must not be forwarded as an empty variable: a
+			// recipe testing `-z "$GITHUB_TOKEN"` would then see it set.
+			if tc.token == "" {
+				for _, e := range env {
+					if strings.HasPrefix(e, "GITHUB_TOKEN=") {
+						t.Errorf("an empty token was forwarded as %q", e)
+					}
+				}
+			}
+		})
 	}
 }

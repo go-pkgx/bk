@@ -714,8 +714,26 @@ func SanitizedEnv(home, pkgxDir string) []string {
 	// variable. Measured in an emulated container: our bash fails, the same bash
 	// with QEMU_RESERVED_VA set succeeds, and the distribution's bash (built
 	// --without-bash-malloc) never had the problem.
+	// GITHUB_TOKEN is NOT in this list, and used to be.
+	//
+	// A build script is third-party code: the recipes come from
+	// pkgxdev/pantry, they run as root in the sovereign chroot, and the
+	// workflow's token carries `packages: write` on the whole organisation.
+	// Handing it to them means any recipe can publish a bottle.
+	//
+	// It was passed through "for recipes that fetch from GitHub". Measured
+	// against a fresh pantry on 2026-10-05, that is not what uses it:
+	//
+	//	1899 recipes · 2 reference GITHUB_TOKEN · BOTH in their `test:` block
+	//	0 in go-pkgx/pantry-overlay
+	//	bk's own fetcher never sends it — fetch/ has no Authorization header
+	//
+	// So no build block in the pantry wants it, and the rate-limit argument
+	// does not apply to bk's downloads either. The two that do want it are
+	// tests, and `bk test` adds it there on purpose — see cmd/bk/test.go.
+	// Privilege where the need was measured, and not one caller wider.
 	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "PKGX_PANTRY_DIR", "PKGX_PANTRY_PATH",
-		"PKGX_DIST", "PKGX_CACHE", "PKGX_PANTRY", "PKGX_PANTRY_OVERLAY", "PKGX_VERIFY", "GITHUB_TOKEN",
+		"PKGX_DIST", "PKGX_CACHE", "PKGX_PANTRY", "PKGX_PANTRY_OVERLAY", "PKGX_VERIFY",
 		"LD_LIBRARY_PATH", "QEMU_RESERVED_VA"} {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
