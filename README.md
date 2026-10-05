@@ -140,6 +140,66 @@ Completes the pure-Go [`go-pkgx`](https://github.com/go-pkgx) family (bottle / p
 pkgx / mirror) with the last Deno piece — a single static binary that builds pantry
 recipes with no Deno/Ruby/patchelf runtime, and cross-builds cleanly.
 
+## Naming a tree, not only a package
+
+A recipe describes one package: `versions`, `distributable`, `build`, `test`,
+`provides`, `dependencies`. Until recently the only way to name a **group**
+was a flat text file beside the format — `seed/order.txt`, 106 lines, and
+`builder/toolchain.txt`, 95 — which could not be versioned, published,
+installed or depended on.
+
+A recipe carrying `members` is a **set**:
+
+```hcl
+# go-pkgx/base-toolchain
+members = {
+  # clang, lld, compiler-rt — the compiler itself
+  "llvm.org" = "*"
+
+  # libc, crt objects and the dynamic loader
+  "gnu.org/glibc" = "*"
+}
+```
+
+`bk closure go-pkgx/base-toolchain` resolves it. So does `bk factory
+--recipes go-pkgx/base-toolchain`, and so would anything else that takes a
+project name — a set is expanded **at the root**, before the dependency walk
+looks at it, so nothing downstream learns the word.
+
+### Why a recipe and not a new kind of file
+
+The three systems that solved this agree on the shape:
+
+| | |
+| --- | --- |
+| **Nix** | a tree *is* a derivation. `buildEnv` takes a list of packages and its output is a tree of symlinks. No new kind of object. |
+| **Guix** | a manifest names packages; a **profile** is the tree it makes. |
+| **Spack** | `spack.yaml` is the abstract set, `spack.lock` the concrete one — the same root specs *"may concretize differently"*. |
+
+Nix's answer is the one taken. A set is an ordinary recipe, so it is signed,
+attested, published and installed by everything that already does those
+things for a package — rather than a second kind of artefact to keep in step.
+
+### A set is UNORDERED, and that is the point
+
+All three of those manifests are. The order comes out of resolution, not out
+of the file, and `bk closure` produces it from the dependency graph.
+
+Which is why **`seed/order.txt` is not a set and must not become one**. That
+file is a *build order*: inside a dependency cycle the topological order is a
+guess, and `order.txt` is the hand-tuned guess that works — `bk closure
+--check-order` exists to judge it. `builder/toolchain.txt` is a different
+thing, an *install* list, where order carries nothing; that is the one that
+moved.
+
+### What is missing, named rather than left out
+
+Guix's manual puts it plainly: *"to reproduce a profile bit-for-bit,
+manifests alone might not be enough"* — the same names resolve differently
+against a different package set, so a manifest needs the channel revisions
+beside it. `members` is the **abstract** half. The concrete half — resolved
+versions and digests, dated, Spack's `spack.lock` — does not exist here yet.
+
 ## Where the source came from, and whether it changed
 
 `bk` extracts tarballs from **233 distinct upstream hosts**, and in the
