@@ -142,7 +142,32 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 
 	paths := config.Compute(project, version, tgt)
 	res.Install = paths.Install
-	for _, d := range []string{paths.Build, paths.Install, paths.BuildInstall} {
+	// The two SCRATCH trees, and deliberately not paths.Install.
+	//
+	// Removing the installed prefix here destroyed the rootfs the build was
+	// running in. In the sovereign generation /bin/sh is a symlink to
+	// $PKGX_DIR/gnu.org/bash/v<ver>/bin/bash and /lib/<loader> to glibc's,
+	// because $ORIGIN in their RUNPATH has to resolve from the real location
+	// — a copy would break it. So `bk factory` building gnu.org/bash at the
+	// version /bin/sh points at deleted the shell BEFORE running a line, and
+	// every later exec of a `#!/bin/sh` script died with
+	//
+	//	fork/exec …/configure: no such file or directory
+	//
+	// naming the script, which exists, rather than the interpreter, which no
+	// longer did. Measured on the 78-package s390x generation: gnu.org/bash
+	// is built 74th, and ALL FIVE packages after it fail — libtool, cpanmin.us,
+	// help2man, gzip — while the 73 before it are untouched. Rebuilding
+	// gnu.org/glibc is the same wound one level deeper: it removes the loader
+	// every ELF names, after which nothing in the rootfs runs at all. That is
+	// why the second generation could not rebuild its own toolchain.
+	//
+	// Nothing is lost by keeping it: the build installs into BuildInstall
+	// (`+brewing`) and the rename at the end already removes paths.Install
+	// immediately before replacing it. This one was redundant as well as
+	// destructive — and dropping it means a FAILED rebuild no longer destroys
+	// a working install, which is worth having on its own.
+	for _, d := range []string{paths.Build, paths.BuildInstall} {
 		if err := osRemoveAll(d); err != nil {
 			return res, err
 		}
