@@ -10,6 +10,8 @@
 //	bk build             build a recipe into a bottle
 //	bk publish           push a built bottle to an OCI registry
 //	bk closure           print a project set's transitive runtime closure (topological)
+//	bk lock              resolve a set to the versions it means TODAY, and write them down
+//	bk lock              resolve a set to the exact versions it means today, and write them down
 //	bk factory           build a recipe set's whole closure and publish every bottle
 //	bk source            fetch the source a published bottle attests it was built from
 package main
@@ -114,7 +116,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|test|publish|closure|tools|tohcl|lint|overrides|depgaps|builder|factory|source> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|overrides|depgaps|builder|factory|source> [args]")
 		return 2
 	}
 
@@ -167,6 +169,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPublish(rest[1:], stdout, stderr)
 	case "closure":
 		return runClosure(rest[1:], stdout, stderr)
+	case "lock":
+		return runLock(rest[1:], stdout, stderr)
 	case "depgaps":
 		return runDepgaps(rest[1:], stdout, stderr)
 	case "undeclared":

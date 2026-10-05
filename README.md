@@ -192,13 +192,64 @@ guess, and `order.txt` is the hand-tuned guess that works — `bk closure
 thing, an *install* list, where order carries nothing; that is the one that
 moved.
 
-### What is missing, named rather than left out
+### `bk lock` — the concrete half
 
 Guix's manual puts it plainly: *"to reproduce a profile bit-for-bit,
 manifests alone might not be enough"* — the same names resolve differently
 against a different package set, so a manifest needs the channel revisions
-beside it. `members` is the **abstract** half. The concrete half — resolved
-versions and digests, dated, Spack's `spack.lock` — does not exist here yet.
+beside it. Spack names the two halves: an environment from `spack.yaml` has
+*"the same root specs... may concretize differently"*, one from `spack.lock`
+has *"the same concrete specs"*.
+
+`members` is the abstract half. `bk lock` is the concrete one:
+
+```
+$ bk lock --platform linux/x86-64 -o base-toolchain.lock.hcl go-pkgx/base-toolchain
+set: go-pkgx/base-toolchain names 25 member(s)
+lock: 41 project(s) pinned → base-toolchain.lock.hcl
+```
+
+```hcl
+# bk lock · linux/x86-64 · 2026-10-05T09:10:39Z
+#
+# roots:   go-pkgx/base-toolchain
+# pantry:  fd646990024e22f5752578cfdcfe2518b20c0797
+# overlay: f8f6dcfd7b17410a6de780bdd58c81fbbb38d1b3
+
+locked = {
+  "curl.se" = "8.17.0"
+  "gnu.org/bash" = "5.3"
+  "gnu.org/binutils" = "2.47"
+  …
+}
+```
+
+**And it matters more here than in Guix.** A Guix manifest resolves
+deterministically once the channel revision is pinned, because the version is
+*in* the checkout. A pkgx recipe's `versions:` asks GitHub for tags **at
+resolve time**, so pinning the pantry commit is not enough: the same pantry
+resolves `gnu.org/binutils` to whatever the newest tag is the day you ask. The
+resolved version has to be written down or it is not pinned at all.
+
+The platform is in the header because it changes the answer: the same set
+locks to **41** projects on `linux/x86-64` and **40** on `darwin/aarch64`,
+`github.com/besser82/libxcrypt` being the difference. A lock that did not say
+which platform it was taken on would be read as the other one's.
+
+Two deliberate shapes:
+
+- **Sorted by project, not in build order.** A lock is read as a diff, and a
+  topological order makes every line move when one dependency does.
+- **An unresolved project exits non-zero** and is named on stderr. A lock with
+  a hole in it that reads as a success is a lock somebody commits.
+
+### What is still missing, named rather than left out
+
+`bk lock` pins the **names and the versions**. It does not pin the **bytes**.
+Spack's `spack.lock` carries a full hash per spec; here a bottle digest would
+be the equivalent, and `bottle` can *verify* a digest but has no exported way
+to be *asked* for one. The header of every lock says so, rather than letting a
+reader assume a guarantee that is not there.
 
 ## Where the source came from, and whether it changed
 
