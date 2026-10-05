@@ -217,9 +217,8 @@ lock: 41 project(s) pinned → base-toolchain.lock.hcl
 # overlay: f8f6dcfd7b17410a6de780bdd58c81fbbb38d1b3
 
 locked = {
-  "curl.se" = "8.17.0"
-  "gnu.org/bash" = "5.3"
-  "gnu.org/binutils" = "2.47"
+  "curl.se" = { version = "8.17.0", spec = "sha256:5284d597c180…" }
+  "gnu.org/bash" = { version = "5.3", spec = "sha256:…" }
   …
 }
 ```
@@ -243,13 +242,38 @@ Two deliberate shapes:
 - **An unresolved project exits non-zero** and is named on stderr. A lock with
   a hole in it that reads as a success is a lock somebody commits.
 
+### `spec` — because a version is not enough either
+
+Spack's packaging guide says what goes into a spec hash: *"`build`, `link`,
+and `run` dependencies all affect the hash of Spack packages (along with
+`sha256` sums of patches and archives used to build the package, and a
+**canonical hash of the `package.py` recipes**)"*.
+
+The last clause is the one worth copying. Pinning a version catches an
+upstream that moved; hashing the **recipe** catches the other half — a build
+script edited in the pantry resolves to the same version and produces a
+different package. A lock with versions alone calls those two builds the same,
+which is the thing a lock exists not to do.
+
+`spec` is a Merkle hash over the platform, the project, the resolved version,
+the **parsed** recipe (every half of it the closure read) and the spec hashes
+of the dependencies. It is taken over the parsed value, not the file, so
+reformatting a recipe or rewriting its comments does not move it and changing
+what it says does — Spack's "canonical", by a different route.
+
+Measured: of **2091 recipes** in the pantry and the overlay, **0** fail to
+serialise. The property that matters is tested both ways round — a change to a
+leaf moves the leaf and everything above it; a change at the top moves the top
+alone — and that test was checked against a deliberately broken hash, which
+fails it, so it is not passing for free.
+
 ### What is still missing, named rather than left out
 
-`bk lock` pins the **names and the versions**. It does not pin the **bytes**.
-Spack's `spack.lock` carries a full hash per spec; here a bottle digest would
-be the equivalent, and `bottle` can *verify* a digest but has no exported way
-to be *asked* for one. The header of every lock says so, rather than letting a
-reader assume a guarantee that is not there.
+The spec hash covers the **inputs**, as Nix's derivation hash and Spack's spec
+hash do. It does not cover the **output bytes** of the built bottle. `bottle`
+can *verify* a digest but has no exported way to be *asked* for one, and a lock
+taken before anything is built has no output to name. The header of every lock
+says so, rather than letting a reader assume a guarantee that is not there.
 
 ## Where the source came from, and whether it changed
 

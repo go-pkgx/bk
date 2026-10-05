@@ -8,6 +8,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-pkgx/bk/logical"
 	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-pkgx/bk/target"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,7 +51,7 @@ func TestLockPinsTheResolvedVersions(t *testing.T) {
 		t.Fatalf("code=%d err=%q", code, errb.String())
 	}
 	got := out.String()
-	for _, want := range []string{`"app.org" = "1.2.4"`, `"lib.org" = "1.2.4"`, "linux/x86-64", "2026-10-05T09:00:00Z"} {
+	for _, want := range []string{`"app.org" = { version = "1.2.4"`, `"lib.org" = { version = "1.2.4"`, "linux/x86-64", "2026-10-05T09:00:00Z"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the lock does not carry %q:\n%s", want, got)
 		}
@@ -62,7 +63,7 @@ func TestLockPinsTheResolvedVersions(t *testing.T) {
 	}
 	// It says where it stops. A lock that quietly guarantees less than a
 	// reader assumes is worse than one that names its limit.
-	if !strings.Contains(got, "does NOT pin: the bytes") {
+	if !strings.Contains(got, "does NOT pin: the BYTES of the built bottle") {
 		t.Errorf("the lock does not say what it leaves unpinned:\n%s", got)
 	}
 }
@@ -129,7 +130,7 @@ func TestLockWritesToAFileWhenAsked(t *testing.T) {
 	if !ok {
 		t.Fatalf("nothing was written; files=%v", *files)
 	}
-	if !strings.Contains(string(b), `"lib.org" = "1.2.4"`) {
+	if !strings.Contains(string(b), `"lib.org" = { version = "1.2.4"`) {
 		t.Errorf("file=%q", b)
 	}
 	if out.Len() != 0 {
@@ -283,5 +284,193 @@ func TestLockDispatch(t *testing.T) {
 	}
 	if !strings.Contains(out, `locked = {`) {
 		t.Errorf("dispatch lock out=%q", out)
+	}
+}
+
+// specHash is a MERKLE hash, and this is the control that says so: a change
+// to a leaf must move the leaf AND everything above it, and a change at the
+// top must move the top ALONE.
+//
+// Without both halves the test is worthless in the usual two ways. A hash
+// that ignored dependencies would pass the second half. A hash that mixed
+// every project together — the whole-closure digest it is easy to write by
+// accident — would pass the first.
+func TestSpecHashMovesExactlyTheSubtreeAbove(t *testing.T) {
+	// top → mid → leaf, plus `other` depending on nothing: a project with no
+	// relation to the edit must not move, or "everything moved" would read as
+	// a pass.
+	base := map[string]string{
+		"top.org":   "dependencies:\n  mid.org: '*'\n" + lockableRecipe,
+		"mid.org":   "dependencies:\n  leaf.org: '*'\n" + lockableRecipe,
+		"leaf.org":  lockableRecipe,
+		"other.org": lockableRecipe,
+	}
+	lockOf := func(t *testing.T, recipes map[string]string) map[string]string {
+		t.Helper()
+		p, _ := lockbed(t, recipes)
+		var out, errb bytes.Buffer
+		if code := runLock([]string{"--pantry", p, "--platform", "linux/x86-64", "top.org", "other.org"}, &out, &errb); code != 0 {
+			t.Fatalf("code=%d err=%q", code, errb.String())
+		}
+		got := map[string]string{}
+		for _, line := range strings.Split(out.String(), "\n") {
+			proj, rest, ok := strings.Cut(strings.TrimSpace(line), " = { version = ")
+			if !ok {
+				continue
+			}
+			_, spec, _ := strings.Cut(rest, `spec = "`)
+			spec, _, _ = strings.Cut(spec, `"`)
+			got[strings.Trim(proj, `"`)] = spec
+		}
+		if len(got) != 4 {
+			t.Fatalf("expected 4 pins, got %v (out=%s)", got, out.String())
+		}
+		return got
+	}
+
+	before := lockOf(t, base)
+
+	// 1. Edit the LEAF's build script. Everything above it must move.
+	edited := map[string]string{}
+	for k, v := range base {
+		edited[k] = v
+	}
+	edited["leaf.org"] = strings.Replace(lockableRecipe, "script: [make]", "script: [make, -j1]", 1)
+	after := lockOf(t, edited)
+	for _, proj := range []string{"leaf.org", "mid.org", "top.org"} {
+		if before[proj] == after[proj] {
+			t.Errorf("%s did not move when the leaf's build script changed — the hash is not a Merkle over the dependencies", proj)
+		}
+	}
+	if before["other.org"] != after["other.org"] {
+		t.Errorf("other.org moved although nothing it depends on changed: %s → %s", before["other.org"], after["other.org"])
+	}
+
+	// 2. Edit the TOP. Nothing below it may move.
+	edited2 := map[string]string{}
+	for k, v := range base {
+		edited2[k] = v
+	}
+	edited2["top.org"] = "dependencies:\n  mid.org: '*'\n" + strings.Replace(lockableRecipe, "script: [make]", "script: [make, check]", 1)
+	after2 := lockOf(t, edited2)
+	if before["top.org"] == after2["top.org"] {
+		t.Error("top.org did not move when its own build script changed")
+	}
+	for _, proj := range []string{"mid.org", "leaf.org", "other.org"} {
+		if before[proj] != after2[proj] {
+			t.Errorf("%s moved when a project ABOVE it changed: %s → %s", proj, before[proj], after2[proj])
+		}
+	}
+}
+
+// Reformatting a recipe must not move its hash — the hash is over the PARSED
+// recipe, which is what makes it survive a reflow of the pantry. And the same
+// recipe on a different platform must hash differently, because it is a
+// different build.
+func TestSpecHashIgnoresFormattingAndSeesThePlatform(t *testing.T) {
+	spec := func(t *testing.T, body, platform string) string {
+		t.Helper()
+		p, _ := lockbed(t, map[string]string{"lib.org": body})
+		var out, errb bytes.Buffer
+		if code := runLock([]string{"--pantry", p, "--platform", platform, "lib.org"}, &out, &errb); code != 0 {
+			t.Fatalf("code=%d err=%q", code, errb.String())
+		}
+		_, s, _ := strings.Cut(out.String(), `spec = "`)
+		s, _, _ = strings.Cut(s, `"`)
+		return s
+	}
+	tidy := "versions:\n  - 1.2.3\n  - 1.2.4\ndistributable:\n  url: https://x/v{{version}}.tgz\nbuild:\n  script: [make]\n"
+	// Same meaning: comments, a flow sequence rewritten as a block one, and a
+	// different key order.
+	reflowed := "# the same recipe, spelled differently\nbuild:\n  script:\n    - make\ndistributable:\n  url: https://x/v{{version}}.tgz\nversions:\n  - 1.2.3\n  - 1.2.4\n"
+	if a, b := spec(t, tidy, "linux/x86-64"), spec(t, reflowed, "linux/x86-64"); a != b {
+		t.Errorf("reformatting moved the hash:\n  %s\n  %s", a, b)
+	}
+	if a, b := spec(t, tidy, "linux/x86-64"), spec(t, tidy, "darwin/aarch64"); a == b {
+		t.Error("the same recipe hashes alike on two platforms — the platform is not in the hash")
+	}
+}
+
+// A recipe that cannot be serialised has no hash, and the project must be
+// NAMED as unresolved rather than written into the lock without one.
+func TestSpecHashRefusesAnUnserialisableRecipe(t *testing.T) {
+	bad := &pantry.Recipe{Build: map[string]any{"script": make(chan int)}}
+	if _, err := specHash([]*pantry.Recipe{bad}, "x.org", "1", target.Target{Platform: "linux", Arch: "x86-64"}, nil, nil); err == nil {
+		t.Fatal("a recipe json cannot marshal produced a hash")
+	}
+}
+
+// A dependency the closure could not read is recorded as unknown, not
+// omitted: omitting it would make "no recipe for X" and "X is not a
+// dependency" hash alike.
+func TestSpecHashDistinguishesAnUnreadableDepFromNoDep(t *testing.T) {
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	r := []*pantry.Recipe{{Build: "make"}}
+	none, err := specHash(r, "x.org", "1", tgt, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := specHash(r, "x.org", "1", tgt, nil, []string{"y.org"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	known, err := specHash(r, "x.org", "1", tgt, map[string]string{"y.org": "sha256:aa"}, []string{"y.org"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none == unknown || unknown == known || none == known {
+		t.Errorf("three different dependency situations do not hash differently:\n  none    %s\n  unknown %s\n  known   %s", none, unknown, known)
+	}
+}
+
+// shortHash is what gets printed when a line has to fit; it must not invent
+// digits for a hash shorter than the prefix it takes.
+func TestShortHash(t *testing.T) {
+	if got := shortHash("sha256:0123456789abcdef"); got != "0123456789ab" {
+		t.Errorf("shortHash = %q", got)
+	}
+	if got := shortHash("abc"); got != "abc" {
+		t.Errorf("a short hash was padded or cut: %q", got)
+	}
+}
+
+// specDeps reduces BOTH halves of a recipe, de-duplicated and sorted: the
+// hash must describe the graph the closure walked, and the closure reads the
+// overlay's half and the pantry's half as two recipes.
+func TestSpecDepsUnionsBothHalves(t *testing.T) {
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	got := specDeps([]*pantry.Recipe{
+		{Dependencies: map[string]any{"b.org": "*", "a.org": "*"}},
+		{Dependencies: map[string]any{"a.org": "*", "c.org": "*"}},
+	}, tgt)
+	if strings.Join(got, " ") != "a.org b.org c.org" {
+		t.Errorf("specDeps = %v", got)
+	}
+}
+
+// A recipe YAML accepts and JSON cannot represent — a mapping with a
+// non-string key, which YAML allows and JSON does not — leaves a project with
+// no spec hash. It must be NAMED as unresolved, and the run must not succeed.
+//
+// This is not hypothetical arithmetic: `true: x` and `1.5: x` are both legal
+// YAML mappings, and yaml.v3 hands them over as map[any]any.
+func TestLockNamesAProjectWhoseRecipeCannotBeHashed(t *testing.T) {
+	p, _ := lockbed(t, map[string]string{
+		"odd.org": "versions:\n  - 1.2.3\nbuild:\n  script: [make]\nprovides:\n  true: x\n",
+	})
+	var out, errb bytes.Buffer
+	code := runLock([]string{"--pantry", p, "odd.org"}, &out, &errb)
+	if code != 1 {
+		t.Fatalf("code=%d; want 1 (stderr=%q)", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "unresolved: odd.org") {
+		t.Errorf("the project is not named: %q", errb.String())
+	}
+	// Checked inside the `locked` block, not in the whole output: the roots
+	// line names it too, and a test that looked at the whole file would pass
+	// whatever the lock contained.
+	_, block, _ := strings.Cut(out.String(), "locked = {")
+	if strings.Contains(block, "odd.org") {
+		t.Errorf("a project with no hash was written into the lock:\n%s", block)
 	}
 }

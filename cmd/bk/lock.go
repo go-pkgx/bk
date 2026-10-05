@@ -42,11 +42,15 @@ import (
 //
 // # WHAT THIS PINS, AND WHAT IT DOES NOT
 //
-// It pins the NAMES and the VERSIONS, and records the pantry and overlay
-// revisions that produced them. It does not pin the bytes: a bottle's digest
-// would do that, and `bottle` can verify a digest but has no exported way to
-// ask for one. That is the next half, and saying so is better than a lock
-// that quietly guarantees less than a reader assumes.
+// It pins the NAMES, the VERSIONS and a per-project SPEC HASH (see specHash),
+// and records the pantry and overlay revisions that produced them. The spec
+// hash covers the INPUTS — platform, version, parsed recipe, dependencies —
+// which is what Nix's derivation hash and Spack's spec hash cover too.
+//
+// It does not pin the OUTPUT bytes. A bottle digest would, and `bottle` can
+// verify a digest but has no exported way to be asked for one; and a lock
+// taken before anything is built has no output to name. Saying so is better
+// than a lock that quietly guarantees less than a reader assumes.
 func runLock(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("lock", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -88,15 +92,19 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 	warn := func(s string) { fmt.Fprintln(stderr, s) }
 
 	roots := expandSets(lset, *overlayDir, *pantryDir, closureRoots(fs.Args(), warn), warn)
-	order, _ := closureOf(lset, *overlayDir, *pantryDir, tgt, roots, warn)
+	order, _, read := closureOf(lset, *overlayDir, *pantryDir, tgt, roots, warn)
 	if len(order) == 0 {
 		fmt.Fprintln(stderr, "lock: the closure is empty — nothing was read, which is a failure and not a clean result")
 		return 1
 	}
 
-	type pin struct{ project, version string }
+	type pin struct{ project, version, spec string }
 	var pins []pin
 	var unresolved []string
+	// Deps precede dependents in `order`, so a dependency's hash is always
+	// already here when the dependent is hashed. That is the whole reason the
+	// walk is topological and the reason this loop is not sorted.
+	hashes := map[string]string{}
 	for _, proj := range order {
 		r, _, err := recipeLoader(lset, *overlayDir, *pantryDir, proj)
 		if err != nil || r == nil {
@@ -108,7 +116,17 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 			unresolved = append(unresolved, fmt.Sprintf("%s (%v)", proj, err))
 			continue
 		}
-		pins = append(pins, pin{proj, v})
+		// The recipes the closure itself read. Not re-read: the walk already
+		// has them, and a project whose recipes do not load never reaches
+		// `order`, so a second read could only fail in ways nothing can test.
+		recs := read[proj]
+		sh, err := specHash(recs, proj, v, tgt, hashes, specDeps(recs, tgt))
+		if err != nil {
+			unresolved = append(unresolved, fmt.Sprintf("%s (%v)", proj, err))
+			continue
+		}
+		hashes[proj] = sh
+		pins = append(pins, pin{proj, v, sh})
 	}
 	// Sorted, not closure order: a lock is a SET of facts and is read as a
 	// diff. Topological order changes when an unrelated dependency moves, and
@@ -123,15 +141,20 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(&b, "# overlay: %s\n", gitRevOf(*overlayDir))
 	}
 	b.WriteString("#\n" +
-		"# What this pins: the NAMES and the VERSIONS, and the revisions that\n" +
-		"# produced them. What it does NOT pin: the bytes. A bottle digest would,\n" +
-		"# and that is the next half — a lock that quietly guarantees less than a\n" +
-		"# reader assumes is worse than one that says where it stops.\n#\n" +
+		"# `spec` is a Merkle hash over the platform, the name, the resolved\n" +
+		"# version, the PARSED recipe (so reformatting does not move it) and the\n" +
+		"# spec hashes of the dependencies — Spack's shape, whose packaging guide\n" +
+		"# counts \"a canonical hash of the package.py recipes\" among a spec hash's\n" +
+		"# inputs. A version alone calls two builds the same when a build script\n" +
+		"# changed under them.\n#\n" +
+		"# What this still does NOT pin: the BYTES of the built bottle. The spec\n" +
+		"# hash covers the inputs, as Nix's and Spack's do; an output digest is a\n" +
+		"# different promise and is not made here.\n#\n" +
 		"# Sorted by project, not in build order: a lock is read as a diff, and a\n" +
 		"# topological order makes every line move when one dependency does.\n\n")
 	b.WriteString("locked = {\n")
 	for _, p := range pins {
-		fmt.Fprintf(&b, "  %q = %q\n", p.project, p.version)
+		fmt.Fprintf(&b, "  %q = { version = %q, spec = %q }\n", p.project, p.version, p.spec)
 	}
 	b.WriteString("}\n")
 

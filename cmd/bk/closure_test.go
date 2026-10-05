@@ -150,7 +150,7 @@ func TestClosureOfSeesAnOverlayOnlyDependency(t *testing.T) {
 	writeClosureRecipe(t, pantry, "github.com/besser82/libxcrypt", "build: make\n")
 
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
-	order, _ := closureOf(nil, overlay, pantry, tgt, []string{"perl.org"}, func(string) {})
+	order, _, _ := closureOf(nil, overlay, pantry, tgt, []string{"perl.org"}, func(string) {})
 	for _, want := range []string{"github.com/besser82/libxcrypt", "gnu.org/gdbm", "perl.org"} {
 		if !slices.Contains(order, want) {
 			t.Errorf("order = %v, missing %s", order, want)
@@ -163,7 +163,7 @@ func TestClosureOfSeesAnOverlayOnlyDependency(t *testing.T) {
 	}
 
 	// Without the overlay this is the walk it replaces, blind spot and all.
-	if order, _ := closureOf(nil, "", pantry, tgt, []string{"perl.org"}, func(string) {}); slices.Contains(order, "github.com/besser82/libxcrypt") {
+	if order, _, _ := closureOf(nil, "", pantry, tgt, []string{"perl.org"}, func(string) {}); slices.Contains(order, "github.com/besser82/libxcrypt") {
 		t.Errorf("a pantry-only walk cannot see the overlay's edge: %v", order)
 	}
 }
@@ -178,7 +178,7 @@ func TestClosureOfCollectsDemandsFromBothHalves(t *testing.T) {
 	writeClosureRecipe(t, overlay, "app.org", "dependencies:\n  lib.org: '>=1.60'\n")
 	writeClosureRecipe(t, pantry, "lib.org", "build: make\n")
 
-	_, demands := closureOf(nil, overlay, pantry, target.Target{Platform: "linux", Arch: "x86-64"},
+	_, demands, _ := closureOf(nil, overlay, pantry, target.Target{Platform: "linux", Arch: "x86-64"},
 		[]string{"app.org"}, func(string) {})
 	got := demands["lib.org"]
 	slices.Sort(got)
