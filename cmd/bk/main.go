@@ -10,8 +10,7 @@
 //	bk build             build a recipe into a bottle
 //	bk publish           push a built bottle to an OCI registry
 //	bk closure           print a project set's transitive runtime closure (topological)
-//	bk lock              resolve a set to the versions it means TODAY, and write them down
-//	bk lock              resolve a set to the exact versions it means today, and write them down
+//	bk lock              resolve a set to the versions it means today, write them down, and --check them later
 //	bk factory           build a recipe set's whole closure and publish every bottle
 //	bk source            fetch the source a published bottle attests it was built from
 package main

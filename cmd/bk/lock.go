@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -13,7 +12,6 @@ import (
 	"github.com/go-pkgx/bk/logical"
 	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
-	"github.com/go-pkgx/bk/versions"
 )
 
 // runLock implements `bk lock`: resolve a set (or a list of projects) to the
@@ -59,8 +57,33 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 	overridesDir := fs.String("overrides", envOr("OVERRIDES", ""), "directory of *.hcl logical recipe overrides")
 	platform := fs.String("platform", envOr("PLATFORM", "linux/x86-64"), "target os/arch")
 	out := fs.String("o", "", "write here instead of stdout")
+	check := fs.String("check", "", "re-resolve an existing lock and report what moved, instead of writing one")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	// --check takes its roots, its platform and the revisions it expects FROM
+	// the file. Naming them again on the command line would let the two
+	// disagree, and the check would then be of a different question from the
+	// one the file answers.
+	if *check != "" {
+		if fs.NArg() > 0 {
+			fmt.Fprintf(stderr, "lock --check reads its roots from %s; %q on the command line would ask a different question\n", *check, fs.Arg(0))
+			return 2
+		}
+		want, err := readLock(*check)
+		if err != nil {
+			fmt.Fprintln(stderr, "lock:", err)
+			return 2
+		}
+		// A lock that names neither a platform nor a root cannot be checked
+		// against anything. Refused rather than defaulted: a default would
+		// re-resolve a DIFFERENT question and report "none moved".
+		if want.Platform == "" || len(want.Roots) == 0 {
+			fmt.Fprintf(stderr, "lock: %s names no %s, so there is nothing to re-resolve\n",
+				*check, map[bool]string{true: "platform", false: "roots"}[want.Platform == ""])
+			return 2
+		}
+		return checkLock(want, want.Roots, *pantryDir, *overlayDir, *overridesDir, want.Platform, stdout, stderr)
 	}
 	if fs.NArg() == 0 {
 		fmt.Fprintln(stderr, "lock: name at least one project or set — a lock of nothing is not an empty lock, it is a mistake")
@@ -98,65 +121,20 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	type pin struct{ project, version, spec string }
-	var pins []pin
-	var unresolved []string
-	// Deps precede dependents in `order`, so a dependency's hash is always
-	// already here when the dependent is hashed. That is the whole reason the
-	// walk is topological and the reason this loop is not sorted.
-	hashes := map[string]string{}
-	for _, proj := range order {
-		r, _, err := recipeLoader(lset, *overlayDir, *pantryDir, proj)
-		if err != nil || r == nil {
-			unresolved = append(unresolved, fmt.Sprintf("%s (no recipe: %v)", proj, err))
-			continue
-		}
-		v, _, err := versions.Resolve(r.Versions, "")
-		if err != nil || v == "" {
-			unresolved = append(unresolved, fmt.Sprintf("%s (%v)", proj, err))
-			continue
-		}
-		// The recipes the closure itself read. Not re-read: the walk already
-		// has them, and a project whose recipes do not load never reaches
-		// `order`, so a second read could only fail in ways nothing can test.
-		recs := read[proj]
-		sh, err := specHash(recs, proj, v, tgt, hashes, specDeps(recs, tgt))
-		if err != nil {
-			unresolved = append(unresolved, fmt.Sprintf("%s (%v)", proj, err))
-			continue
-		}
-		hashes[proj] = sh
-		pins = append(pins, pin{proj, v, sh})
-	}
-	// Sorted, not closure order: a lock is a SET of facts and is read as a
-	// diff. Topological order changes when an unrelated dependency moves, and
-	// every line would then appear to have changed.
-	sort.Slice(pins, func(i, j int) bool { return pins[i].project < pins[j].project })
+	pins, unresolved := resolveLock(lset, *overlayDir, *pantryDir, tgt, order, read)
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "# bk lock · %s · %s\n#\n", *platform, lockNow().UTC().Format(time.RFC3339))
-	fmt.Fprintf(&b, "# roots:   %s\n", strings.Join(fs.Args(), " "))
-	fmt.Fprintf(&b, "# pantry:  %s\n", gitRevOf(*pantryDir))
-	if *overlayDir != "" {
-		fmt.Fprintf(&b, "# overlay: %s\n", gitRevOf(*overlayDir))
+	doc := lockDoc{
+		Version:   lockfileVersion,
+		Platform:  *platform,
+		Generated: lockNow().UTC().Format(time.RFC3339),
+		BK:        bkVersion(),
+		Roots:     fs.Args(),
+		Pantry:    gitRevOf(*pantryDir),
+		Overlay:   gitRevOf(*overlayDir),
+		Pins:      pins,
 	}
-	b.WriteString("#\n" +
-		"# `spec` is a Merkle hash over the platform, the name, the resolved\n" +
-		"# version, the PARSED recipe (so reformatting does not move it) and the\n" +
-		"# spec hashes of the dependencies — Spack's shape, whose packaging guide\n" +
-		"# counts \"a canonical hash of the package.py recipes\" among a spec hash's\n" +
-		"# inputs. A version alone calls two builds the same when a build script\n" +
-		"# changed under them.\n#\n" +
-		"# What this still does NOT pin: the BYTES of the built bottle. The spec\n" +
-		"# hash covers the inputs, as Nix's and Spack's do; an output digest is a\n" +
-		"# different promise and is not made here.\n#\n" +
-		"# Sorted by project, not in build order: a lock is read as a diff, and a\n" +
-		"# topological order makes every line move when one dependency does.\n\n")
-	b.WriteString("locked = {\n")
-	for _, p := range pins {
-		fmt.Fprintf(&b, "  %q = { version = %q, spec = %q }\n", p.project, p.version, p.spec)
-	}
-	b.WriteString("}\n")
+	b := strings.Builder{}
+	b.WriteString(renderLock(doc))
 
 	for _, u := range unresolved {
 		fmt.Fprintf(stderr, "lock: unresolved: %s\n", u)
