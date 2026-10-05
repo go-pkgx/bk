@@ -10,6 +10,7 @@
 //	bk build             build a recipe into a bottle
 //	bk publish           push a built bottle to an OCI registry
 //	bk closure           print a project set's transitive runtime closure (topological)
+//	bk catalog           build (and publish) the catalogue pkgx ls and <TAB> read
 //	bk lock              resolve a set to the versions it means today, write them down, and --check them later
 //	bk factory           build a recipe set's whole closure and publish every bottle
 //	bk source            fetch the source a published bottle attests it was built from
@@ -168,6 +169,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPublish(rest[1:], stdout, stderr)
 	case "closure":
 		return runClosure(rest[1:], stdout, stderr)
+	case "catalog":
+		return runCatalog(rest[1:], stdout, stderr)
 	case "lock":
 		return runLock(rest[1:], stdout, stderr)
 	case "depgaps":
