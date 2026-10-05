@@ -468,21 +468,7 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 		// how a build with no libcxx bottle ended up passing
 		// `-L/pkgx/libcxx.llvm.org/v[0-9]*/lib` to the linker and failing
 		// configure's very first "can the compiler create executables" probe.
-		out = append(out,
-			`bkresolve() { set +f; for d in $1; do case "$d" in *'*'*|*'['*) continue;; esac; printf '%s\n' "$d"; done | sort -V | tail -n1; }`,
-			`export BK_GLIBC_PREFIX="$(bkresolve "$PKGX_DIR/gnu.org/glibc/v[0-9]*")"`,
-			`[ -n "$BK_GLIBC_PREFIX" ] && export BK_GLIBC_PREFIX="$BK_GLIBC_PREFIX/"`,
-			`export BK_GLIBC_LIB="$(bkresolve "${BK_GLIBC_PREFIX}lib/glibc-[0-9]*")"`,
-			`[ -n "$BK_GLIBC_LIB" ] && export BK_GLIBC_LIB="$BK_GLIBC_LIB/"`,
-			`export BK_KHDR_PREFIX="$(bkresolve "$PKGX_DIR/kernel.org/linux-headers/v[0-9]*")"`,
-			`[ -n "$BK_KHDR_PREFIX" ] && export BK_KHDR_PREFIX="$BK_KHDR_PREFIX/"`,
-			`export BK_LIBCXX_PREFIX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/v[0-9]*")"`,
-			`[ -n "$BK_LIBCXX_PREFIX" ] && export BK_LIBCXX_PREFIX="$BK_LIBCXX_PREFIX/"`,
-			// libgcc.a, which lives under lib/gcc/<triple>/<version>/ — a
-			// directory no linker searches by default, and whose middle two
-			// components both move with the bottle.
-			`export BK_LIBGCC="$(bkresolve "$PKGX_DIR/gnu.org/gcc/v[0-9]*/lib/gcc/*/[0-9]*")"`,
-		)
+		out = append(out, sysrootResolve...)
 		// Shared driver flags: glibc sysroot (its headers + the kernel headers it
 		// includes), glibc crt/libc, and llvm's compiler-rt builtins (no libgcc).
 		// -L takes NO space: libtool parses the flag itself and rejects a
@@ -498,7 +484,7 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 		// which --rtlib=compiler-rt does NOT remove. It is a SEARCH PATH that is
 		// missing, so it belongs with the other driver flags rather than in
 		// RUSTFLAGS: see the note where RUSTFLAGS used to be set.
-		base := `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB"${BK_LIBGCC:+ -L"$BK_LIBGCC"} --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument`
+		base := baseSysrootFlags
 		// C: no unwinder (exception-free C). C++: libc++ headers + its libunwind,
 		// from the libcxx.llvm.org bottle (-stdlib=libc++ makes the driver link
 		// -lc++ itself when it links a C++ target).
@@ -725,3 +711,31 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 	}
 	return out
 }
+
+const baseSysrootFlags = `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB"${BK_LIBGCC:+ -L"$BK_LIBGCC"} --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument`
+
+// sysrootResolve locates the bottles a pkgx-supplied libc toolchain needs and
+// exports their prefixes. Shared with the TEST wrapper, which needs the same
+// sysroot for the same reason and must not grow a second copy that drifts.
+var sysrootResolve = []string{
+	`bkresolve() { set +f; for d in $1; do case "$d" in *'*'*|*'['*) continue;; esac; printf '%s\n' "$d"; done | sort -V | tail -n1; }`,
+	`export BK_GLIBC_PREFIX="$(bkresolve "$PKGX_DIR/gnu.org/glibc/v[0-9]*")"`,
+	`[ -n "$BK_GLIBC_PREFIX" ] && export BK_GLIBC_PREFIX="$BK_GLIBC_PREFIX/"`,
+	`export BK_GLIBC_LIB="$(bkresolve "${BK_GLIBC_PREFIX}lib/glibc-[0-9]*")"`,
+	`[ -n "$BK_GLIBC_LIB" ] && export BK_GLIBC_LIB="$BK_GLIBC_LIB/"`,
+	`export BK_KHDR_PREFIX="$(bkresolve "$PKGX_DIR/kernel.org/linux-headers/v[0-9]*")"`,
+	`[ -n "$BK_KHDR_PREFIX" ] && export BK_KHDR_PREFIX="$BK_KHDR_PREFIX/"`,
+	`export BK_LIBCXX_PREFIX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/v[0-9]*")"`,
+	`[ -n "$BK_LIBCXX_PREFIX" ] && export BK_LIBCXX_PREFIX="$BK_LIBCXX_PREFIX/"`,
+	`export BK_LIBGCC="$(bkresolve "$PKGX_DIR/gnu.org/gcc/v[0-9]*/lib/gcc/*/[0-9]*")"`,
+}
+
+// SysrootCC is the driver flag set for compiling C against a pkgx-supplied
+// glibc. It is the sysroot and nothing else: no recipe CFLAGS, no rpath, no
+// CMAKE_PREFIX_PATH. A test that compiles must be able to produce a binary at
+// all; it must NOT be handed the flags that made the artefact link, or a
+// bottle whose own headers are wrong would still pass.
+const SysrootCC = baseSysrootFlags + ` --unwindlib=none`
+
+// SysrootCXX is SysrootCC plus libc++.
+const SysrootCXX = `${BK_LIBCXX_PREFIX:+-stdlib=libc++ -isystem "${BK_LIBCXX_PREFIX}include/c++/v1"} ` + baseSysrootFlags + ` ${BK_LIBCXX_PREFIX:+--unwindlib=libunwind}`
