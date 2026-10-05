@@ -580,6 +580,18 @@ func buildDirListing(dir string, cause error) string {
 	if len(ents) == 0 {
 		return fmt.Sprintf("\n  %s is EMPTY — the source never landed there", dir)
 	}
+	// Answer the question the error asked, instead of leaving it to a reader
+	// with a truncated alphabetical list. The first version printed twelve
+	// names and `configure` sorts after every capital letter in ASCII, so for
+	// gnu.org/bash it fell into "… and 115 more" and the one thing worth
+	// knowing was the one thing not shown.
+	if named := missingName(cause, dir); named != "" {
+		if fi, err := osStat(filepath.Join(dir, named)); err == nil {
+			return fmt.Sprintf("\n  but %s IS there (%s, %d bytes) — so the exec failed for another reason: "+
+				"an interpreter its #! names, or an ELF whose loader is absent",
+				named, fi.Mode(), fi.Size())
+		}
+	}
 	const show = 12
 	names := make([]string, 0, len(ents))
 	for _, e := range ents {
@@ -624,4 +636,26 @@ func plural(n int, one, many string) string {
 	default:
 		return fmt.Sprintf("%d %s", n, many)
 	}
+}
+
+// missingName is the file an exec failure named, when it names one inside
+// dir. "fork/exec <dir>/configure: no such file or directory" yields
+// "configure".
+//
+// Only a direct child: a deeper path is a different question, and guessing
+// at one would put a wrong answer in an error message.
+func missingName(cause error, dir string) string {
+	msg := cause.Error()
+	i := strings.Index(msg, dir+string(filepath.Separator))
+	if i < 0 {
+		return ""
+	}
+	rest := msg[i+len(dir)+1:]
+	if j := strings.IndexAny(rest, ": \t\n"); j >= 0 {
+		rest = rest[:j]
+	}
+	if rest == "" || strings.Contains(rest, string(filepath.Separator)) {
+		return ""
+	}
+	return rest
 }

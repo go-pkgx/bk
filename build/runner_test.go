@@ -1250,3 +1250,58 @@ func TestBuildSaysWhenAFetchLandedNothing(t *testing.T) {
 		t.Errorf("an empty fetch did not say so:\n%s", got)
 	}
 }
+
+// The listing printed twelve names and `configure` sorts after every capital
+// letter in ASCII, so for gnu.org/bash it fell into "… and 115 more" — the
+// one thing worth knowing was the one thing not shown. Measured on the gen1
+// pilot of 2026-10-05: 127 entries listed, the question still open.
+func TestBuildDirListingSaysWhetherTheNamedFileIsActuallyThere(t *testing.T) {
+	dir := t.TempDir()
+	cause := fmt.Errorf("fork/exec %s/configure: no such file or directory", filepath.Join(dir))
+
+	// Present: say so, and say the exec failed for another reason — the two
+	// that remain are an interpreter and a loader.
+	if err := os.WriteFile(filepath.Join(dir, "configure"), []byte("#! /bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Enough other files that `configure` would be truncated away.
+	for i := range 20 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("A%02d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := buildDirListing(dir, cause)
+	if !strings.Contains(got, "configure IS there") {
+		t.Errorf("a present file was not reported as present: %q", got)
+	}
+	for _, w := range []string{"an interpreter its #! names", "loader is absent"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("the remaining explanations are not named: %q", got)
+		}
+	}
+
+	// Absent: fall through to the listing, which is the other half.
+	if err := os.Remove(filepath.Join(dir, "configure")); err != nil {
+		t.Fatal(err)
+	}
+	if got := buildDirListing(dir, cause); strings.Contains(got, "IS there") || !strings.Contains(got, "holds 20 entries") {
+		t.Errorf("an absent file was not reported by the listing: %q", got)
+	}
+}
+
+// missingName must not guess. A deeper path is a different question, and a
+// wrong answer inside an error message is worse than no answer.
+func TestMissingNameTakesOnlyADirectChild(t *testing.T) {
+	dir := "/b"
+	for _, tc := range []struct{ msg, want string }{
+		{"fork/exec /b/configure: no such file or directory", "configure"},
+		{"fork/exec /b/sub/configure: no such file or directory", ""},
+		{"exit status 1", ""},
+		{"fork/exec /other/configure: nope", ""},
+		{"something about /b/ and nothing after", ""},
+	} {
+		if got := missingName(errors.New(tc.msg), dir); got != tc.want {
+			t.Errorf("missingName(%q) = %q; want %q", tc.msg, got, tc.want)
+		}
+	}
+}
