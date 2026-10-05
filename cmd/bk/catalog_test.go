@@ -9,9 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-attest/sbom"
+	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bk/logical"
 	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bottle"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // catbed is a pantry and an overlay with a few recipes in each, plus the
@@ -175,17 +178,26 @@ func TestCatalogReportsAMarshalFailure(t *testing.T) {
 	}
 }
 
+// A catalogue is published the way a bottle is published, SIGNATURE
+// INCLUDED. A client with PKGX_VERIFY on — the default — refuses an
+// unsigned one, and rightly: the catalogue is the list of names a person
+// then types, so deciding its contents is deciding what <TAB> offers.
 func TestCatalogPublishes(t *testing.T) {
 	p, _, _ := catbed(t, map[string]string{"zlib.net": catRecipe, "gnu.org/bash": catRecipe}, nil)
-	var gotOS, gotArch string
-	var gotCat bottle.Catalog
-	prevP, prevC := publishCatalog, catalogClient
-	publishCatalog = func(_ *bottle.OCIClient, c bottle.Catalog, osn, arch string) error {
-		gotCat, gotOS, gotArch = c, osn, arch
-		return nil
+	var gotOS, gotArch, gotProject, gotVer, gotExt string
+	var gotTgz []byte
+	var gotRefs []bottle.Referrer
+	prevP, prevK, prevT := ociPush, signingKey, catalogTarball
+	ociPush = func(_, project, ver, osn, arch string, tgz []byte, ext string, refs []bottle.Referrer, _ map[string]string) (ocispec.Descriptor, error) {
+		gotProject, gotVer, gotOS, gotArch, gotTgz, gotExt, gotRefs = project, ver, osn, arch, tgz, ext, refs
+		return ocispec.Descriptor{}, nil
 	}
-	catalogClient = func(string) (*bottle.OCIClient, error) { return nil, nil }
-	t.Cleanup(func() { publishCatalog, catalogClient = prevP, prevC })
+	kp, err := sign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signingKey = func(string) (*sign.Keypair, error) { return kp, nil }
+	t.Cleanup(func() { ociPush, signingKey, catalogTarball = prevP, prevK, prevT })
 
 	var out, errb bytes.Buffer
 	if code := runCatalog([]string{"--pantry", p, "--platform", "linux/s390x", "--publish"}, &out, &errb); code != 0 {
@@ -194,21 +206,78 @@ func TestCatalogPublishes(t *testing.T) {
 	if gotOS != "linux" || gotArch != "s390x" {
 		t.Errorf("published for %s/%s", gotOS, gotArch)
 	}
-	if len(gotCat.Projects) != 2 {
-		t.Errorf("published %d projects", len(gotCat.Projects))
+	if gotProject != bottle.CatalogProjectName || gotVer != bottle.CatalogVersion || gotExt != bottle.ExtTarGz {
+		t.Errorf("published as %s v%s %s", gotProject, gotVer, gotExt)
+	}
+	cat, err := bottle.CatalogFromTarball(gotTgz)
+	if err != nil {
+		t.Fatalf("what was pushed is not a catalogue: %v", err)
+	}
+	if len(cat.Projects) != 2 {
+		t.Errorf("published %d projects", len(cat.Projects))
+	}
+	// The signature, which is the point.
+	signed := false
+	for _, r := range gotRefs {
+		if r.ArtifactType == bottle.ArtifactTypeSignature {
+			signed = true
+		}
+	}
+	if !signed {
+		t.Error("the catalogue went out unsigned — a client with PKGX_VERIFY on refuses it")
+	}
+	if !strings.Contains(errb.String(), "+signature") {
+		t.Errorf("the publish does not say it signed: %q", errb.String())
 	}
 	if out.Len() != 0 {
 		t.Errorf("a publish also wrote the body to stdout: %q", out.String())
 	}
 
-	// Both ways it can fail.
-	publishCatalog = func(*bottle.OCIClient, bottle.Catalog, string, string) error { return errors.New("registry down") }
+	// No key: it still publishes, because the sovereign seed registry has
+	// none and PKGX_VERIFY=0 there — but it says what that means, in terms
+	// of what a client will do, not as advice about style.
+	errb.Reset()
+	signingKey = func(string) (*sign.Keypair, error) { return nil, nil }
+	if code := runCatalog([]string{"--pantry", p, "--publish"}, &out, &errb); code != 0 {
+		t.Fatalf("an unsigned publish exited %d: %s", code, errb.String())
+	}
+	for _, r := range gotRefs {
+		if r.ArtifactType == bottle.ArtifactTypeSignature {
+			t.Error("a signature appeared with no key")
+		}
+	}
+	if !strings.Contains(errb.String(), "PKGX_VERIFY") {
+		t.Errorf("an unsigned publish does not say what a client will do: %q", errb.String())
+	}
+
+	// Every way it can fail, because a publish that reports success on a
+	// registry that refused it is how an empty catalogue gets believed.
+	signingKey = func(string) (*sign.Keypair, error) { return nil, errors.New("not a key") }
+	if code := runCatalog([]string{"--pantry", p, "--publish"}, &out, &errb); code != 1 {
+		t.Errorf("an unreadable key exited %d", code)
+	}
+	signingKey = func(string) (*sign.Keypair, error) { return nil, nil }
+
+	catalogTarball = func(bottle.Catalog) ([]byte, error) { return nil, errors.New("cannot pack") }
+	if code := runCatalog([]string{"--pantry", p, "--publish"}, &out, &errb); code != 1 {
+		t.Errorf("an unpackable catalogue exited %d", code)
+	}
+	catalogTarball = prevT
+
+	// A referrer that cannot be built: the attestations are not optional
+	// decoration, they are what the thing is published WITH.
+	prevSbom := sbomJSON
+	sbomJSON = func(sbom.Document) ([]byte, error) { return nil, errors.New("no sbom") }
+	if code := runCatalog([]string{"--pantry", p, "--publish"}, &out, &errb); code != 1 {
+		t.Errorf("an unbuildable referrer exited %d", code)
+	}
+	sbomJSON = prevSbom
+
+	ociPush = func(string, string, string, string, string, []byte, string, []bottle.Referrer, map[string]string) (ocispec.Descriptor, error) {
+		return ocispec.Descriptor{}, errors.New("registry down")
+	}
 	if code := runCatalog([]string{"--pantry", p, "--publish"}, &out, &errb); code != 1 {
 		t.Errorf("a failed push exited %d", code)
-	}
-	catalogClient = func(string) (*bottle.OCIClient, error) { return nil, errors.New("bad dist") }
-	if code := runCatalog([]string{"--pantry", p, "--publish"}, &out, &errb); code != 1 {
-		t.Errorf("an unusable dist exited %d", code)
 	}
 }
 

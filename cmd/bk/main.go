@@ -10,7 +10,8 @@
 //	bk build             build a recipe into a bottle
 //	bk publish           push a built bottle to an OCI registry
 //	bk closure           print a project set's transitive runtime closure (topological)
-//	bk catalog           build (and publish) the catalogue pkgx ls and <TAB> read
+//	bk catalog           build (and publish, signed) the catalogue pkgx ls
+//	                     and <TAB> read
 //	bk runlog            read a factory job log: counts, stages, and whether
 //	                     the parse agrees with bk's own totals
 //	bk lock              resolve a set to the versions it means today, write them down, and --check them later
