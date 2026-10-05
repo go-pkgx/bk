@@ -374,13 +374,39 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	// built earlier in the dependency closure, or this is a re-run — it is a
 	// completed duplicate install and is safe to replace, so remove it first and
 	// let the rename proceed rather than fail with "file exists".
+	// Move the old one ASIDE rather than delete it, and only drop it once the
+	// new one is in place.
+	//
+	// The same hazard as the up-front removal, one window narrower: between
+	// an unlink and a rename the prefix does not exist, and in the sovereign
+	// rootfs /bin/sh and /lib/<loader> are symlinks INTO it. Two syscalls is
+	// a short window, but a rename that FAILS — a full disk, a crossed
+	// filesystem — leaves it open for good, and a rootfs with no shell cannot
+	// run the next build or report why.
+	//
+	// Rename is atomic within a filesystem, so the swap either happens or
+	// does not; the old tree goes back if the new one cannot land.
+	stale := paths.Install + ".replacing"
+	_ = osRemoveAll(stale) // a previous crash could have left one
+	haveOld := false
 	if _, err := osStat(paths.Install); err == nil {
-		if err := osRemoveAll(paths.Install); err != nil {
-			return res, fmt.Errorf("stage install: %w", err)
+		if err := osRename(paths.Install, stale); err != nil {
+			return res, fmt.Errorf("stage install: move the old prefix aside: %w", err)
 		}
+		haveOld = true
 	}
 	if err := osRename(paths.BuildInstall, paths.Install); err != nil {
+		if haveOld {
+			// Put it back. A build that failed to install must not also have
+			// removed what was working.
+			_ = osRename(stale, paths.Install)
+		}
 		return res, fmt.Errorf("stage install: %w", err)
+	}
+	if haveOld {
+		if err := osRemoveAll(stale); err != nil {
+			return res, fmt.Errorf("stage install: drop the replaced prefix: %w", err)
+		}
 	}
 	if err := r.FixUp(fixup.Options{Prefix: paths.Install, BuildInstall: paths.BuildInstall, Platform: tgt.Platform, PkgxDir: config.PkgxDir()}); err != nil {
 		return res, fmt.Errorf("fix-up: %w", err)

@@ -1360,3 +1360,78 @@ func TestBuildDoesNotRemoveTheInstalledPrefixBeforeBuilding(t *testing.T) {
 		t.Error("a successful build left the OLD install in place; the rename must replace it")
 	}
 }
+
+// The sibling window: a rename that FAILS must leave the working install
+// where it was. Two syscalls is short, but a rootfs whose /bin/sh symlink
+// points into a prefix that no longer exists cannot run the next build or
+// report why — and a failed rename would leave it that way for good.
+func TestAFailedStageLeavesTheWorkingInstallInPlace(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	paths := config.Compute("acme.org/tool", "1.2.3", tgt)
+	if err := os.MkdirAll(filepath.Join(paths.Install, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inUse := filepath.Join(paths.Install, "bin", "sh")
+	if err := os.WriteFile(inUse, []byte("the working install"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRename := osRename
+	// Refuse exactly the forward rename, discriminating on the SOURCE. An
+	// earlier version of this stub keyed on the destination and refused the
+	// rollback too — which made the test fail for its own reason and would
+	// have read as the code being wrong.
+	osRename = func(from, to string) error {
+		if from == paths.BuildInstall {
+			return errors.New("no space left on device")
+		}
+		return oldRename(from, to)
+	}
+	t.Cleanup(func() { osRename = oldRename })
+
+	r := okRunner("acme.org/tool", tgt)
+	if _, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist")); err == nil {
+		t.Fatal("Build: nil; want the rename failure")
+	}
+	b, err := os.ReadFile(inUse)
+	if err != nil {
+		t.Fatalf("the working install did not come back: %v", err)
+	}
+	if string(b) != "the working install" {
+		t.Errorf("what came back is not what was there: %q", b)
+	}
+}
+
+// Dropping the replaced prefix must be REPORTED, not swallowed. The new tree
+// is already in place when this runs, so the build is sound — but a
+// `.replacing` directory left behind is a whole duplicate install's worth of
+// disk, once per rebuild, and the next failure would name a different
+// project.
+func TestAFailureToDropTheReplacedPrefixIsReported(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	paths := config.Compute("acme.org/tool", "1.2.3", tgt)
+	if err := os.MkdirAll(paths.Install, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldRemove := osRemoveAll
+	osRemoveAll = func(p string) error {
+		if strings.HasSuffix(p, ".replacing") {
+			// The pre-emptive clean at the top must still succeed; only the
+			// drop AFTER the swap fails, which is why this keys on the tree
+			// existing.
+			if _, err := os.Stat(p); err == nil {
+				return errors.New("device or resource busy")
+			}
+		}
+		return oldRemove(p)
+	}
+	t.Cleanup(func() { osRemoveAll = oldRemove })
+
+	r := okRunner("acme.org/tool", tgt)
+	_, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err == nil || !strings.Contains(err.Error(), "drop the replaced prefix") {
+		t.Fatalf("Build: %v; want the drop named", err)
+	}
+}
