@@ -1097,3 +1097,94 @@ func TestRunnerSaysWhenARecipeDeclaresNoSource(t *testing.T) {
 		t.Errorf("the notice fired for a recipe with a source:\n%s", strings.Join(lines, "\n"))
 	}
 }
+
+// The gen1 message was `run: fork/exec …/build/configure: no such file or
+// directory` and nothing else, and two very different stories fit it: the
+// directory is empty, so the source never landed; or the source landed and
+// configure sits one level down, which is a strip-components fault. The class
+// stayed open for a day because the log separated neither.
+func TestBuildDirListingSeparatesEmptyFromMisplaced(t *testing.T) {
+	dir := t.TempDir()
+	cause := fmt.Errorf("fork/exec %s/configure: no such file or directory", dir)
+
+	// Empty says so in those words: it is the most informative thing here.
+	if got := buildDirListing(dir, cause); !strings.Contains(got, "is EMPTY — the source never landed there") {
+		t.Errorf("empty directory: %q", got)
+	}
+
+	// One level down is the other story, and the listing shows it.
+	if err := os.MkdirAll(filepath.Join(dir, "bash-5.3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := buildDirListing(dir, cause)
+	if !strings.Contains(got, "holds 1 entry: bash-5.3/") {
+		t.Errorf("one subdirectory: %q", got)
+	}
+	// "1 entries" is a line nobody trusts again.
+	if strings.Contains(got, "1 entries") {
+		t.Errorf("mis-pluralised: %q", got)
+	}
+}
+
+// A compiler error or a failing test has nothing to do with the build
+// directory, and a diagnostic printed for every failure is one readers skip.
+func TestBuildDirListingStaysQuietForAnUnrelatedFailure(t *testing.T) {
+	dir := t.TempDir()
+	for _, cause := range []error{
+		errors.New("exit status 1"),
+		errors.New("make: *** [all] Error 2"),
+		nil,
+	} {
+		if got := buildDirListing(dir, cause); got != "" {
+			t.Errorf("listing attached to %v: %q", cause, got)
+		}
+	}
+	if got := buildDirListing("", fmt.Errorf("anything")); got != "" {
+		t.Errorf("listing with no directory: %q", got)
+	}
+}
+
+func TestBuildDirListingTruncatesAndSaysSo(t *testing.T) {
+	dir := t.TempDir()
+	for i := range 20 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%02d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := buildDirListing(dir, fmt.Errorf("fork/exec %s/configure: nope", dir))
+	if !strings.Contains(got, "holds 20 entries") || !strings.Contains(got, "and 8 more") {
+		t.Errorf("truncation: %q", got)
+	}
+}
+
+// A directory that cannot be read and one that is empty are different facts,
+// and telling them apart is the whole point of the line.
+func TestCountEntriesDistinguishesUnreadableFromEmpty(t *testing.T) {
+	dir := t.TempDir()
+	if got := countEntries(dir); got != 0 {
+		t.Errorf("empty = %d; want 0", got)
+	}
+	if got := countEntries(filepath.Join(dir, "nope")); got != -1 {
+		t.Errorf("absent = %d; want -1", got)
+	}
+	if got := plural(-1, "entry", "entries"); !strings.Contains(got, "unreadable") {
+		t.Errorf("plural(-1) = %q", got)
+	}
+	if got := plural(1, "entry", "entries"); got != "1 entry" {
+		t.Errorf("plural(1) = %q", got)
+	}
+	if got := plural(3, "entry", "entries"); got != "3 entries" {
+		t.Errorf("plural(3) = %q", got)
+	}
+}
+
+// The listing must survive a directory it cannot read, and say which.
+func TestBuildDirListingReportsAnUnreadableDirectory(t *testing.T) {
+	prev := osReadDir
+	osReadDir = func(string) ([]os.DirEntry, error) { return nil, errors.New("permission denied") }
+	defer func() { osReadDir = prev }()
+	got := buildDirListing("/d", fmt.Errorf("fork/exec /d/configure: nope"))
+	if !strings.Contains(got, "could not be read: permission denied") {
+		t.Errorf("unreadable: %q", got)
+	}
+}

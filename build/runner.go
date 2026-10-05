@@ -192,6 +192,18 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 				got, fetchErr = r.Fetch(src.url, paths.Build, src.strip)
 			}
 			if fetchErr == nil {
+				// SAY SO. Nothing logged a fetch, and that silence cost a day:
+				// four gen1 packages failed at `./configure` with the build
+				// directory apparently empty, and the log could not distinguish
+				// "the fetch did not happen" from "the fetch happened and put
+				// the tree somewhere else" — because a SUCCESSFUL build's log
+				// looked exactly the same, which is what finally ruled the
+				// inference out. One line per build, naming what answered and
+				// how much of it arrived.
+				// Counted ONCE: two calls could disagree, and a line that
+				// says "1 entries" is a line nobody trusts again.
+				n := countEntries(paths.Build)
+				logf("fetched %s → %s in %s", src.url, plural(n, "entry", "entries"), paths.Build)
 				// Which candidate answered is half the record. A build that fell
 				// through to a mirror and one that did not are different builds,
 				// and only this says which happened.
@@ -326,10 +338,10 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		// is how a transient failure quietly becomes a different diagnosis.
 		// One extra clause on a failure that is already being read is cheap.
 		if len(fromHost) > 0 {
-			return res, fmt.Errorf("run: %w; bootstrap took these from the host, and one of them may not be there: %s",
-				err, strings.Join(fromHost, ", "))
+			return res, fmt.Errorf("run: %w; bootstrap took these from the host, and one of them may not be there: %s%s",
+				err, strings.Join(fromHost, ", "), buildDirListing(paths.Build, err))
 		}
-		return res, fmt.Errorf("run: %w", err)
+		return res, fmt.Errorf("run: %w%s", err, buildDirListing(paths.Build, err))
 	}
 	// Stage the completed +brewing tree onto the final versioned prefix. The
 	// build and its install step have already succeeded; only this atomic rename
@@ -537,4 +549,79 @@ func copyPropsTree(src, dst string) error {
 		}
 	}
 	return nil
+}
+
+// buildDirListing says what the build directory holds, when the failure is a
+// step that could not find a file in it.
+//
+// `run: fork/exec …/build/configure: no such file or directory` is the whole
+// of what four gen1 packages reported, and it is not enough to act on: the
+// script ran, the `cd` into the directory succeeded, and the one thing the
+// message asserts — that `configure` is not there — is the thing a reader
+// most wants corroborated. Two very different stories fit it. The directory
+// is empty, so the source never landed; or the source landed and `configure`
+// sits one level down, which is a strip-components fault. Nothing in the log
+// separated them, and the class stayed open for a day.
+//
+// So the error carries the answer. An empty directory says so in those words,
+// because "0 entries" is the single most informative thing this can report.
+//
+// Attached only when the error mentions a path under the build directory. A
+// compiler error or a failing test has nothing to do with this listing, and a
+// diagnostic that prints for every failure is one readers learn to skip.
+func buildDirListing(dir string, cause error) string {
+	if dir == "" || cause == nil || !strings.Contains(cause.Error(), dir) {
+		return ""
+	}
+	ents, err := osReadDir(dir)
+	if err != nil {
+		return fmt.Sprintf("\n  (%s could not be read: %v)", dir, err)
+	}
+	if len(ents) == 0 {
+		return fmt.Sprintf("\n  %s is EMPTY — the source never landed there", dir)
+	}
+	const show = 12
+	names := make([]string, 0, len(ents))
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() {
+			n += "/"
+		}
+		names = append(names, n)
+		if len(names) == show {
+			break
+		}
+	}
+	more := ""
+	if len(ents) > show {
+		more = fmt.Sprintf(" … and %d more", len(ents)-show)
+	}
+	return fmt.Sprintf("\n  %s holds %s: %s%s", dir,
+		plural(len(ents), "entry", "entries"), strings.Join(names, " "), more)
+}
+
+// countEntries is how many things a fetch put in the build directory, or -1
+// when the directory cannot be read.
+//
+// -1 rather than 0: a directory that cannot be read and one that is empty are
+// different facts, and the whole point of this line is to tell them apart.
+func countEntries(dir string) int {
+	ents, err := osReadDir(dir)
+	if err != nil {
+		return -1
+	}
+	return len(ents)
+}
+
+// plural renders a count with the right noun, and says so when the count
+// could not be taken at all.
+func plural(n int, one, many string) string {
+	switch {
+	case n < 0:
+		return "an unreadable number of " + many
+	case n == 1:
+		return "1 " + one
+	default:
+		return fmt.Sprintf("%d %s", n, many)
+	}
 }
