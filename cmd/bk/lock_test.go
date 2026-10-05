@@ -204,7 +204,7 @@ func TestLockRecordsBothRevisions(t *testing.T) {
 	if code := runLock([]string{"--pantry", p, "--overlay", ov, "lib.org"}, &out, &errb); code != 0 {
 		t.Fatalf("code=%d err=%q", code, errb.String())
 	}
-	if !strings.Contains(out.String(), "# overlay: "+h.String()) {
+	if !strings.Contains(out.String(), `overlay          = "`+h.String()+`"`) {
 		t.Errorf("the overlay revision is not recorded:\n%s", out.String())
 	}
 }

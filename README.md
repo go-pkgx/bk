@@ -210,11 +210,13 @@ lock: 41 project(s) pinned → base-toolchain.lock.hcl
 ```
 
 ```hcl
-# bk lock · linux/x86-64 · 2026-10-05T09:10:39Z
-#
-# roots:   go-pkgx/base-toolchain
-# pantry:  fd646990024e22f5752578cfdcfe2518b20c0797
-# overlay: f8f6dcfd7b17410a6de780bdd58c81fbbb38d1b3
+lockfile_version = 1
+bk               = "v0.7.0"
+platform         = "linux/x86-64"
+generated        = "2026-10-05T09:10:39Z"
+pantry           = "fd646990024e22f5752578cfdcfe2518b20c0797"
+overlay          = "f8f6dcfd7b17410a6de780bdd58c81fbbb38d1b3"
+roots            = ["go-pkgx/base-toolchain"]
 
 locked = {
   "curl.se" = { version = "8.17.0", spec = "sha256:5284d597c180…" }
@@ -266,6 +268,49 @@ serialise. The property that matters is tested both ways round — a change to a
 leaf moves the leaf and everything above it; a change at the top moves the top
 alone — and that test was checked against a deliberately broken hash, which
 fails it, so it is not passing for free.
+
+### `bk lock --check` — a lock nobody reads is a wish too
+
+Cargo's `--locked` and npm's `ci` exist because a lock nobody verifies is a
+lock nobody can rely on: both refuse to run when the lock and a fresh
+resolution disagree.
+
+```
+$ bk lock --check base-toolchain.lock.hcl
+lock: linux/x86-64 · 2026-10-05T09:10:39Z · 41 pinned, 2 hour(s) old
+lock: pantry revision differs: fd64699… → 9ab12cd…
+  gnu.org/binutils                   2.47 → 2.48
+  zlib.net                           spec 6a2d499db9ab → spec 90fae00e667c — same version, so something it is built FROM changed
+lock: 2 of 41 moved
+```
+
+Exit **0** when nothing moved, **1** when something did, **2** when the check
+could not be made at all.
+
+**The second line of that diff is the one a version-only lock cannot
+produce.** Measured on the real `zlib.net` recipe: a comment added to its
+build block moves nothing, and one flag added to its `./configure` line moves
+the spec hash while the version stays `1.3.2`.
+
+It takes its roots, its platform and the revisions it expects **from the
+file**. Naming them again on the command line would let the two disagree, and
+the check would then be of a different question from the one the file answers
+— so it refuses a project name beside `--check`.
+
+A **revision that moved is said and is not fatal**: a pantry can move without
+moving any answer, and calling that drift would make the check cry wolf until
+nobody ran it. An **unresolved project is kept apart from drift** for the
+mirror-image reason — a registry outage must not read as a pantry that
+changed.
+
+### The header is data, not a comment
+
+The first version wrote the platform, the roots and the revisions as `#`
+lines. Right facts, wrong place: a comment cannot be read back. They are
+attributes now, with `lockfile_version` beside them — Spack's lockfile carries
+a `lockfile-version` and records which spack wrote it, and the compatibility
+rule that comes with it (new readers read old locks; old readers refuse new
+ones) is worth copying before it is needed rather than after.
 
 ### What is still missing, named rather than left out
 
