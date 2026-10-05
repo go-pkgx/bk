@@ -68,6 +68,13 @@ func Fetch(url, destDir string, stripComponents int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch: digest %s: %w", url, err)
 	}
+	// Asked before the mirror is told, so a mismatch refuses the bytes rather
+	// than recording them as the new truth.
+	if Pin != nil {
+		if err := Pin(url, digest); err != nil {
+			return "", err
+		}
+	}
 	// The one moment the bytes exist on disk with their digest known. A source
 	// mirror is populated HERE or not at all: the caller sees only the digest,
 	// and the temp file is gone the moment this function returns.
@@ -134,6 +141,32 @@ func Fetch(url, destDir string, stripComponents int) (string, error) {
 //
 // It returns nothing on purpose. A build holding the bytes it needs must not
 // fail because a registry was unreachable — the mirror serves the NEXT rebuild.
+// ErrSourcePinMismatch is returned when a URL serves bytes other than the ones
+// it served before. It is wrapped with both digests and the URL.
+var ErrSourcePinMismatch = errors.New("fetch: this URL has served different bytes before")
+
+// Pin, when set, is consulted with a download's URL and the digest it actually
+// has, BEFORE Mirror is given the chance to store it. Returning an error fails
+// the fetch.
+//
+// This is trust on first use, and it is the only control there is. Exactly one
+// recipe of 904 in the pantry carries a `sha:`, and that one points at a
+// `.sha256` served by the same host as the tarball — it catches corruption,
+// not substitution. For everything else TLS is the whole of it, across 233
+// distinct upstream hosts.
+//
+// It does not make an upstream trustworthy. It makes a CHANGE visible, which
+// is the part nobody had. A version bump is not a change here: the version is
+// in the URL, so a new release asks a question that has never been asked and
+// is recorded rather than refused. What fires is the same URL serving
+// different bytes — a re-cut tarball, a compromised mirror, a hijacked
+// domain — and those are exactly the cases nothing else would notice.
+//
+// Separate from Mirror because the contracts differ. Mirror is best-effort
+// and swallows its own failures: a build that already holds the bytes must
+// not die because a registry was unreachable. A refusal must not be swallowed.
+var Pin func(url, sha256hex string) error
+
 // An implementation that wants its failures seen logs them itself.
 var Mirror func(archivePath, sha256hex, url string)
 

@@ -950,3 +950,43 @@ func TestFetchWithNoMirrorConfigured(t *testing.T) {
 	}
 	checkSampleTree(t, dir)
 }
+
+// The pin hook is consulted BEFORE the mirror, and a refusal fails the fetch
+// rather than being swallowed the way a mirror failure is. Those two
+// contracts are easy to confuse, so both halves are asserted here.
+func TestFetchAsksThePinBeforeTellingTheMirror(t *testing.T) {
+	srv := serve(t, gzWrap(t, sampleTar(t)))
+	defer srv.Close()
+
+	t.Run("a refusal fails the fetch and the mirror is never told", func(t *testing.T) {
+		var mirrored bool
+		Mirror = func(string, string, string) { mirrored = true }
+		Pin = func(url, sha string) error {
+			if sha == "" {
+				t.Error("the pin was asked without a digest")
+			}
+			return fmt.Errorf("%w: refused on purpose", ErrSourcePinMismatch)
+		}
+		defer func() { Mirror, Pin = nil, nil }()
+
+		_, err := Fetch(srv.URL+"/pinned.tar.gz", t.TempDir(), 1)
+		if !errors.Is(err, ErrSourcePinMismatch) {
+			t.Fatalf("Fetch = %v; want the pin's refusal", err)
+		}
+		if mirrored {
+			t.Error("the mirror recorded bytes the pin had just refused, which would make the change the new truth")
+		}
+	})
+
+	t.Run("a pass lets the fetch through", func(t *testing.T) {
+		called := 0
+		Pin = func(string, string) error { called++; return nil }
+		defer func() { Pin = nil }()
+		if _, err := Fetch(srv.URL+"/pinned.tar.gz", t.TempDir(), 1); err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if called != 1 {
+			t.Errorf("the pin was asked %d times; want 1", called)
+		}
+	})
+}

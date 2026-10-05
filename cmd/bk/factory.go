@@ -130,6 +130,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	testTimeout := fs.Duration("test-timeout", 5*time.Minute, "give up on one package's test after this long")
 	testOnly := fs.Bool("test-only", envBool("TEST_ONLY"), "build NOTHING: run the recorded test for each project's already-published version. What the factory publishes it tests once, and never again — this is how a bottle that stopped working gets noticed")
 	sourceMirror := fs.String("source-mirror", envOr("SOURCE_MIRROR", ""), "keep every source archive a build downloads in this registry, addressed by its sha256 (e.g. oci://ghcr.io/go-pkgx). 57% of this pantry builds from tarballs GitHub GENERATES on request rather than stores, so for those it is the first stored artefact they have ever had")
+	sourcePinStrict := fs.Bool("source-pin-strict", false, "fail a fetch when the mirror cannot be ASKED what a URL served before, rather than warning and continuing. A mismatch always fails; this is only about an unreadable store, and the two are different facts -- treating them alike is how trust-on-first-use becomes trust-every-time")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -141,7 +142,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	// one is entitled to know now, not after a hundred archives have gone
 	// unrecorded.
 	if *sourceMirror != "" {
-		if err := installSourceMirror(*sourceMirror, stderr); err != nil {
+		if err := installSourceMirror(*sourceMirror, stderr, *sourcePinStrict); err != nil {
 			fmt.Fprintln(stderr, "factory:", err)
 			return 1
 		}
