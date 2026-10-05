@@ -10,9 +10,36 @@ import (
 	"testing"
 )
 
+// fakeDrivers puts executable `clang` and `clang++` on PATH, and nothing
+// else, so these tests do not depend on a compiler being installed.
+//
+// They did, for one commit. The shim now RESOLVES its driver rather than
+// handing the bare name to a stubbed execCommand, which made every test
+// here require a real clang — green on this laptop, red on NetBSD, where
+// there is none:
+//
+//	bk cc: clang is not on PATH outside …/cmd/bk
+//
+// What these tests are about is the flag handling, not whether clang is
+// installed on the machine running them.
+func fakeDrivers(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	// `true` as well: these tests stub execCommand with exec.Command("true"),
+	// and PATH is now only this directory.
+	for _, n := range []string{"clang", "clang++", "true"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+	return dir
+}
+
 // TestCCShim: the shim re-execs the sovereign driver, so a recipe that calls
 // `cc` or `gcc` by name gets the sysroot/crt/runtime flags $CC carries.
 func TestCCShim(t *testing.T) {
+	fakeDrivers(t)
 	old := execCommand
 	defer func() { execCommand = old }()
 
@@ -57,6 +84,7 @@ func TestCCShim(t *testing.T) {
 // TestCCShimFailures: without the driver the shim says so instead of pretending
 // to be a compiler, and a compiler's own exit code is passed through.
 func TestCCShimFailures(t *testing.T) {
+	fakeDrivers(t)
 	old := execCommand
 	defer func() { execCommand = old }()
 
@@ -67,7 +95,8 @@ func TestCCShimFailures(t *testing.T) {
 	}
 
 	t.Setenv("BK_CC", "clang")
-	execCommand = func(string, ...string) *exec.Cmd { return exec.Command("sh", "-c", "exit 3") }
+	// /bin/sh by absolute path: PATH is the fake-driver dir only.
+	execCommand = func(string, ...string) *exec.Cmd { return exec.Command("/bin/sh", "-c", "exit 3") }
 	errb.Reset()
 	if code := ccShim("cc", nil, &errb); code != 3 {
 		t.Fatalf("code = %d, want the compiler's own 3", code)
@@ -94,6 +123,7 @@ func TestErrorsAs(t *testing.T) {
 // TestCCShimDispatch covers the multi-call route: bk invoked as `cc` from a
 // build's libexec dir is the compiler shim.
 func TestCCShimDispatch(t *testing.T) {
+	fakeDrivers(t)
 	oldExit, oldArgs, oldCmd := osExit, os.Args, execCommand
 	defer func() { osExit, os.Args, execCommand = oldExit, oldArgs, oldCmd }()
 
@@ -142,6 +172,7 @@ func TestIsCompilerShim(t *testing.T) {
 // still needs every one of them — without -fuse-ld=lld and --rtlib=compiler-rt
 // the sovereign toolchain links against the container's runtime instead.
 func TestCCShimKeepsLinkFlagsWhenLinking(t *testing.T) {
+	fakeDrivers(t)
 	saved := execCommand
 	defer func() { execCommand = saved }()
 	var gotArgs []string
@@ -163,6 +194,7 @@ func TestCCShimKeepsLinkFlagsWhenLinking(t *testing.T) {
 
 // -S and -E stop before linking too.
 func TestCCShimCompileOnlyForms(t *testing.T) {
+	fakeDrivers(t)
 	saved := execCommand
 	defer func() { execCommand = saved }()
 	var gotArgs []string
