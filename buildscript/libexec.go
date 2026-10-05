@@ -41,7 +41,18 @@ var (
 // gcc") — and the bare compiler has none of the sysroot/crt/runtime flags the
 // sovereign mode depends on. Named first on PATH, these shims re-exec the real
 // driver with them.
-var compilerShims = []string{"cc", "gcc", "c++", "g++"}
+//
+// `clang` and `clang++` ARE in this list, and used not to be. $BK_CC's
+// driver is clang and this directory is first on PATH, so a shim of that
+// name once found itself; the shim now resolves its driver while skipping
+// its own directory (see resolveDriver), which removes the loop.
+//
+// Leaving them out had a measured cost: 77 pantry recipes set CC or CXX in
+// an `env:` block, overwhelmingly to the bare words `clang`, `clang++`,
+// `gcc`, `g++`, and a recipe's env is emitted AFTER the sovereign preamble
+// and replaces the variable whole. gnu.org/autoconf and gnu.org/automake
+// fail exactly there, with "C compiler cannot create executables".
+var compilerShims = []string{"cc", "gcc", "c++", "g++", "clang", "clang++"}
 
 // compilerShimsFor is compilerShims plus the TRIPLE-PREFIXED spellings, which
 // autoconf reaches for before the bare ones.

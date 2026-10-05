@@ -797,8 +797,13 @@ func TestRunTestMaterialisesTheCompilerShims(t *testing.T) {
 			t.Errorf("%s is not a symlink to bk", name)
 		}
 	}
-	if _, err := os.Lstat(filepath.Join(shimDir, "clang")); err == nil {
-		t.Error("clang is shimmed, and $BK_CC starts with clang — that is an exec loop")
+	// clang IS shimmed since #305. It was excluded while the shim looked
+	// its driver up on PATH — $BK_CC's driver is clang and the shim dir is
+	// first, so the shim found itself — and it is included now that the
+	// shim skips its own directory. 77 recipes name a compiler in `env:`
+	// and lost the sysroot for want of it.
+	if _, err := os.Lstat(filepath.Join(shimDir, "clang")); err != nil {
+		t.Errorf("clang is not shimmed, so a recipe naming it still loses the sysroot: %v", err)
 	}
 }
 

@@ -371,10 +371,45 @@ func TestWithoutAShimDirTheFlagsGoBackIntoCC(t *testing.T) {
 // clang and clang++ must NOT be shimmed: $BK_CC's driver IS clang, so a shim
 // of that name would re-exec itself forever. This is the test that keeps
 // somebody from "completing" the list.
-func TestClangIsNotShimmed(t *testing.T) {
-	for _, n := range compilerShimsFor("x86_64-unknown-linux-gnu", "linux", "x86-64") {
-		if n == "clang" || n == "clang++" {
-			t.Fatalf("%q is shimmed, and $BK_CC starts with clang — that is an exec loop", n)
+// clang IS shimmed now, and this test replaces the one that asserted the
+// opposite.
+//
+// The old test said: "$BK_CC starts with clang, so a shim of that name is
+// an exec loop" — true, and the reason the two names were left out. The
+// cost of leaving them out was then measured: 77 pantry recipes set CC or
+// CXX in an `env:` block, mostly to the bare words, and a recipe's env is
+// emitted AFTER the sovereign preamble and replaces it whole. autoconf and
+// automake fail there with "C compiler cannot create executables".
+//
+// What makes it safe is not a list but a behaviour: the shim resolves its
+// driver while SKIPPING its own directory (cmd/bk resolveDriver). So the
+// invariant worth asserting is no longer "clang is absent" — it is that
+// every name materialised here is one the dispatcher recognises, and that
+// the C++ names route to the C++ driver.
+func TestEveryShimMaterialisedIsOneTheDispatcherKnows(t *testing.T) {
+	names := compilerShimsFor("x86_64-unknown-linux-gnu", "linux", "x86-64")
+	var sawClang bool
+	for _, n := range names {
+		if n == "clang" {
+			sawClang = true
+		}
+	}
+	if !sawClang {
+		t.Error("clang is not shimmed, so a recipe naming it still loses the sysroot")
+	}
+	// The dispatcher's own recogniser lives in cmd/bk and cannot be called
+	// from here, so the shared contract is the SUFFIX rule both sides use:
+	// a materialised name is a base, or a triple plus "-" plus a base.
+	bases := map[string]bool{"cc": true, "gcc": true, "c++": true, "g++": true, "clang": true, "clang++": true}
+	for _, n := range names {
+		ok := bases[n]
+		for b := range bases {
+			if strings.HasSuffix(n, "-"+b) {
+				ok = true
+			}
+		}
+		if !ok {
+			t.Errorf("%q is materialised and matches no base the dispatcher knows", n)
 		}
 	}
 }
