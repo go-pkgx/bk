@@ -251,7 +251,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	list := want
 	var demands map[string][]string
 	if !*noClosure {
-		list, demands = closureOf(logicalSet, *overlayDir, *pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
+		list, demands, _ = closureOf(logicalSet, *overlayDir, *pantryDir, tgt, want, func(s string) { fmt.Fprintln(stderr, s) })
 	}
 	if *mirrorFrom != "" {
 		// Mirroring needs no recipe (no build, and the versions come from the

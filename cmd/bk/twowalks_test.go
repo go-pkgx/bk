@@ -58,7 +58,7 @@ func TestTheTwoWalksAgree(t *testing.T) {
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
 	for _, root := range []string{"perl.org", "app.org", "curl.se", "ours.example", "theirs.example"} {
 		t.Run(root, func(t *testing.T) {
-			order, _ := closureOf(nil, ov, pan, tgt, []string{root}, func(string) {})
+			order, _, _ := closureOf(nil, ov, pan, tgt, []string{root}, func(string) {})
 			g := newClosureGraph(nil, pan, tgt, false, nil)
 			g.overlay = ov
 			g.visit(root)
@@ -78,7 +78,7 @@ func TestTheTwoWalksAgree(t *testing.T) {
 	}
 
 	// The shapes above are only worth comparing if they are actually there.
-	order, _ := closureOf(nil, ov, pan, tgt, []string{"perl.org"}, func(string) {})
+	order, _, _ := closureOf(nil, ov, pan, tgt, []string{"perl.org"}, func(string) {})
 	if !slices.Contains(order, "crypt.org") || !slices.Contains(order, "gdbm.org") {
 		t.Errorf("premise: perl.org must reach BOTH halves' edges, got %v", order)
 	}

@@ -49,9 +49,9 @@ type Recipe struct {
 	//
 	// What this does NOT give is Guix's warning: a manifest alone is not
 	// reproducible, because the same names resolve differently against a
-	// different package set. `members` is the ABSTRACT half. The concrete
-	// half — resolved versions and digests, dated — is a separate artefact
-	// and is not here yet.
+	// different package set. `members` is the ABSTRACT half; `bk lock` is
+	// the concrete one, and writes the resolved versions down beside the
+	// pantry and overlay revisions that produced them.
 	//
 	// The shape is `dependencies`' shape on purpose: a reader who knows one
 	// knows the other, and the resolver already handles it.

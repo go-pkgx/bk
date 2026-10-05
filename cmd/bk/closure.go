@@ -55,7 +55,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	// also calls: one path, so `bk closure` cannot describe an order the
 	// factory would not build.
 	if !*withBuild && !*constraints && !*implicit && !*pins && !*cycles && *checkOrderPath == "" {
-		order, _ := closureOf(lset, *overlayDir, *pantryDir, tgt, roots, func(s string) { fmt.Fprintln(stderr, s) })
+		order, _, _ := closureOf(lset, *overlayDir, *pantryDir, tgt, roots, func(s string) { fmt.Fprintln(stderr, s) })
 		if code := reportUnreadableRoots(roots, order, stderr); code != 0 {
 			return code
 		}
@@ -132,10 +132,16 @@ func reportUnreadableRoots(want, order []string, stderr io.Writer) int {
 //	satisfies "2" (available: 1)
 //
 // The constraint was in the spec the walk had already read.
-var closureOf = func(set *logical.Set, overlayDir, pantryDir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string) {
+var closureOf = func(set *logical.Set, overlayDir, pantryDir string, tgt target.Target, want []string, warn func(string)) ([]string, map[string][]string, map[string][]*pantry.Recipe) {
 	seen := map[string]bool{}
 	var order []string
 	demands := map[string][]string{}
+	// What the walk READ, handed back rather than re-read. `bk lock` hashes
+	// the recipes behind every pin, and a second read would be a second
+	// chance to disagree with the walk beside it — as well as an error branch
+	// nothing can reach, since a project whose recipes do not load never
+	// reaches `order` at all.
+	read := map[string][]*pantry.Recipe{}
 	var visit func(proj string)
 	visit = func(proj string) {
 		if seen[proj] {
@@ -149,6 +155,7 @@ var closureOf = func(set *logical.Set, overlayDir, pantryDir string, tgt target.
 			warn(fmt.Sprintf("closure: skip %s: %v", proj, err))
 			return
 		}
+		read[proj] = recs
 		for _, rec := range recs {
 			for dep, cons := range build.ReduceDeps(rec.Dependencies, tgt) {
 				// "*" and "" say nothing, and recording them would make every
@@ -169,7 +176,7 @@ var closureOf = func(set *logical.Set, overlayDir, pantryDir string, tgt target.
 	for _, cs := range demands {
 		sort.Strings(cs)
 	}
-	return order, demands
+	return order, demands, read
 }
 
 // depName strips the version constraint from a dep spec, in BOTH the forms
