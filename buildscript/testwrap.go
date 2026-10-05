@@ -66,6 +66,16 @@ type TestWrapOptions struct {
 	PkgxBin  string        // path to the pkgx binary
 	BashPath string        // shebang interpreter (default /bin/bash)
 	Host     target.Target // where we run — drives TMPDIR
+	// ShimDir holds bk's compiler shims (cc, gcc, c++, g++ and their
+	// triple-prefixed spellings), materialised by the caller with
+	// WriteLibexecFor. It is prepended to PATH in a scratch rootfs so a test
+	// that calls `cc` by name — which 194 of the pantry's do — gets the
+	// sovereign driver rather than a bare clang with no libc.
+	//
+	// Empty is allowed and means "no shims": the preamble then falls back to
+	// putting the flags in $CC, which is what it used to do and what reaches
+	// almost nothing.
+	ShimDir string
 }
 
 // EnvFailExit is the status the test script exits with when `pkgx +…` could
@@ -161,7 +171,7 @@ func WrapTest(o TestWrapOptions) string {
 	// libc it can use.
 	if o.Compiler && o.Host.Platform == "linux" {
 		b.WriteString("\n")
-		for _, l := range sysrootPreamble() {
+		for _, l := range sysrootPreamble(o.ShimDir) {
 			b.WriteString(l + "\n")
 		}
 	}
@@ -236,7 +246,30 @@ func (o TestWrapOptions) testPlus() string {
 // will run in — the same bk builds on a distribution and inside the chroot.
 // And a distribution's script stays byte-for-byte what it was: the branch is
 // not taken, so nothing about the 260 recipes that compile today changes.
-func sysrootPreamble() []string {
+//
+// # SETTING $CC REACHED ALMOST NOTHING, AND THAT WAS MEASURABLE BEFOREHAND
+//
+// The first version of this exported CC and CXX and stopped there. Measured
+// afterwards, on the second full sovereign generation: 16 of 23 test failures
+// were a missing C header, and every one of them called the compiler BY NAME.
+//
+//	bk tools --scope test --all   →   cc 194, c++ 38, gcc 13, g++ 7,
+//	                                  clang 7, clang++ 6
+//
+// Those are command names in command position. Not one of the 194 reads $CC.
+// So the export was a fix that could not work, and the count that says so was
+// available from a command in this repository before it was written.
+//
+// The build side had solved this years earlier and said why, in
+// buildscript/libexec.go: "a recipe may call `cc` or `gcc` DIRECTLY, ignoring
+// $CC". The same shims go on the test's PATH, pointed at the same $BK_CC. The
+// test still gets the SYSROOT and nothing the recipe chose, so the rule this
+// file is built on is unchanged — it is the delivery that was wrong.
+//
+// `clang` and `clang++` are deliberately NOT shimmed: $BK_CC's driver is
+// clang, so a shim of that name would re-exec itself forever. The 13 recipes
+// that call clang directly ask for a specific compiler and get it.
+func sysrootPreamble(shimDir string) []string {
 	out := []string{
 		`# A compiler with no libc is not a compiler. On a distribution the`,
 		`# system supplies one and this is skipped entirely; in a scratch`,
@@ -247,8 +280,31 @@ func sysrootPreamble() []string {
 		out = append(out, "  "+l)
 	}
 	out = append(out,
-		`  export CC="${CC:-cc} `+SysrootCC+`"`,
-		`  export CXX="${CXX:-c++} `+SysrootCXX+`"`,
+		// BK_CC/BK_CXX are what the shims re-exec, exactly as a build's are.
+		`  export BK_CC="clang `+SysrootCC+`"`,
+		`  export BK_CXX="clang++ `+SysrootCXX+`"`,
+	)
+	if shimDir != "" {
+		out = append(out,
+			// FIRST on PATH: the llvm.org bottle puts its own cc there, and a
+			// test picking that one is the failure this is here to end.
+			fmt.Sprintf(`  export PATH=%q:"$PATH"`, shimDir),
+			// $CC too, for the handful of tests that read it. It names the
+			// shim rather than carrying the flags, so there is ONE place the
+			// sysroot comes from and no invocation gets it twice.
+			`  export CC="${CC:-cc}"`,
+			`  export CXX="${CXX:-c++}"`,
+		)
+	} else {
+		// No shim dir — the caller did not make one. The variables are all
+		// that is left, and they are better than nothing for the tests that
+		// do read them.
+		out = append(out,
+			`  export CC="${CC:-cc} `+SysrootCC+`"`,
+			`  export CXX="${CXX:-c++} `+SysrootCXX+`"`,
+		)
+	}
+	out = append(out,
 		`  echo "test sandbox: no system libc, compiling against ${BK_GLIBC_PREFIX}" >&2`,
 		`fi`,
 	)

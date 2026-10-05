@@ -303,3 +303,78 @@ func TestDarwinGetsNeitherCompilerNorSysroot(t *testing.T) {
 		}
 	}
 }
+
+// The measurement that produced this: 16 of the second sovereign
+// generation's 23 test failures were a missing C header, and every one of
+// them called the compiler BY NAME. `bk tools --scope test --all` counts
+// cc 194, c++ 38, gcc 13, g++ 7 — command names in command position, not one
+// of them reading $CC. Exporting CC was a fix that could not work.
+func TestATestThatCallsCcByNameGetsTheShims(t *testing.T) {
+	linux := target.Target{Platform: "linux", Arch: "x86-64"}
+	got := WrapTest(TestWrapOptions{
+		UserScript: "cc t.c -lz && ./a.out",
+		Package:    "zlib.net@1.3.1",
+		Compiler:   true,
+		Host:       linux,
+		Home:       "/h", Sandbox: "/s", PkgxDir: "/pkgx",
+		ShimDir: "/box.shims",
+	})
+
+	guard := strings.Index(got, "if [ ! -e /usr/include/stdlib.h ]")
+	closeAt := guard + strings.Index(got[guard:], "\nfi\n")
+	path := strings.Index(got, `export PATH="/box.shims":"$PATH"`)
+	if path < 0 {
+		t.Fatalf("the shim dir is not put on PATH:\n%s", got)
+	}
+	if path < guard || path > closeAt {
+		t.Errorf("PATH is set outside the no-system-libc guard (guard %d, close %d, PATH %d)", guard, closeAt, path)
+	}
+	// FIRST on PATH: the llvm.org bottle ships its own cc, and a test picking
+	// that one is the failure this exists to end.
+	if !strings.Contains(got, `export PATH="/box.shims":"$PATH"`) {
+		t.Error("the shim dir is appended rather than prepended")
+	}
+	// The flags live in BK_CC, which is what the shim re-execs — one place,
+	// so no invocation gets the sysroot twice.
+	for _, want := range []string{`export BK_CC="clang --sysroot=`, `export BK_CXX="clang++ `} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the shims have nothing to re-exec: %q missing", want)
+		}
+	}
+	// And $CC names the shim rather than carrying the flags again.
+	if strings.Contains(got, `export CC="${CC:-cc} --sysroot=`) {
+		t.Error("CC still carries the sysroot flags beside the shims, so a test reading $CC gets them twice")
+	}
+	// Before the user script, or it reaches nothing.
+	if path > strings.Index(got, "cc t.c -lz") {
+		t.Error("PATH is set after the test runs")
+	}
+}
+
+// With no shim dir the preamble must still do what it can: put the flags in
+// $CC. That is the old behaviour, it reaches the few tests that read $CC, and
+// a caller that could not make the symlinks is not a reason to emit nothing.
+func TestWithoutAShimDirTheFlagsGoBackIntoCC(t *testing.T) {
+	got := WrapTest(TestWrapOptions{
+		UserScript: "cc t.c", Package: "zlib.net@1.3.1", Compiler: true,
+		Host: target.Target{Platform: "linux", Arch: "x86-64"},
+		Home: "/h", Sandbox: "/s", PkgxDir: "/pkgx",
+	})
+	if !strings.Contains(got, `export CC="${CC:-cc} --sysroot=`) {
+		t.Errorf("no shims and no flags in CC either:\n%s", got)
+	}
+	if strings.Contains(got, "export PATH=") {
+		t.Error("a PATH was exported with no shim dir to put on it")
+	}
+}
+
+// clang and clang++ must NOT be shimmed: $BK_CC's driver IS clang, so a shim
+// of that name would re-exec itself forever. This is the test that keeps
+// somebody from "completing" the list.
+func TestClangIsNotShimmed(t *testing.T) {
+	for _, n := range compilerShimsFor("x86_64-unknown-linux-gnu", "linux", "x86-64") {
+		if n == "clang" || n == "clang++" {
+			t.Fatalf("%q is shimmed, and $BK_CC starts with clang — that is an exec loop", n)
+		}
+	}
+}

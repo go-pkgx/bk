@@ -218,7 +218,25 @@ func runRecipeTest(req testRequest, stdout, stderr io.Writer) (testState, error)
 		return testNotRun, err
 	}
 
-	script, err := renderTest(req.Recipe, req.Project, ver, tag, req.Target, paths, box, req.RecipeDir, req.PkgxBin)
+	// The compiler shims, beside the sandbox for the same reason the script
+	// is: the next run empties the sandbox, and a test that lists its working
+	// directory must not find our `cc` in it.
+	//
+	// Made unconditionally rather than only when the test compiles. Deciding
+	// needs the rendered script, the render needs the directory, and a few
+	// symlinks that nothing looks at cost less than the ordering problem — or
+	// than the day the two conditions drift apart.
+	shimDir := filepath.Join(filepath.Dir(box), filepath.Base(box)+".shims")
+	if err := writeShims(shimDir, true, req.Target.Triple, req.Target.Platform, req.Target.Arch); err != nil {
+		// Not fatal. Without the shims a test that calls `cc` by name fails in
+		// a scratch rootfs and works everywhere else, which is exactly what
+		// happened before they existed; refusing to run the other 1700 tests
+		// over it would be the worse trade.
+		fmt.Fprintln(stderr, "warning: compiler shims:", err)
+		shimDir = ""
+	}
+
+	script, err := renderTest(req.Recipe, req.Project, ver, tag, req.Target, paths, box, req.RecipeDir, req.PkgxBin, shimDir)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return testNotRun, err
@@ -278,7 +296,7 @@ func runRecipeTest(req testRequest, stdout, stderr io.Writer) (testState, error)
 
 // renderTest turns the recipe's test node into the runnable script.
 func renderTest(rec *pantry.Recipe, project, ver, tag string, tgt target.Target,
-	paths config.Paths, box, recipeDir, pkgxBin string) (string, error) {
+	paths config.Paths, box, recipeDir, pkgxBin, shimDir string) (string, error) {
 	// {{prefix}} is the INSTALLED prefix, not the build's staging directory.
 	// That is the whole difference between this and a build: the test reads
 	// the package where a consumer would find it, so a file the build made and
@@ -347,9 +365,14 @@ func renderTest(rec *pantry.Recipe, project, ver, tag string, tgt target.Target,
 		PkgxDir:  config.PkgxDir(),
 		PkgxBin:  pkgxBin,
 		BashPath: "/bin/bash",
+		ShimDir:  shimDir,
 		Host:     target.Host(),
 	}), nil
 }
+
+// writeShims is a seam: the shims are symlinks, and the only way they fail to
+// be made is a filesystem that refuses — which a test has to stand in for.
+var writeShims = buildscript.WriteLibexecFor
 
 // resolveTestDep maps a dependency to a version for the {{deps.…}} tokens.
 // A seam: a test of this file must not depend on a registry answering.
