@@ -237,7 +237,17 @@ func runRecipeTest(req testRequest, stdout, stderr io.Writer) (testState, error)
 		run = testRun
 	}
 	fmt.Fprintf(stdout, "test %s %s (%s/%s) in %s\n", req.Project, ver, req.Target.Platform, req.Target.Arch, box)
-	if err := run(scriptPath, build.SanitizedEnv(paths.Home, config.PkgxDir())); err != nil {
+	// A TEST gets GITHUB_TOKEN; a build does not. Two recipes of 1899 ask for
+	// it — github.com/spencerkimball/stargazers and
+	// github.com/mono0926/LicensePlist — and both ask in their `test:` block,
+	// which is what the GitHub API they call needs. No `build:` block in the
+	// pantry references it, so SanitizedEnv stopped passing it and this is
+	// where the measured need actually is.
+	env := build.SanitizedEnv(paths.Home, config.PkgxDir())
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		env = append(env, "GITHUB_TOKEN="+tok)
+	}
+	if err := run(scriptPath, env); err != nil {
 		// An environment `pkgx` could not assemble is not a test that
 		// failed: not one line of the test block ran. Five of the nine
 		// failures in the s390x seed's first sweep were this — a test

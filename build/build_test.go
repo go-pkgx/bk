@@ -214,13 +214,24 @@ func TestSanitizedEnv(t *testing.T) {
 	os.Unsetenv("PKGX_PANTRY_DIR")
 	env := SanitizedEnv("/h", "/pkgx")
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "GITHUB_TOKEN=secret", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true", "FORCE_UNSAFE_CONFIGURE=1", "PKGX_DIST=oci://http://cache:5111/go-pkgx/packages", "PKGX_PANTRY=https://pantry.example/projects", "PKGX_PANTRY_OVERLAY=https://overlay.example/projects", "PKGX_VERIFY=0"} {
+	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true", "FORCE_UNSAFE_CONFIGURE=1", "PKGX_DIST=oci://http://cache:5111/go-pkgx/packages", "PKGX_PANTRY=https://pantry.example/projects", "PKGX_PANTRY_OVERLAY=https://overlay.example/projects", "PKGX_VERIFY=0"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("SanitizedEnv missing %q in %v", want, env)
 		}
 	}
 	if strings.Contains(joined, "PKGX_PANTRY_DIR") {
 		t.Error("unset var leaked into SanitizedEnv")
+	}
+
+	// A build script is third-party code running as root, and the workflow's
+	// token carries `packages: write` on the organisation. Measured on a
+	// fresh pantry: 1899 recipes, 2 reference GITHUB_TOKEN, BOTH in their
+	// `test:` block, 0 in our overlay — and bk's own fetcher never sends it.
+	// So no build wants it, and `bk test` adds it where the need is.
+	for _, e := range env {
+		if strings.HasPrefix(e, "GITHUB_TOKEN=") || strings.HasPrefix(e, "GH_TOKEN=") {
+			t.Errorf("a write-capable token reached the build script's environment: %q", e)
+		}
 	}
 }
 
