@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-pkgx/bk/build"
+	"github.com/go-pkgx/bk/logical"
+	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bottle"
 )
 
@@ -42,6 +45,7 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 	overlayDir := fs.String("overlay", envOr("PANTRY_OVERLAY_DIR", ""), "an overlay checkout read beside the pantry")
 	platform := fs.String("platform", envOr("PLATFORM", "linux/x86-64"), "the platform this catalogue is FOR")
 	out := fs.String("o", "", "write the JSON here instead of stdout")
+	overridesDir := fs.String("overrides", envOr("OVERRIDES", ""), "directory of *.hcl logical recipe overrides, applied as the factory applies them")
 	publish := fs.Bool("publish", false, "push it to $PKGX_DIST as a bottle, for this platform")
 	withVersions := fs.Bool("versions", false, "ask the registry what each project has published (one request per project)")
 	if err := fs.Parse(args); err != nil {
@@ -67,8 +71,37 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cat := bottle.Catalog{Generated: catalogNow().UTC().Format(time.RFC3339)}
+	lset, err := logical.LoadDir(*overridesDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "catalog:", err)
+		return 2
+	}
+	tgt := target.Target{Platform: osn, Arch: arch}
+	var noRecipe int
 	for _, p := range projects {
-		cat.Projects = append(cat.Projects, bottle.CatalogProject{Project: p})
+		e := bottle.CatalogProject{Project: p}
+		// The RUNTIME dependencies, reduced for this platform, so a reader
+		// can walk the tree with no pantry and no network (bottle#117).
+		// Still no requests: these come off the recipe already on disk.
+		if r, _, err := recipeLoader(lset, *overlayDir, *pantryDir, p); err == nil && r != nil {
+			for _, spec := range build.DepSpecs(r.Dependencies, tgt) {
+				if n := depName(spec); n != "" {
+					e.Deps = append(e.Deps, n)
+				}
+			}
+			sort.Strings(e.Deps)
+		} else {
+			// Counted, not silent. A project the walk NAMED and the reader
+			// cannot load is a hole in the dependency half of the
+			// catalogue, and a catalogue that hid it would show those
+			// projects as having no dependencies at all — which is a
+			// statement, and a false one.
+			noRecipe++
+		}
+		cat.Projects = append(cat.Projects, e)
+	}
+	if noRecipe > 0 {
+		fmt.Fprintf(stderr, "catalog: %d project(s) named but unreadable — listed with no dependencies\n", noRecipe)
 	}
 	if *withVersions {
 		fmt.Fprintf(stderr, "catalog: asking the registry about %d project(s), one request each\n", len(cat.Projects))

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-pkgx/bk/logical"
+	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bottle"
 )
 
@@ -317,5 +319,87 @@ func TestCatalogSurvivesOneUnreadableDirectory(t *testing.T) {
 	}
 	if len(cat.Projects) != 2 {
 		t.Errorf("projects = %+v", cat.Projects)
+	}
+}
+
+// The dependency half of the catalogue: what a project NEEDS, reduced for
+// the platform, read off the recipe already on disk.
+func TestCatalogCarriesRuntimeDependencies(t *testing.T) {
+	p, _, _ := catbed(t, map[string]string{
+		"app.org": "versions:\n  - 1.0.0\ndependencies:\n  lib.org: '*'\n  linux:\n    only-on-linux.org: '*'\nbuild:\n  dependencies:\n    buildonly.org: '*'\n  script: make\n",
+		"lib.org": catRecipe,
+	}, nil)
+	var out, errb bytes.Buffer
+	if code := runCatalog([]string{"--pantry", p, "--platform", "linux/x86-64"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d %s", code, errb.String())
+	}
+	cat, err := bottle.UnmarshalCatalog(out.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, _ := cat.Lookup("app.org")
+	if strings.Join(app.Deps, " ") != "lib.org only-on-linux.org" {
+		t.Errorf("app.org deps = %v (sorted, platform-reduced)", app.Deps)
+	}
+	// BUILD dependencies are not in anybody's installed closure, so they
+	// are not under the node a browser is looking at.
+	for _, d := range app.Deps {
+		if d == "buildonly.org" {
+			t.Error("a build dependency reached the catalogue")
+		}
+	}
+	// And the other platform's dependency is NOT there.
+	out.Reset()
+	if code := runCatalog([]string{"--pantry", p, "--platform", "darwin/aarch64"}, &out, &errb); code != 0 {
+		t.Fatalf("darwin: code=%d", code)
+	}
+	dcat, _ := bottle.UnmarshalCatalog(out.Bytes())
+	dapp, _ := dcat.Lookup("app.org")
+	if strings.Join(dapp.Deps, " ") != "lib.org" {
+		t.Errorf("darwin app.org deps = %v; the linux-only one leaked", dapp.Deps)
+	}
+}
+
+// A project the walk NAMED and the reader cannot load is COUNTED, not
+// silent. Listing it with no dependencies is a statement, and a false one.
+func TestCatalogCountsProjectsItCannotRead(t *testing.T) {
+	p, _, _ := catbed(t, map[string]string{"a.org": catRecipe, "b.org": catRecipe}, nil)
+	prev := recipeLoader
+	recipeLoader = func(set *logical.Set, overlay, pantry, proj string) (*pantry.Recipe, string, error) {
+		if proj == "b.org" {
+			return nil, "", errors.New("vanished")
+		}
+		return prev(set, overlay, pantry, proj)
+	}
+	t.Cleanup(func() { recipeLoader = prev })
+
+	var out, errb bytes.Buffer
+	if code := runCatalog([]string{"--pantry", p}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d", code)
+	}
+	if !strings.Contains(errb.String(), "1 project(s) named but unreadable") {
+		t.Errorf("the unreadable project was not counted: %q", errb.String())
+	}
+	// It is still LISTED — it exists, we just cannot say what it needs.
+	if _, ok := (func() (bottle.CatalogProject, bool) {
+		c, _ := bottle.UnmarshalCatalog(out.Bytes())
+		return c.Lookup("b.org")
+	}()); !ok {
+		t.Error("an unreadable project was dropped from the catalogue entirely")
+	}
+}
+
+// An unparseable --overrides is a startup error here too: the overrides
+// change what a recipe DEPENDS ON, so a catalogue built without them would
+// describe a different tree from the one the factory builds.
+func TestCatalogRefusesUnparseableOverrides(t *testing.T) {
+	p, _, _ := catbed(t, map[string]string{"a.org": catRecipe}, nil)
+	ov := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ov, "broken.hcl"), []byte("project \"x\" {\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := runCatalog([]string{"--pantry", p, "--overrides", ov}, &out, &errb); code != 2 {
+		t.Fatalf("code=%d, want 2 (stderr=%q)", code, errb.String())
 	}
 }
