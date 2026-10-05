@@ -407,3 +407,29 @@ func TestRunClosureReadsAPinnedRoot(t *testing.T) {
 		t.Errorf("the dropped pin was not named: %q", errb.String())
 	}
 }
+
+// `bk closure <a set>` resolves the packages the set names. The command is
+// the only place the expansion is wired, so without this the warn callback
+// it passes is never run — which the per-block coverage gate catches even
+// though the rounded total reads 100%.
+func TestRunClosureResolvesASet(t *testing.T) {
+	p := t.TempDir()
+	writeClosureRecipe(t, p, "app.org", "dependencies:\n  lib.org: '*'\nversions:\n  github: a/app/tags\nbuild: make\n")
+	writeClosureRecipe(t, p, "lib.org", "versions:\n  github: a/lib/tags\nbuild: make\n")
+	writeClosureRecipe(t, p, "acme.org/every", "members:\n  app.org: '*'\n")
+
+	var out, errb bytes.Buffer
+	if code := runClosure([]string{"--pantry", p, "--platform", "linux/x86-64", "acme.org/every"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb.String())
+	}
+	// The same order naming app.org directly gives: a set is expanded at the
+	// root and nothing downstream knows it happened.
+	if got := strings.Fields(out.String()); len(got) != 2 || got[0] != "lib.org" || got[1] != "app.org" {
+		t.Errorf("order = %v, want [lib.org app.org]", got)
+	}
+	// And it says so on stderr, because a root that silently became three
+	// roots is a closure nobody can check.
+	if !strings.Contains(errb.String(), "names 1 member(s)") {
+		t.Errorf("the expansion was silent: %q", errb.String())
+	}
+}
