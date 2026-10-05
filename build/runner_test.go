@@ -1305,3 +1305,133 @@ func TestMissingNameTakesOnlyADirectChild(t *testing.T) {
 		}
 	}
 }
+
+// Building a package must not remove the version of it that is already
+// installed, because the rootfs the build runs in may BE that install.
+//
+// In the sovereign generation /bin/sh is a symlink to
+// $PKGX_DIR/gnu.org/bash/v<ver>/bin/bash — a symlink and not a copy, because
+// $ORIGIN in bash's RUNPATH has to resolve from the real location. So
+// removing the prefix up front deleted the shell before a line ran, and the
+// first `#!/bin/sh` script to be exec'd failed with
+//
+//	fork/exec …/configure: no such file or directory
+//
+// naming the script, which exists, rather than the interpreter, which did
+// not. Measured on the 78-package s390x generation: gnu.org/bash is built
+// 74th and all five packages after it fail; the 73 before it are untouched.
+// And bash ALONE fails the same way, which is what rules out composition.
+func TestBuildDoesNotRemoveTheInstalledPrefixBeforeBuilding(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	paths := config.Compute("acme.org/tool", "1.2.3", tgt)
+
+	// What the rootfs is using while the build runs — bash's bin/bash, in the
+	// real case.
+	if err := os.MkdirAll(filepath.Join(paths.Install, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inUse := filepath.Join(paths.Install, "bin", "sh")
+	if err := os.WriteFile(inUse, []byte("the shell the rootfs runs on"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := okRunner("acme.org/tool", tgt)
+	// A build that FAILS: the installed tree must survive it untouched. This
+	// is the case that matters — a failed rebuild destroying a working
+	// install is bad on its own, and here it took the whole rootfs with it.
+	r.Run = func(string, []string) error { return errors.New("configure: boom") }
+
+	if _, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist")); err == nil {
+		t.Fatal("Build: nil; want the failure the stub raises")
+	}
+	if _, err := os.Stat(inUse); err != nil {
+		t.Fatalf("the installed prefix was removed before the build: %v", err)
+	}
+
+	// And a build that SUCCEEDS still replaces it — the rename at the end
+	// removes the destination itself, which is why the up-front removal was
+	// redundant as well as destructive.
+	r2 := okRunner("acme.org/tool", tgt)
+	if _, err := r2.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist")); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if _, err := os.Stat(inUse); err == nil {
+		t.Error("a successful build left the OLD install in place; the rename must replace it")
+	}
+}
+
+// The sibling window: a rename that FAILS must leave the working install
+// where it was. Two syscalls is short, but a rootfs whose /bin/sh symlink
+// points into a prefix that no longer exists cannot run the next build or
+// report why — and a failed rename would leave it that way for good.
+func TestAFailedStageLeavesTheWorkingInstallInPlace(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	paths := config.Compute("acme.org/tool", "1.2.3", tgt)
+	if err := os.MkdirAll(filepath.Join(paths.Install, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inUse := filepath.Join(paths.Install, "bin", "sh")
+	if err := os.WriteFile(inUse, []byte("the working install"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRename := osRename
+	// Refuse exactly the forward rename, discriminating on the SOURCE. An
+	// earlier version of this stub keyed on the destination and refused the
+	// rollback too — which made the test fail for its own reason and would
+	// have read as the code being wrong.
+	osRename = func(from, to string) error {
+		if from == paths.BuildInstall {
+			return errors.New("no space left on device")
+		}
+		return oldRename(from, to)
+	}
+	t.Cleanup(func() { osRename = oldRename })
+
+	r := okRunner("acme.org/tool", tgt)
+	if _, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist")); err == nil {
+		t.Fatal("Build: nil; want the rename failure")
+	}
+	b, err := os.ReadFile(inUse)
+	if err != nil {
+		t.Fatalf("the working install did not come back: %v", err)
+	}
+	if string(b) != "the working install" {
+		t.Errorf("what came back is not what was there: %q", b)
+	}
+}
+
+// Dropping the replaced prefix must be REPORTED, not swallowed. The new tree
+// is already in place when this runs, so the build is sound — but a
+// `.replacing` directory left behind is a whole duplicate install's worth of
+// disk, once per rebuild, and the next failure would name a different
+// project.
+func TestAFailureToDropTheReplacedPrefixIsReported(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	paths := config.Compute("acme.org/tool", "1.2.3", tgt)
+	if err := os.MkdirAll(paths.Install, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldRemove := osRemoveAll
+	osRemoveAll = func(p string) error {
+		if strings.HasSuffix(p, ".replacing") {
+			// The pre-emptive clean at the top must still succeed; only the
+			// drop AFTER the swap fails, which is why this keys on the tree
+			// existing.
+			if _, err := os.Stat(p); err == nil {
+				return errors.New("device or resource busy")
+			}
+		}
+		return oldRemove(p)
+	}
+	t.Cleanup(func() { osRemoveAll = oldRemove })
+
+	r := okRunner("acme.org/tool", tgt)
+	_, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, filepath.Join(t.TempDir(), "dist"))
+	if err == nil || !strings.Contains(err.Error(), "drop the replaced prefix") {
+		t.Fatalf("Build: %v; want the drop named", err)
+	}
+}
