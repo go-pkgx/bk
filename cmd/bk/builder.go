@@ -208,14 +208,24 @@ func glibcLayout(pkgxDir string) string {
 				if err != nil {
 					continue
 				}
-				var ld []string
+				var ld, some []string
 				for _, f := range inner {
 					if strings.HasPrefix(f.Name(), "ld") {
 						ld = append(ld, f.Name())
 					}
+					if len(some) < 8 {
+						some = append(some, f.Name())
+					}
 				}
-				fmt.Fprintf(&b, "\n  %s: %d entr(y/ies), ld*: %s",
-					filepath.Join(dir, e.Name()), len(inner), strings.Join(ld, " "))
+				// The COUNT alone was not enough, measured the hard way: the
+				// s390x tree reported "2 entr(y/ies), ld*:" and a real glibc
+				// has two hundred. That says the bottle is nearly empty, and
+				// says nothing about WHICH two — which is the next question
+				// every time. Name a few.
+				fmt.Fprintf(&b, "\n  %s: %d entr(y/ies) [%s%s], ld*: %s",
+					filepath.Join(dir, e.Name()), len(inner), strings.Join(some, " "),
+					map[bool]string{true: " …"}[len(inner) > len(some)],
+					strings.Join(ld, " "))
 			}
 		}
 	}
