@@ -523,6 +523,61 @@ func providedBins(provides any) []string {
 	return out
 }
 
+// ProvidedCommands is the COMMAND names a recipe puts on PATH for a target,
+// without their `bin/` prefix, sorted and deduplicated.
+//
+// `provides:` comes in two shapes, and a reader that knows one of them
+// reports nothing for the other instead of failing:
+//
+//	provides:            provides:
+//	  - bin/jq             linux:  [bin/podman, bin/podman-remote]
+//	                       darwin: [bin/podman, bin/podman-mac-helper]
+//
+// providedBins above handles only the flat list, which is right for what it
+// does — it looks for a self-dependency's binary on the HOST, where the
+// platform is already decided. A catalogue is built FOR a platform, and
+// podman on linux provides a different set from podman on darwin, so this
+// takes the same reduction the dependency map gets.
+//
+// `bin/` only. A recipe that provides `lib/libfoo.so` provides nothing
+// anybody types.
+func ProvidedCommands(provides any, tgt target.Target) []string {
+	seen := map[string]bool{}
+	add := func(v any) {
+		s, ok := v.(string)
+		if !ok || !strings.HasPrefix(s, "bin/") {
+			return
+		}
+		if n := strings.TrimPrefix(s, "bin/"); n != "" {
+			seen[n] = true
+		}
+	}
+	switch p := provides.(type) {
+	case []any:
+		for _, v := range p {
+			add(v)
+		}
+	case map[string]any:
+		for k, v := range p {
+			os, arch, isKey := platformKey(k)
+			if !isKey || (os != "" && os != tgt.Platform) || (arch != "" && arch != tgt.Arch) {
+				continue
+			}
+			if list, ok := v.([]any); ok {
+				for _, e := range list {
+					add(e)
+				}
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // WithoutUnresolvable drops the build dependencies this registry cannot
 // provide for the target, asking `resolve` about each one.
 //

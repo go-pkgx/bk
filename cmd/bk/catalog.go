@@ -13,6 +13,7 @@ import (
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/logical"
+	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bottle"
 )
@@ -102,6 +103,17 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 				}
 			}
 			sort.Strings(e.Deps)
+			// What the project IS, for a search that is more than a
+			// prefix. `nix search`, `guix search` and `spack list -s` all
+			// look in the description as well as the name, because the
+			// person who does not know a package's name is exactly the
+			// person searching. These fields have sat in pantry.Recipe
+			// with no reader anywhere.
+			e.Summary = summaryOf(r)
+			// The commands, which is what a search can actually work on
+			// here: 1592 of 1907 recipes declare them against 6 that
+			// describe themselves in prose.
+			e.Provides = build.ProvidedCommands(r.Provides, tgt)
 		} else {
 			// Counted, not silent. A project the walk NAMED and the reader
 			// cannot load is a hole in the dependency half of the
@@ -115,6 +127,24 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 	if noRecipe > 0 {
 		fmt.Fprintf(stderr, "catalog: %d project(s) named but unreadable — listed with no dependencies\n", noRecipe)
 	}
+	// Said out loud, because it is what decides whether `pkgx search` is
+	// worth anything: a catalogue where almost nothing carries a summary
+	// gives a search that finds almost nothing, and the number belongs in
+	// front of whoever publishes it rather than in a reader's
+	// disappointment.
+	summaries := 0
+	for _, p := range cat.Projects {
+		if p.Summary != "" {
+			summaries++
+		}
+	}
+	cmds := 0
+	for _, p := range cat.Projects {
+		if len(p.Provides) > 0 {
+			cmds++
+		}
+	}
+	fmt.Fprintf(stderr, "catalog: %d of %d project(s) name their commands, %d describe themselves\n", cmds, len(cat.Projects), summaries)
 	if *withVersions {
 		// The count has to stay true as the work grows. It was "one
 		// request each" when a tag listing was the whole of it; a
@@ -250,6 +280,43 @@ func fillVersions(projects []bottle.CatalogProject, osn, arch string, warn func(
 		projects[i].Platforms = []string{osn + "/" + arch}
 	}
 }
+
+// summaryOf is the one line a search matches against.
+//
+// `summary` first, because it is the field written to be one line.
+// `description` is the fallback and is cut at its first sentence or at
+// summaryMax: a catalogue is a 100 KB artefact every reader downloads, and
+// some descriptions are paragraphs — carrying them whole would multiply its
+// size for text nothing displays.
+//
+// display-name is deliberately NOT folded in. It is usually the project
+// name with different capitalisation, so a search would match it twice and
+// rank that above a real hit in a summary.
+func summaryOf(r *pantry.Recipe) string {
+	s := strings.TrimSpace(r.Summary)
+	if s == "" {
+		s = strings.TrimSpace(r.Description)
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	if i := strings.Index(s, ". "); i > 0 && i < summaryMax {
+		return s[:i]
+	}
+	if len(s) > summaryMax {
+		// Cut at a word, not mid-word: a truncated token is a token a
+		// search will never match and a reader cannot read.
+		if j := strings.LastIndex(s[:summaryMax], " "); j > 0 {
+			return s[:j] + "…"
+		}
+		return s[:summaryMax] + "…"
+	}
+	return s
+}
+
+// summaryMax bounds one summary. 200 characters is about two printed lines
+// at the width `pkgx search` uses, and 1900 of them is ~380 KB worst case
+// against a catalogue that is 100 KB today — which is why it is bounded at
+// all rather than left to the pantry.
+const summaryMax = 200
 
 // platformProbes bounds how far down a project's versions the platform
 // check will walk.
