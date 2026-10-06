@@ -21,7 +21,7 @@ func TestALockRoundTrips(t *testing.T) {
 		Version: lockfileVersion, Platform: "linux/s390x", Generated: "2026-10-05T09:00:00Z",
 		BK: "v0.6.1", Roots: []string{"go-pkgx/base-toolchain", "zlib.net"},
 		Pantry: "aaa", Overlay: "bbb",
-		Pins: []lockedPin{{"a.org", "1", "sha256:11"}, {"b.org", "2", "sha256:22"}},
+		Pins: []lockedPin{{Project: "a.org", Version: "1", Spec: "sha256:11"}, {Project: "b.org", Version: "2", Spec: "sha256:22"}},
 	}
 	dir := t.TempDir()
 	p := filepath.Join(dir, "l.hcl")
@@ -63,7 +63,7 @@ func TestReadLockRefusals(t *testing.T) {
 			"is not a { version"},
 		{"a newer format", write("future.hcl",
 			"lockfile_version = 99\nlocked = { \"a.org\" = { version = \"1\", spec = \"s\" } }\n"),
-			"read it with a newer bk"},
+			"read it with a newer one"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -81,37 +81,45 @@ func TestReadLockRefusals(t *testing.T) {
 // A field of the wrong type reads as its zero rather than killing the file:
 // the comparison then names it, which is more use than refusing 40 good
 // lines over one bad one.
+//
+// Asserted through readLock rather than through the coercion helpers it
+// used to have. Those moved to bottle with the rest of the format, and
+// testing the BEHAVIOUR here is what tells us the move kept it — a test of
+// a helper this package no longer owns would have had to be deleted, and
+// deleting it would have left the property unchecked on this side.
 func TestLockFieldCoercion(t *testing.T) {
-	if got := asInt(int64(3)); got != 3 {
-		t.Errorf("asInt(int64) = %d", got)
+	prev := osReadFile
+	osReadFile = func(string) ([]byte, error) {
+		return []byte("lockfile_version = 1\nplatform = 42\nroots = \"not-a-list\"\n" +
+			"locked = {\n  \"curl.se\" = { version = \"8.17.0\", spec = \"sha256:a\" }\n}\n"), nil
 	}
-	if got := asInt(float64(4)); got != 4 {
-		t.Errorf("asInt(float64) = %d", got)
+	t.Cleanup(func() { osReadFile = prev })
+
+	d, err := readLock("odd.lock.hcl")
+	if err != nil {
+		t.Fatalf("one odd field killed the file: %v", err)
 	}
-	if got := asInt("nope"); got != 0 {
-		t.Errorf("asInt(string) = %d", got)
+	if d.Platform != "" || len(d.Roots) != 0 {
+		t.Errorf("a wrong type was not read as its zero: %+v", d)
 	}
-	if got := asString(7); got != "" {
-		t.Errorf("asString(int) = %q", got)
-	}
-	if got := asSlice("x"); got != nil {
-		t.Errorf("asSlice(string) = %v", got)
+	if len(d.Pins) != 1 || d.Pins[0].Version != "8.17.0" {
+		t.Errorf("the good lines were lost with the bad one: %+v", d.Pins)
 	}
 }
 
 // The four things a check can find, and the one it must NOT invent.
 func TestCompareLock(t *testing.T) {
 	was := []lockedPin{
-		{"same.org", "1", "sha256:aa"},
-		{"moved.org", "1", "sha256:bb"},
-		{"edited.org", "1", "sha256:cc"},
-		{"gone.org", "1", "sha256:dd"},
+		{Project: "same.org", Version: "1", Spec: "sha256:aa"},
+		{Project: "moved.org", Version: "1", Spec: "sha256:bb"},
+		{Project: "edited.org", Version: "1", Spec: "sha256:cc"},
+		{Project: "gone.org", Version: "1", Spec: "sha256:dd"},
 	}
 	now := []lockedPin{
-		{"same.org", "1", "sha256:aa"},
-		{"moved.org", "2", "sha256:bb"},
-		{"edited.org", "1", "sha256:ZZ"},
-		{"joined.org", "9", "sha256:ee"},
+		{Project: "same.org", Version: "1", Spec: "sha256:aa"},
+		{Project: "moved.org", Version: "2", Spec: "sha256:bb"},
+		{Project: "edited.org", Version: "1", Spec: "sha256:ZZ"},
+		{Project: "joined.org", Version: "9", Spec: "sha256:ee"},
 	}
 	got := map[string]string{}
 	for _, d := range compareLock(was, now) {
@@ -276,7 +284,7 @@ func TestCheckSaysARevisionMovedWithoutCallingItDrift(t *testing.T) {
 	body := renderLock(lockDoc{
 		Version: lockfileVersion, Platform: "linux/x86-64", Generated: "2026-10-05T09:00:00Z",
 		Roots: []string{"lib.org"}, Pantry: "a-revision-from-somewhere-else",
-		Pins: []lockedPin{{"lib.org", "1.2.4", lockedSpecOf(t, p, "lib.org")}},
+		Pins: []lockedPin{{Project: "lib.org", Version: "1.2.4", Spec: lockedSpecOf(t, p, "lib.org")}},
 	})
 	if err := os.WriteFile(lock, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -311,7 +319,7 @@ func TestCheckRefusesAnEmptyClosure(t *testing.T) {
 	lock := filepath.Join(t.TempDir(), "l.hcl")
 	body := renderLock(lockDoc{
 		Version: lockfileVersion, Platform: "linux/x86-64", Generated: "2026-10-05T09:00:00Z",
-		Roots: []string{"ghost.org"}, Pins: []lockedPin{{"ghost.org", "1", "sha256:aa"}},
+		Roots: []string{"ghost.org"}, Pins: []lockedPin{{Project: "ghost.org", Version: "1", Spec: "sha256:aa"}},
 	})
 	if err := os.WriteFile(lock, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -339,7 +347,7 @@ func TestCheckRefusesUnparseableOverrides(t *testing.T) {
 	lock := filepath.Join(t.TempDir(), "l.hcl")
 	body := renderLock(lockDoc{
 		Version: lockfileVersion, Platform: "linux/x86-64", Generated: "2026-10-05T09:00:00Z",
-		Roots: []string{"lib.org"}, Pins: []lockedPin{{"lib.org", "1.2.4", "sha256:aa"}},
+		Roots: []string{"lib.org"}, Pins: []lockedPin{{Project: "lib.org", Version: "1.2.4", Spec: "sha256:aa"}},
 	})
 	if err := os.WriteFile(lock, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -360,7 +368,7 @@ func TestCheckKeepsUnresolvedApartFromDrift(t *testing.T) {
 	body := renderLock(lockDoc{
 		Version: lockfileVersion, Platform: "linux/x86-64", Generated: "2026-10-05T09:00:00Z",
 		Roots: []string{"lib.org"}, Pantry: gitRevOf(p),
-		Pins: []lockedPin{{"lib.org", "1.2.4", lockedSpecOf(t, p, "lib.org")}},
+		Pins: []lockedPin{{Project: "lib.org", Version: "1.2.4", Spec: lockedSpecOf(t, p, "lib.org")}},
 	})
 	if err := os.WriteFile(lock, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
