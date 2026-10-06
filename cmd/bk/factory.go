@@ -95,6 +95,9 @@ var (
 func runFactory(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("factory", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	lockFile := fs.String("lock", envOr("LOCK", ""),
+		"build exactly the versions a `bk lock` file pins, every pin and not just its roots. "+
+			"Takes precedence over --recipes and --recipes-file: a lock is the whole set")
 	recipes := fs.String("recipes", envOr("RECIPES", ""), `space-separated projects to build (default: --recipes-file). A word may carry its own version constraint after "@" — "cmake.org@=4.4.2" pins that project alone, which is what closing one index gap needs; --versions applies to every requested project at once`)
 	recipesFile := fs.String("recipes-file", "recipes.txt", "file listing one project per line (# comments allowed)")
 	noClosure := fs.Bool("no-closure", envBool("NO_CLOSURE"), "build ONLY the requested projects, not their dependency closure. For a repair run, where the dependencies are already published and rebuilding them at their newest upstream version starves the targets behind them")
@@ -216,7 +219,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "factory: toolchain:", e)
 	}
 
-	want, err := factoryWant(*recipes, *recipesFile)
+	want, err := factoryWant(*recipes, *recipesFile, *lockFile)
 	if err != nil {
 		fmt.Fprintln(stderr, "factory:", err)
 		return 1
@@ -973,7 +976,31 @@ func splitPin(word string) (proj, constraint string) {
 
 // factoryWant is the requested project list: the --recipes words if given, else
 // the non-blank, non-comment lines of --recipes-file.
-func factoryWant(recipes, file string) ([]string, error) {
+func factoryWant(recipes, file, lock string) ([]string, error) {
+	// A LOCK, which is the most specific of the three and therefore first.
+	//
+	// It expands into the same `project@=version` words --recipes already
+	// takes, so a locked run and a free one go through ONE path. A second
+	// way of honouring pins would drift from the first, and the drift
+	// would be invisible until two builds differed -- which is the exact
+	// failure a lock exists to prevent.
+	if strings.TrimSpace(lock) != "" {
+		d, err := readLock(lock)
+		if err != nil {
+			return nil, err
+		}
+		var out []string
+		for _, p := range d.Pins {
+			if p.Project != "" && p.Version != "" {
+				out = append(out, p.Project+"@="+p.Version)
+			}
+		}
+		sort.Strings(out)
+		if len(out) == 0 {
+			return nil, fmt.Errorf("%s pins nothing", lock)
+		}
+		return out, nil
+	}
 	if strings.TrimSpace(recipes) != "" {
 		return strings.Fields(recipes), nil
 	}

@@ -936,7 +936,7 @@ func TestEnvInt(t *testing.T) {
 }
 
 func TestFactoryWantFields(t *testing.T) {
-	got, err := factoryWant("  a.org   b.org ", "/nonexistent")
+	got, err := factoryWant("  a.org   b.org ", "/nonexistent", "")
 	if err != nil || strings.Join(got, ",") != "a.org,b.org" {
 		t.Fatalf("got %v, err %v", got, err)
 	}
