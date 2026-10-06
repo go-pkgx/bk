@@ -116,7 +116,13 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "catalog: %d project(s) named but unreadable — listed with no dependencies\n", noRecipe)
 	}
 	if *withVersions {
-		fmt.Fprintf(stderr, "catalog: asking the registry about %d project(s), one request each\n", len(cat.Projects))
+		// The count has to stay true as the work grows. It was "one
+		// request each" when a tag listing was the whole of it; a
+		// platform check costs at least one more, and up to
+		// platformProbes for a project this architecture has nothing
+		// for. Saying the old number would understate it by half.
+		fmt.Fprintf(stderr, "catalog: asking the registry about %d project(s): a tag listing each, plus 1 to %d platform checks\n",
+			len(cat.Projects), platformProbes)
 		fillVersions(cat.Projects, osn, arch, func(s string) { fmt.Fprintln(stderr, s) })
 	}
 
@@ -188,38 +194,90 @@ func publishCatalogSigned(dist string, cat bottle.Catalog, osn, arch string, kp 
 
 // seams, so a test needs neither a clock nor a registry.
 var (
-	catalogNow     = time.Now
-	versionsFor    = bottle.VersionsFor
-	marshalCatalog = bottle.MarshalCatalog
-	catalogTarball = bottle.CatalogTarball
-	signingKey     = factorySigningKey
+	catalogNow      = time.Now
+	versionsFor     = bottle.VersionsForSourced
+	publishedTagFor = bottle.PublishedTagFor
+	marshalCatalog  = bottle.MarshalCatalog
+	catalogTarball  = bottle.CatalogTarball
+	signingKey      = factorySigningKey
 )
 
-// fillVersions asks the registry what each project has published.
+// fillVersions asks the registry what THIS platform can actually install.
+//
+// Two things it must not do, and did:
+//
+// It must not borrow. bottle.VersionsFor falls back to the upstream dist
+// for a project this registry has never published, which is right for a
+// resolver and wrong here: a catalogue that listed dist.pkgx.dev's version
+// beside doxygen.nl would have offered a version nobody can install.
+// "Available" is a claim about ONE registry, so a list from another one is
+// not an answer to it.
+//
+// It must not claim a platform it has not checked. A tag listing spans
+// every architecture, so the newest tag is not necessarily installable for
+// the one being published: a mirror wave that lands x86-64 publishes a tag
+// s390x cannot use. The version recorded is therefore the newest one this
+// platform really carries, probed newest-first and stopped at the first
+// hit, so the number a reader sees is the one they would get.
+//
+// A project with no version left after that is still NAMED, with no
+// version and no platform beside it. That is the answer, not a gap:
+// somebody looking for doxygen.nl should learn it exists and has no bottle
+// here, rather than that it does not exist.
 //
 // Failures are per project and are WARNED, not fatal: a catalogue missing
 // one project's versions is still a catalogue, and a registry hiccup
 // two thousand requests in must not throw the other 1999 away.
 func fillVersions(projects []bottle.CatalogProject, osn, arch string, warn func(string)) {
 	for i := range projects {
-		vs, err := versionsFor(projects[i].Project, osn, arch)
+		vs, ours, err := versionsFor(projects[i].Project, osn, arch)
 		if err != nil {
 			warn(fmt.Sprintf("catalog: %s: %v", projects[i].Project, err))
 			continue
 		}
-		if len(vs) == 0 {
+		if !ours || len(vs) == 0 {
 			continue
 		}
-		var out []string
-		for _, v := range vs {
-			out = append(out, v.Raw)
+		v, ok, err := newestHere(projects[i].Project, vs, osn, arch)
+		if err != nil {
+			warn(fmt.Sprintf("catalog: %s: %v", projects[i].Project, err))
+			continue
 		}
-		// Newest first, which is the order a reader wants and the order the
-		// completion's one-line note takes its value from.
-		sort.Sort(sort.Reverse(sort.StringSlice(out)))
-		projects[i].Versions = out
+		if !ok {
+			continue
+		}
+		projects[i].Versions = []string{v}
 		projects[i].Platforms = []string{osn + "/" + arch}
 	}
+}
+
+// platformProbes bounds how far down a project's versions the platform
+// check will walk.
+//
+// Without a bound, a project with forty tags and no bottle for this
+// architecture — which is the normal state of a young lane — costs forty
+// requests to learn nothing, and there are two thousand projects. The
+// ordinary case costs ONE: the newest version is published everywhere it
+// is published at all, and the walk stops at the first hit.
+const platformProbes = 5
+
+// newestHere is the newest version this platform can actually install.
+//
+// vs arrives ascending in VERSION order, which is why this walks the slice
+// backwards instead of sorting. The code here used to `sort.Reverse` the
+// raw strings, and a string sort puts "1.9" above "1.10" — so the version
+// a reader was shown could be an old one wearing the newest's place.
+func newestHere(project string, vs []bottle.Ver, osn, arch string) (string, bool, error) {
+	for i, probes := len(vs)-1, 0; i >= 0 && probes < platformProbes; i, probes = i-1, probes+1 {
+		_, ok, err := publishedTagFor(project, vs[i], osn, arch)
+		if err != nil {
+			return "", false, err
+		}
+		if ok {
+			return vs[i].Raw, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // catalogProjects is every project named by the pantry or the overlay.
