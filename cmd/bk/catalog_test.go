@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -286,17 +287,20 @@ func TestCatalogPublishes(t *testing.T) {
 // taking the other 1907 down with it.
 func TestCatalogVersionsIsOptInAndSurvivesOneFailure(t *testing.T) {
 	p, _, _ := catbed(t, map[string]string{"a.org": catRecipe, "b.org": catRecipe}, nil)
-	prev := versionsFor
-	versionsFor = func(project, osn, arch string) ([]bottle.Ver, error) {
+	prevV, prevP := versionsFor, publishedTagFor
+	versionsFor = func(project, osn, arch string) ([]bottle.Ver, bool, error) {
 		switch project {
 		case "a.org":
-			return []bottle.Ver{bottle.ParseVer("1.0.0"), bottle.ParseVer("2.0.0")}, nil
+			return []bottle.Ver{bottle.ParseVer("1.0.0"), bottle.ParseVer("2.0.0")}, true, nil
 		case "b.org":
-			return nil, errors.New("not found")
+			return nil, false, errors.New("not found")
 		}
-		return nil, nil
+		return nil, false, nil
 	}
-	t.Cleanup(func() { versionsFor = prev })
+	publishedTagFor = func(_ string, v bottle.Ver, _, _ string) (string, bool, error) {
+		return v.Raw, true, nil
+	}
+	t.Cleanup(func() { versionsFor, publishedTagFor = prevV, prevP })
 
 	var out, errb bytes.Buffer
 	if code := runCatalog([]string{"--pantry", p, "--versions"}, &out, &errb); code != 0 {
@@ -313,17 +317,17 @@ func TestCatalogVersionsIsOptInAndSurvivesOneFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, _ := cat.Lookup("a.org")
-	if len(a.Versions) != 2 || a.Versions[0] != "2.0.0" {
-		t.Errorf("a.org = %+v (newest first)", a)
+	if len(a.Versions) != 1 || a.Versions[0] != "2.0.0" {
+		t.Errorf("a.org = %+v, want the newest version this platform carries", a)
 	}
 	b, _ := cat.Lookup("b.org")
 	if len(b.Versions) != 0 {
 		t.Errorf("b.org got versions from a failed call: %+v", b)
 	}
 	// And without --versions, nothing is asked at all.
-	versionsFor = func(string, string, string) ([]bottle.Ver, error) {
+	versionsFor = func(string, string, string) ([]bottle.Ver, bool, error) {
 		t.Fatal("the registry was asked without --versions")
-		return nil, nil
+		return nil, false, nil
 	}
 	out.Reset()
 	if code := runCatalog([]string{"--pantry", p}, &out, &errb); code != 0 {
@@ -336,7 +340,7 @@ func TestCatalogVersionsIsOptInAndSurvivesOneFailure(t *testing.T) {
 func TestCatalogVersionsSkipsAnEmptyAnswer(t *testing.T) {
 	p, _, _ := catbed(t, map[string]string{"a.org": catRecipe}, nil)
 	prev := versionsFor
-	versionsFor = func(string, string, string) ([]bottle.Ver, error) { return nil, nil }
+	versionsFor = func(string, string, string) ([]bottle.Ver, bool, error) { return nil, true, nil }
 	t.Cleanup(func() { versionsFor = prev })
 	var out, errb bytes.Buffer
 	if code := runCatalog([]string{"--pantry", p, "--versions"}, &out, &errb); code != 0 {
@@ -345,6 +349,149 @@ func TestCatalogVersionsSkipsAnEmptyAnswer(t *testing.T) {
 	cat, _ := bottle.UnmarshalCatalog(out.Bytes())
 	if a, _ := cat.Lookup("a.org"); len(a.Versions) != 0 || len(a.Platforms) != 0 {
 		t.Errorf("an empty answer invented something: %+v", a)
+	}
+}
+
+// "Available" is a claim about ONE registry, and a version is a claim
+// about ONE platform. Both were being made without being checked.
+//
+// borrowed  the list came from the upstream dist, because this registry
+//
+//	has never published the project. Named, no version: that is
+//	the answer a person looking for doxygen.nl needs.
+//
+// elsewhere the tag is ours but the bottle is for another architecture —
+//
+//	a mirror wave that landed x86-64 and not s390x.
+//
+// older     the newest tag is not here but an older one is, so the walk
+//
+//	goes down and reports the version a reader would GET.
+func TestCatalogRecordsOnlyWhatThisRegistryHasForThisPlatform(t *testing.T) {
+	p, _, _ := catbed(t, map[string]string{
+		"borrowed.org": catRecipe, "elsewhere.org": catRecipe,
+		"older.org": catRecipe, "here.org": catRecipe, "down.org": catRecipe,
+	}, nil)
+	prevV, prevP := versionsFor, publishedTagFor
+	three := []bottle.Ver{bottle.ParseVer("1.0.0"), bottle.ParseVer("2.0.0"), bottle.ParseVer("3.0.0")}
+	versionsFor = func(project, osn, arch string) ([]bottle.Ver, bool, error) {
+		return three, project != "borrowed.org", nil
+	}
+	probes := map[string]int{}
+	publishedTagFor = func(project string, v bottle.Ver, _, _ string) (string, bool, error) {
+		probes[project]++
+		switch project {
+		case "elsewhere.org":
+			return "", false, nil
+		case "older.org":
+			return v.Raw, v.Raw == "2.0.0", nil
+		case "down.org":
+			return "", false, errors.New("registry down")
+		}
+		return v.Raw, true, nil
+	}
+	t.Cleanup(func() { versionsFor, publishedTagFor = prevV, prevP })
+
+	var out, errb bytes.Buffer
+	if code := runCatalog([]string{"--pantry", p, "--versions"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d %s", code, errb.String())
+	}
+	cat, err := bottle.UnmarshalCatalog(out.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		project, version string
+	}{
+		{"borrowed.org", ""},
+		{"elsewhere.org", ""},
+		{"older.org", "2.0.0"},
+		{"here.org", "3.0.0"},
+		{"down.org", ""},
+	} {
+		got, ok := cat.Lookup(c.project)
+		if !ok {
+			t.Errorf("%s is not even NAMED — a reader cannot learn it exists", c.project)
+			continue
+		}
+		have := ""
+		if len(got.Versions) > 0 {
+			have = got.Versions[0]
+		}
+		if have != c.version {
+			t.Errorf("%s = %q, want %q", c.project, have, c.version)
+		}
+		if (len(got.Platforms) > 0) != (c.version != "") {
+			t.Errorf("%s platforms %v disagree with version %q", c.project, got.Platforms, have)
+		}
+	}
+	// A probe that FAILED is warned, and leaves the project bare rather
+	// than silently indistinguishable from one with no bottle: "the
+	// registry did not answer" and "the registry has nothing" are
+	// different facts and only one of them is about the catalogue.
+	if !strings.Contains(errb.String(), "down.org: registry down") {
+		t.Errorf("a failed probe was swallowed: %q", errb.String())
+	}
+
+	// A borrowed list is not probed at all: there is nothing of ours to
+	// probe, and 1900 pointless requests is the cost of asking anyway.
+	if probes["borrowed.org"] != 0 {
+		t.Errorf("a project we never published cost %d probe(s)", probes["borrowed.org"])
+	}
+	// The ordinary case costs ONE, which is the whole reason the walk
+	// stops at the first hit.
+	if probes["here.org"] != 1 {
+		t.Errorf("the ordinary case cost %d probe(s)", probes["here.org"])
+	}
+}
+
+// A project with no bottle here must not cost one request per tag: that
+// is the normal state of a young lane, times two thousand projects.
+func TestThePlatformProbeIsBounded(t *testing.T) {
+	var vs []bottle.Ver
+	for i := 1; i <= 40; i++ {
+		vs = append(vs, bottle.ParseVer(fmt.Sprintf("%d.0.0", i)))
+	}
+	n := 0
+	prev := publishedTagFor
+	publishedTagFor = func(string, bottle.Ver, string, string) (string, bool, error) {
+		n++
+		return "", false, nil
+	}
+	t.Cleanup(func() { publishedTagFor = prev })
+	if _, ok, err := newestHere("x.org", vs, "linux", "s390x"); ok || err != nil {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if n != platformProbes {
+		t.Errorf("%d probe(s) over 40 versions, want %d", n, platformProbes)
+	}
+
+	// And a probe that fails is reported, not read as "not here": those
+	// are different answers and only one of them is about the registry's
+	// contents.
+	publishedTagFor = func(string, bottle.Ver, string, string) (string, bool, error) {
+		return "", false, errors.New("registry down")
+	}
+	if _, _, err := newestHere("x.org", vs, "linux", "s390x"); err == nil {
+		t.Error("a failed probe reads as an absent bottle")
+	}
+}
+
+// The version a reader is shown must be the NEWEST, and version order is
+// not string order: a plain sort puts "1.9" above "1.10".
+func TestNewestHereUsesVersionOrderNotStringOrder(t *testing.T) {
+	vs := []bottle.Ver{bottle.ParseVer("1.9"), bottle.ParseVer("1.10")} // ascending, as bottle returns them
+	prev := publishedTagFor
+	publishedTagFor = func(_ string, v bottle.Ver, _, _ string) (string, bool, error) {
+		return v.Raw, true, nil
+	}
+	t.Cleanup(func() { publishedTagFor = prev })
+	got, ok, err := newestHere("x.org", vs, "linux", "x86-64")
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if got != "1.10" {
+		t.Errorf("newest = %q, want 1.10 — a string sort would say 1.9", got)
 	}
 }
 
