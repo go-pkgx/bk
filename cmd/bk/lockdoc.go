@@ -15,41 +15,23 @@ import (
 	"github.com/go-pkgx/bottle"
 )
 
-// lockedPin is one project as the lock pins it.
-type lockedPin struct{ Project, Version, Spec string }
+// lockedPin and lockDoc are bottle's types under the names this file has
+// always used.
+//
+// The FORMAT moved to bottle so that pkgx could read a lock at all: the
+// reader lived in this `package main`, which is importable by nothing, and
+// a lock only means something once something ELSE acts on it. The
+// RESOLUTION stays here, because deciding what a set means today needs a
+// pantry, an overrides set and a version resolver, none of which belong in
+// a bottle client.
+//
+// Aliases rather than a rename, so this diff is the move and nothing else.
+type lockedPin = bottle.LockPin
+type lockDoc = bottle.Lock
 
-// lockDoc is a whole lock: what was asked for, what it resolved to, and the
-// facts a later reader needs to decide whether the answer still holds.
-//
-// # THE HEADER IS DATA, NOT A COMMENT
-//
-// The first version of this wrote the platform, the roots and the two
-// revisions as `#` lines. They were the right facts in the wrong place: a
-// comment cannot be read back, so `--check` would have had to re-derive them
-// from arguments the caller might give differently, and the check would then
-// be of a different question from the one the file answers.
-//
-// Spack's lockfile is the precedent for every field here. Its `_meta` carries
-// a `lockfile-version`; it records "spack version/commit in spack.lock to
-// track information that should enhance reproducibility"; and its top level
-// holds `roots` beside `concrete_specs`. The compatibility rule that comes
-// with it is worth copying too — new readers read old locks, old readers
-// refuse new ones — and `lockfile_version` is what makes that possible later
-// without a guess.
-type lockDoc struct {
-	Version   int    // lockfile_version
-	Platform  string // the platform it was taken on: it CHANGES the answer
-	Generated string // RFC3339, UTC
-	BK        string // which bk wrote it
-	Roots     []string
-	Pantry    string
-	Overlay   string
-	Pins      []lockedPin
-}
-
-// lockfileVersion is this format's number. Bumped when a reader of the
-// previous one would MISREAD a file rather than merely miss a field.
-const lockfileVersion = 1
+// lockfileVersion is bottle's, so a bump cannot be made in one repository
+// and missed in the other.
+const lockfileVersion = bottle.LockfileVersion
 
 // bkVersion is the module version of the running bk, which is what Spack
 // records for the same reason: a lock is evidence about a resolution, and the
@@ -97,7 +79,7 @@ func resolveLock(set *logical.Set, overlayDir, pantryDir string, tgt target.Targ
 			continue
 		}
 		hashes[proj] = sh
-		pins = append(pins, lockedPin{proj, v, sh})
+		pins = append(pins, lockedPin{Project: proj, Version: v, Spec: sh})
 	}
 	// Sorted, not closure order: a lock is a SET of facts and is read as a
 	// diff. Topological order changes when an unrelated dependency moves, and
@@ -106,115 +88,17 @@ func resolveLock(set *logical.Set, overlayDir, pantryDir string, tgt target.Targ
 	return pins, unresolved
 }
 
-// renderLock writes the lock. HCL, because every other file this factory
-// reads by hand is HCL and `bottle.HCLToMap` can read it straight back.
-func renderLock(d lockDoc) string {
-	var b strings.Builder
-	b.WriteString("# bk lock\n#\n" +
-		"# `spec` is a Merkle hash over the platform, the name, the resolved\n" +
-		"# version, the PARSED recipe (so reformatting does not move it) and the\n" +
-		"# spec hashes of the dependencies — Spack's shape, whose packaging guide\n" +
-		"# counts \"a canonical hash of the package.py recipes\" among a spec hash's\n" +
-		"# inputs. A version alone calls two builds the same when a build script\n" +
-		"# changed under them.\n#\n" +
-		"# What this still does NOT pin: the BYTES of the built bottle. The spec\n" +
-		"# hash covers the inputs, as Nix's and Spack's do; an output digest is a\n" +
-		"# different promise and is not made here.\n#\n" +
-		"# Sorted by project, not in build order: a lock is read as a diff, and a\n" +
-		"# topological order makes every line move when one dependency does.\n#\n" +
-		"# `bk lock --check <this file>` re-resolves and says what moved.\n\n")
-	fmt.Fprintf(&b, "lockfile_version = %d\n", d.Version)
-	fmt.Fprintf(&b, "bk               = %q\n", d.BK)
-	fmt.Fprintf(&b, "platform         = %q\n", d.Platform)
-	fmt.Fprintf(&b, "generated        = %q\n", d.Generated)
-	fmt.Fprintf(&b, "pantry           = %q\n", d.Pantry)
-	fmt.Fprintf(&b, "overlay          = %q\n", d.Overlay)
-	b.WriteString("roots            = [")
-	for i, r := range d.Roots {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "%q", r)
-	}
-	b.WriteString("]\n\nlocked = {\n")
-	for _, p := range d.Pins {
-		fmt.Fprintf(&b, "  %q = { version = %q, spec = %q }\n", p.Project, p.Version, p.Spec)
-	}
-	b.WriteString("}\n")
-	return b.String()
-}
+// renderLock writes the lock, through bottle's one copy of the format.
+func renderLock(d lockDoc) string { return bottle.RenderLock(d) }
 
-// readLock parses a lock back.
-//
-// Through bottle.HCLToMap, the same reader the pantry overlay's HCL recipes
-// go through, so the lock cannot develop a dialect of its own — and so this
-// costs no new dependency.
+// readLock parses a lock back, through BOTTLE's parser and through bk's own
+// file seam, so a test that stubs osReadFile still drives this path.
 func readLock(path string) (lockDoc, error) {
 	src, err := osReadFile(path)
 	if err != nil {
 		return lockDoc{}, err
 	}
-	m, err := bottle.HCLToMap(src, path)
-	if err != nil {
-		return lockDoc{}, err
-	}
-	d := lockDoc{
-		Version:   int(asInt(m["lockfile_version"])),
-		Platform:  asString(m["platform"]),
-		Generated: asString(m["generated"]),
-		BK:        asString(m["bk"]),
-		Pantry:    asString(m["pantry"]),
-		Overlay:   asString(m["overlay"]),
-	}
-	for _, r := range asSlice(m["roots"]) {
-		d.Roots = append(d.Roots, asString(r))
-	}
-	// A lock with no readable `locked` block is not an empty lock. Treated as
-	// an error for the same reason `bk lock` refuses to pin nothing: the
-	// caller would read "nothing moved" off a file that says nothing.
-	locked, ok := m["locked"].(map[string]any)
-	if !ok || len(locked) == 0 {
-		return lockDoc{}, fmt.Errorf("%s: no `locked` entries — this is not a lock", path)
-	}
-	for proj, v := range locked {
-		e, ok := v.(map[string]any)
-		if !ok {
-			return lockDoc{}, fmt.Errorf("%s: %q is not a { version = …, spec = … } entry", path, proj)
-		}
-		d.Pins = append(d.Pins, lockedPin{proj, asString(e["version"]), asString(e["spec"])})
-	}
-	sort.Slice(d.Pins, func(i, j int) bool { return d.Pins[i].Project < d.Pins[j].Project })
-	if d.Version > lockfileVersion {
-		return lockDoc{}, fmt.Errorf("%s: lockfile_version %d, and this bk understands %d — "+
-			"read it with a newer bk rather than with this one, which would miss whatever the "+
-			"bump was for", path, d.Version, lockfileVersion)
-	}
-	return d, nil
-}
-
-// asString, asInt and asSlice read a value HCLToMap produced. They do not
-// report a type error: a field of the wrong type reads as its zero, and the
-// comparison then SAYS so by name instead of refusing the whole file for one
-// line. The one shape that cannot be tolerated — a missing `locked` — is
-// checked above.
-func asString(v any) string {
-	s, _ := v.(string)
-	return s
-}
-
-func asInt(v any) int64 {
-	switch n := v.(type) {
-	case int64:
-		return n
-	case float64:
-		return int64(n)
-	}
-	return 0
-}
-
-func asSlice(v any) []any {
-	s, _ := v.([]any)
-	return s
+	return bottle.ParseLock(src, path)
 }
 
 // lockDrift is one disagreement between a lock and today.
@@ -261,22 +145,8 @@ func compareLock(was, now []lockedPin) []lockDrift {
 	return out
 }
 
-// lockAge is how old a lock is, for a line that says so. A reader deciding
-// whether to trust a lock wants the age, not the timestamp arithmetic.
-func lockAge(generated string, now time.Time) string {
-	t, err := time.Parse(time.RFC3339, generated)
-	if err != nil {
-		return "unknown age"
-	}
-	d := now.UTC().Sub(t)
-	switch {
-	case d < time.Hour:
-		return fmt.Sprintf("%d minute(s) old", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%d hour(s) old", int(d.Hours()))
-	}
-	return fmt.Sprintf("%d day(s) old", int(d.Hours()/24))
-}
+// lockAge says how old a lock is, in bottle's words.
+func lockAge(generated string, now time.Time) string { return bottle.LockAge(generated, now) }
 
 // checkLock re-resolves a lock's own roots and says what moved.
 //
