@@ -98,9 +98,27 @@ func TestABadLockFails(t *testing.T) {
 	if err := os.WriteFile(empty, []byte("lockfile_version = 1\nlocked = {\n  \"x\" = { version = \"\", spec = \"\" }\n}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := factoryWant("fallback.org", "", empty); err == nil {
-		t.Error("a lock pinning nothing fell through to --recipes")
-	} else if !strings.Contains(err.Error(), "pins nothing") {
-		t.Errorf("err = %v", err)
+	// REFUSED EARLIER, AND BY NAME, since bottle v0.38.0: a version is a
+	// key, so an empty one is refused while the file is being parsed
+	// rather than noticed afterwards by counting what survived. The
+	// message names the pin — "x: not a version: empty" — which is more
+	// than "pins nothing" could say.
+	//
+	// bk's own `pins nothing` guard stays where it is. It is a
+	// postcondition now rather than the thing that fires, and an
+	// unreachable postcondition is an argument for keeping it, not for
+	// deleting it: what makes it unreachable lives in another repository.
+	err := mustFail(t, "fallback.org", "", empty)
+	if !strings.Contains(err.Error(), "not a version") || !strings.Contains(err.Error(), "x") {
+		t.Errorf("err = %v, want it to name the pin and why", err)
 	}
+}
+
+func mustFail(t *testing.T, want, recipes, lock string) error {
+	t.Helper()
+	_, err := factoryWant(want, recipes, lock)
+	if err == nil {
+		t.Fatal("a lock pinning nothing fell through to --recipes")
+	}
+	return err
 }
