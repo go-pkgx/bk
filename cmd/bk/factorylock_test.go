@@ -104,13 +104,38 @@ func TestABadLockFails(t *testing.T) {
 	// message names the pin — "x: not a version: empty" — which is more
 	// than "pins nothing" could say.
 	//
-	// bk's own `pins nothing` guard stays where it is. It is a
-	// postcondition now rather than the thing that fires, and an
-	// unreachable postcondition is an argument for keeping it, not for
-	// deleting it: what makes it unreachable lives in another repository.
+	// bk's own `pins nothing` branch is GONE, and the 100% coverage gate is
+	// what settled it: the branch could no longer run, and a gate that
+	// reports dead code is worth more than a postcondition kept on
+	// sentiment. What it protected is pinned below instead.
 	err := mustFail(t, "fallback.org", "", empty)
 	if !strings.Contains(err.Error(), "not a version") || !strings.Contains(err.Error(), "x") {
 		t.Errorf("err = %v, want it to name the pin and why", err)
+	}
+}
+
+// THE CONTRACT bk NOW DEPENDS ON, pinned here so that deleting the branch
+// above did not amount to trusting another repository.
+//
+// factoryWant no longer counts what survived its own loop, because bottle
+// refuses an empty `locked` block and an empty version while parsing. If
+// that ever relaxes, a lock pinning nothing would reach `bk factory` as an
+// empty want list and the run would build NOTHING while reporting success —
+// which is how a build silently stops being locked.
+//
+// A test that goes red is worth more than a branch that cannot run.
+func TestBottleRefusesALockThatPinsNothing(t *testing.T) {
+	for name, body := range map[string]string{
+		"no locked block": "lockfile_version = 1\nplatform = \"linux/x86-64\"\n",
+		"an empty block":  "lockfile_version = 1\nlocked = {}\n",
+		"an empty version": "lockfile_version = 1\nlocked = {\n" +
+			"  \"x\" = { version = \"\", spec = \"\" }\n}\n",
+		"an empty project": "lockfile_version = 1\nlocked = {\n" +
+			"  \"\" = { version = \"1.0\", spec = \"\" }\n}\n",
+	} {
+		if _, err := bottle.ParseLock([]byte(body), name+".lock.hcl"); err == nil {
+			t.Errorf("bottle accepted a lock with %s; factoryWant would hand back an empty want list", name)
+		}
 	}
 }
 
