@@ -989,16 +989,28 @@ func factoryWant(recipes, file, lock string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		var out []string
+		// NO `pins nothing` CHECK HERE ANY MORE, and the reason is worth a
+		// paragraph because the check it replaces was a good one.
+		//
+		// Until bottle v0.38.0 a pin could carry an empty project or an
+		// empty version, so this loop skipped it and the count afterwards
+		// caught a lock that pinned nothing — building nothing while
+		// reporting success is how a run silently stops being locked.
+		//
+		// v0.38.0 validates both while PARSING: a lock with no `locked`
+		// entries is refused, and so is an empty version, by name. The
+		// branch here became unreachable, which the 100% coverage gate
+		// reported rather than letting it sit.
+		//
+		// Deleting it does not mean trusting another repository. The
+		// contract bk depends on is pinned by TestBottleRefusesALockThatPinsNothing,
+		// which fails if bottle ever relaxes — a test that goes red is
+		// worth more than a branch that cannot run.
+		out := make([]string, 0, len(d.Pins))
 		for _, p := range d.Pins {
-			if p.Project != "" && p.Version != "" {
-				out = append(out, p.Project+"@="+p.Version)
-			}
+			out = append(out, p.Project+"@="+p.Version)
 		}
 		sort.Strings(out)
-		if len(out) == 0 {
-			return nil, fmt.Errorf("%s pins nothing", lock)
-		}
 		return out, nil
 	}
 	if strings.TrimSpace(recipes) != "" {
