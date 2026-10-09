@@ -348,6 +348,36 @@ func flavoredTag(project, version, glibc string) string {
 	return version + "-glibc" + strings.TrimPrefix(glibc, "=")
 }
 
+// builderWithVersion is the SLSA builder id, carrying the bk that ran.
+//
+// A build with no version information is not one you can ask anything about
+// later. bkVersion() reads debug.ReadBuildInfo, so it cannot disagree with the
+// binary; a `go run` of a working tree answers "(devel)", which is a true
+// statement about a build nobody should publish from and is better recorded
+// than hidden.
+func builderWithVersion() string { return builderID + "@" + bkVersion() }
+
+// buildParams is what the SLSA statement records as externalParameters: the
+// question this build was asked.
+//
+// ⛔ IT WAS `{}`. The shape of a provenance was published, signed, for every
+// bottle in the registry, and it said nothing — not the platform, not the
+// version, not even the project. An attestation whose presence implies a
+// guarantee it does not give is worse than no attestation, because a reader
+// stops looking once they see one.
+//
+// Only what is KNOWN here goes in. The build-dependency closure and the spec
+// hash are the two that matter most and are not in hand at this call; they
+// arrive with the plumbing, not with a placeholder, because a field that is
+// always empty teaches readers to ignore the block.
+func buildParams(project, version, osn, arch string) map[string]string {
+	return map[string]string{
+		"project":  project,
+		"version":  version,
+		"platform": osn + "/" + arch,
+	}
+}
+
 // buildReferrers builds the CycloneDX SBOM and in-toto SLSA provenance
 // attestations for a bottle (subject = the bottle itself; the tarball digest
 // binds them).
@@ -362,11 +392,22 @@ func buildReferrers(project, version, osn, arch string, tarball []byte, src buil
 		return nil, err
 	}
 	stmt := provenance.Statement{
-		Subjects:   []provenance.Subject{{Name: fmt.Sprintf("%s %s %s/%s", project, version, osn, arch), SHA256: dg}},
-		BuildType:  buildType,
-		BuilderID:  builderID,
+		Subjects:  []provenance.Subject{{Name: fmt.Sprintf("%s %s %s/%s", project, version, osn, arch), SHA256: dg}},
+		BuildType: buildType,
+		// ⛔ A BUILDER THAT NEVER CHANGES CANNOT TELL TWO BUILDS APART.
+		// builderID was the bare string `https://github.com/go-pkgx/bk`, so
+		// every bottle ever published claimed the identical builder —
+		// measured 2026-10-09 on stedolan.github.io/jq, whose signed SLSA
+		// statement carries buildDefinition {} and that constant.
+		//
+		// SLSA says builder.id must identify the build platform closely
+		// enough that a change in it is a change in the id. A rebuild for a
+		// toolchain security fix is exactly such a change, and the question
+		// "which bk built this?" had no answer in the artefact.
+		BuilderID:  builderWithVersion(),
 		StartedOn:  now,
 		FinishedOn: now,
+		Params:     buildParams(project, version, osn, arch),
 		Materials:  materialsOf(src),
 	}
 	pr, err := provJSON(stmt)
