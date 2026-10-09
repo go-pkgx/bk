@@ -108,19 +108,52 @@ func main() {
 	osExit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// printVersion writes the one line both spellings produce.
+//
+// It prints exactly what bkVersion() returns — WITH the leading "v" — because
+// that is the string bk writes into a lock's `bk = "…"` field. A prettier
+// rendering here would make the two disagree, and the whole use of this
+// command is reading a lock and asking "do I have that bk?".
+//
+// There is no -ldflags stamp. The siblings inject `-X main.version=<tag>`,
+// which can be set to anything regardless of what was compiled; this reads
+// debug.ReadBuildInfo, so it cannot disagree with the binary it is in.
+func printVersion(w io.Writer) {
+	fmt.Fprintln(w, "bk", bkVersion())
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bk", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	platform := fs.String("platform", "", "cross-build target, eg. windows/x86-64 (also BREWKIT_TARGET)")
+	version := fs.Bool("version", false, "print the version this bk writes into every lock")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	// ⛔ BOTH SPELLINGS, BECAUSE NEITHER WORKED. Measured 2026-10-09:
+	//
+	//	$ bk --version
+	//	flag provided but not defined: -version
+	//	$ bk version
+	//	unknown command: version
+	//
+	// bk could not say which bk it was, which matters more here than in its
+	// siblings: it writes its own version into every lock it produces
+	// (`bk = "v0.15.0"`), so "which bk wrote this lock" was a question only
+	// `go version -m` could answer, and only if you still had the binary.
+	//
+	// The flag form is parsed BEFORE the empty-args check so that
+	// `bk --version` on its own is not a usage error.
+	if *version {
+		printVersion(stdout)
+		return 0
 	}
 	if *platform != "" {
 		os.Setenv("BREWKIT_TARGET", *platform)
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|overrides|depgaps|builder|factory|source> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|overrides|depgaps|builder|factory|source> [args]")
 		return 2
 	}
 
@@ -134,6 +167,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// The factory SETS that variable, so a CI lane checking recipes beside a
 	// build would inherit it.
 	switch rest[0] {
+	case "version":
+		printVersion(stdout)
+		return 0
 	case "target":
 		tgt, err := target.Resolve()
 		if err != nil {

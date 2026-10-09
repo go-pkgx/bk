@@ -138,6 +138,20 @@ jobs:
               bad=1
             fi
           done
+          # AND THE VERSION IT PRINTS. Until now bk had no way to say which
+          # bk it was — `bk --version` was "flag provided but not defined"
+          # and `bk version` was "unknown command" — so this half could not
+          # be checked at all.
+          #
+          # It is not a duplicate of the loop above even though both read
+          # debug.ReadBuildInfo: this one proves the COMMAND works, on the
+          # binary a user will actually run. A wiring break (missing case,
+          # wrong field, output to stderr) is invisible to `go version -m`.
+          got=$("$DIST/bk-linux-amd64" version | awk '{print $2}')
+          if [ "$got" != "$TAG" ]; then
+            echo "::error::bk version says '$got', want exactly '$TAG'"
+            bad=1
+          fi
           exit "$bad"
 
       - name: Publish GitHub Release
