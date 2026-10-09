@@ -50,7 +50,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `httpretry` | which failed HTTP attempts are worth repeating. Measured on one 23-failure batch, **eleven** were transient HTTP and nothing else — a factory that gives a flaky host exactly one chance reports its own bad luck as a broken recipe |
 | `useragent` | the one User-Agent every HTTP path in bk sends. It exists because they differed: `versions` set one and `fetch` did not, so bk could LIST a project's versions and then get 403 downloading the tarball it had just found |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | twenty-four subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
+| `cmd/bk` | twenty-five subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -354,6 +354,40 @@ attributes now, with `lockfile_version` beside them — Spack's lockfile carries
 a `lockfile-version` and records which spack wrote it, and the compatibility
 rule that comes with it (new readers read old locks; old readers refuse new
 ones) is worth copying before it is needed rather than after.
+
+### `bk version` — because a lock names a bk you have to be able to find
+
+Every lock records which bk wrote it:
+
+```hcl
+bk = "v0.15.0"
+```
+
+Until now there was no way to ask a binary whether it was that one.
+`bk --version` answered `flag provided but not defined: -version` and
+`bk version` answered `unknown command: version`, so the question could only
+be settled with `go version -m`, and only if you still had the binary rather
+than a `bk` on your `PATH`.
+
+```console
+$ bk version
+bk v0.15.0
+```
+
+Both spellings exist and are asserted to give the same answer, because two
+code paths that can drift apart are how a tool starts reporting two versions
+of itself.
+
+It prints **exactly** what a lock carries, leading `v` included. A prettier
+rendering would make the two disagree, and reading a lock and asking *"do I
+have that bk?"* is the whole use of the command.
+
+There is **no `-ldflags` stamp**. The sibling tools inject
+`-X main.version=<tag>`, which can be set to anything regardless of what was
+compiled — that is how a release workflow re-run published binaries labelled
+with a tag they were not built from. This reads `debug.ReadBuildInfo`, so it
+cannot disagree with the binary it is in, and the release workflow checks it
+against the tag by equality alongside the build info of every binary it ships.
 
 ### What is still missing, named rather than left out
 
