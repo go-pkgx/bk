@@ -53,8 +53,14 @@ var buildInfo = debug.ReadBuildInfo
 // `order` is topological, deps first, so a dependency's spec hash is always
 // already in hand when its dependent is hashed. That is why this loop is not
 // sorted and the OUTPUT is.
+// resolveLock pins every project in order.
+//
+// runnable chooses WHICH QUESTION the versions answer: false pins the newest
+// the recipes can build (what `bk factory --lock` is about to build), true
+// pins the newest published for the target (what `pkgx --lock` can install).
+// They are different sets — see lockpublished.go, where the measurement is.
 func resolveLock(set *logical.Set, overlayDir, pantryDir string, tgt target.Target,
-	order []string, read map[string][]*pantry.Recipe) ([]lockedPin, []string) {
+	order []string, demands map[string][]string, read map[string][]*pantry.Recipe, runnable bool) ([]lockedPin, []string) {
 	var pins []lockedPin
 	var unresolved []string
 	hashes := map[string]string{}
@@ -68,6 +74,18 @@ func resolveLock(set *logical.Set, overlayDir, pantryDir string, tgt target.Targ
 		if err != nil || v == "" {
 			unresolved = append(unresolved, fmt.Sprintf("%s (%v)", proj, err))
 			continue
+		}
+		if runnable {
+			// A project with nothing published for this platform is a HOLE
+			// in a runnable lock, not a pin to quietly leave at the recipe's
+			// version: the whole promise of the mode is that `pkgx --lock`
+			// can install every line.
+			pv, perr := publishedVersionFor(proj, demands[proj], tgt.Platform, tgt.Arch)
+			if perr != nil {
+				unresolved = append(unresolved, fmt.Sprintf("%s (nothing published for %s/%s: %v)", proj, tgt.Platform, tgt.Arch, perr))
+				continue
+			}
+			v = pv
 		}
 		// The recipes the closure itself read. Not re-read: the walk already
 		// has them, and a project whose recipes do not load never reaches
@@ -181,15 +199,22 @@ func checkLock(want lockDoc, roots []string, pantryDir, overlayDir, overridesDir
 	warn := func(s string) { fmt.Fprintln(stderr, s) }
 
 	expanded := expandSets(lset, overlayDir, pantryDir, closureRoots(roots, warn), warn)
-	order, _, read := closureOf(lset, overlayDir, pantryDir, tgt, expanded, warn)
+	order, demands, read := closureOf(lset, overlayDir, pantryDir, tgt, expanded, warn)
 	if len(order) == 0 {
 		fmt.Fprintln(stderr, "lock: the closure is empty — nothing was read, so this says nothing about the lock")
 		return 2
 	}
-	now, unresolved := resolveLock(lset, overlayDir, pantryDir, tgt, order, read)
+	// ⛔ RE-RESOLVE BY THE QUESTION THE FILE ANSWERS, which the file states.
+	// Checked by the other question, a lock pinned to published versions
+	// reports as drift on every project the recipes have moved ahead of —
+	// a report of movement that never happened. `--check` refuses re-stated
+	// roots and platform for the same reason, and takes the mode from the
+	// file just as it takes those.
+	mode := bottle.LockPinned(want)
+	now, unresolved := resolveLock(lset, overlayDir, pantryDir, tgt, order, demands, read, mode == bottle.PinsPublished)
 
-	fmt.Fprintf(stdout, "lock: %s · %s · %d pinned, %s\n",
-		platform, want.Generated, len(want.Pins), lockAge(want.Generated, lockNow()))
+	fmt.Fprintf(stdout, "lock: %s · %s · %d pinned, %s · pinned from the %s\n",
+		platform, want.Generated, len(want.Pins), lockAge(want.Generated, lockNow()), mode)
 	for _, r := range []struct{ name, was, now string }{
 		{"pantry", want.Pantry, gitRevOf(pantryDir)},
 		{"overlay", want.Overlay, gitRevOf(overlayDir)},

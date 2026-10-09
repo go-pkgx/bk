@@ -58,6 +58,7 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 	platform := fs.String("platform", envOr("PLATFORM", "linux/x86-64"), "target os/arch")
 	out := fs.String("o", "", "write here instead of stdout")
 	check := fs.String("check", "", "re-resolve an existing lock and report what moved, instead of writing one")
+	runnable := fs.Bool("runnable", false, "pin the newest version PUBLISHED for -platform, so `pkgx --lock` can run the file, instead of the newest the recipes can build")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -66,6 +67,13 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 	// disagree, and the check would then be of a different question from the
 	// one the file answers.
 	if *check != "" {
+		// The mode is one more thing the FILE answers — see checkLock.
+		// Allowing it here would let the two disagree, and the check would
+		// then be of a different question from the one the file answers.
+		if *runnable {
+			fmt.Fprintf(stderr, "lock --check reads how it was pinned from %s; -runnable on the command line would ask a different question\n", *check)
+			return 2
+		}
 		if fs.NArg() > 0 {
 			fmt.Fprintf(stderr, "lock --check reads its roots from %s; %q on the command line would ask a different question\n", *check, fs.Arg(0))
 			return 2
@@ -115,13 +123,13 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 	warn := func(s string) { fmt.Fprintln(stderr, s) }
 
 	roots := expandSets(lset, *overlayDir, *pantryDir, closureRoots(fs.Args(), warn), warn)
-	order, _, read := closureOf(lset, *overlayDir, *pantryDir, tgt, roots, warn)
+	order, demands, read := closureOf(lset, *overlayDir, *pantryDir, tgt, roots, warn)
 	if len(order) == 0 {
 		fmt.Fprintln(stderr, "lock: the closure is empty — nothing was read, which is a failure and not a clean result")
 		return 1
 	}
 
-	pins, unresolved := resolveLock(lset, *overlayDir, *pantryDir, tgt, order, read)
+	pins, unresolved := resolveLock(lset, *overlayDir, *pantryDir, tgt, order, demands, read, *runnable)
 
 	doc := lockDoc{
 		Version:   lockfileVersion,
@@ -131,6 +139,7 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 		Roots:     fs.Args(),
 		Pantry:    gitRevOf(*pantryDir),
 		Overlay:   gitRevOf(*overlayDir),
+		Pinned:    lockModeOf(*runnable),
 		Pins:      pins,
 	}
 	b := strings.Builder{}
@@ -139,6 +148,12 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 	for _, u := range unresolved {
 		fmt.Fprintf(stderr, "lock: unresolved: %s\n", u)
 	}
+	// SAID AT WRITE TIME, not discovered by whoever tries to use the file.
+	// A lock whose pins the platform cannot install is a legitimate build
+	// lock and a broken runnable one, and only the person writing it knows
+	// which they wanted.
+	bad, failedLookups := unpublishedPins(pins, osn, arch)
+	reportUnpublished(stderr, pins, bad, failedLookups, *platform, lockModeOf(*runnable), len(unresolved))
 	if *out != "" {
 		if err := osWriteFile(*out, []byte(b.String()), 0o644); err != nil {
 			fmt.Fprintln(stderr, "lock:", err)

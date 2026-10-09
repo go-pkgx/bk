@@ -15,6 +15,7 @@
 //	bk runlog            read a factory job log: counts, stages, and whether
 //	                     the parse agrees with bk's own totals
 //	bk lock              resolve a set to the versions it means today, write them down, and --check them later
+//	                     (-runnable pins what is PUBLISHED, so `pkgx --lock` can run the file)
 //	bk factory           build a recipe set's whole closure and publish every bottle
 //	bk source            fetch the source a published bottle attests it was built from
 package main

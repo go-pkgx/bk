@@ -244,6 +244,48 @@ Two deliberate shapes:
 - **An unresolved project exits non-zero** and is named on stderr. A lock with
   a hole in it that reads as a success is a lock somebody commits.
 
+### `-runnable` — build locks and run locks are different files
+
+`bk lock` resolves each version from the recipe's `versions:` block, so it
+pins **what the recipes can build**. That is exactly right for
+`bk factory --lock`, which is about to build them, and wrong for
+`pkgx --lock`, which can only install what the factory has already
+**published**. The two run ahead of each other by construction.
+
+Measured 2026-10-09, by generating a lock and running it in a `FROM scratch`
+container rather than by reading the code:
+
+```
+$ bk lock -platform linux/aarch64 -o curl.lock.hcl curl.se
+lock: 1 of 5 pin(s) NOT published for linux/aarch64 — `bk factory --lock` can
+      build this file, `pkgx --lock` cannot run it:
+    curl.se/ca-certs             2026.09.25     (published here: 2026.8.13)
+    `bk lock -runnable` pins what is published instead.
+lock: 5 project(s) pinned → curl.lock.hcl
+```
+
+Before this, that lock was written in silence and `pkgx --lock` refused it
+with a message about a version nobody had chosen.
+
+`-runnable` pins the newest **published** version that satisfies every demand
+the closure places on each project — `PickVersionForAll`, the same function
+the resolver itself asks, so the lock answers the question pkgx will ask of
+it. A per-project "newest published" is **not** a closure: the first version
+of this flag asked for `*`, pinned openssl 4.0.2 where `curl.se` demands
+`^3`, and produced a file that could not resolve under a line saying it
+could.
+
+The mode is written into the file as `pinned = "recipes" | "published"`,
+because `bk lock --check` re-resolves — and re-resolving by the other
+question reports every pin as having moved.
+
+The verdict is printed **every time**, including when everything is fine:
+the defect being fixed was a silence, and a message that appears only on
+failure leaves the clean case looking exactly like a `bk` that does not
+check at all. It also refuses to endorse a lock with a **hole** in it: a
+project that could not be pinned at all leaves the remaining pins all
+installable and the file still not a closure.
+
 ### `spec` — because a version is not enough either
 
 Spack's packaging guide says what goes into a spec hash: *"`build`, `link`,
@@ -277,7 +319,7 @@ resolution disagree.
 
 ```
 $ bk lock --check base-toolchain.lock.hcl
-lock: linux/x86-64 · 2026-10-05T09:10:39Z · 41 pinned, 2 hour(s) old
+lock: linux/x86-64 · 2026-10-05T09:10:39Z · 41 pinned, 2 hour(s) old · pinned from the recipes
 lock: pantry revision differs: fd64699… → 9ab12cd…
   gnu.org/binutils                   2.47 → 2.48
   zlib.net                           spec 6a2d499db9ab → spec 90fae00e667c — same version, so something it is built FROM changed
@@ -292,10 +334,11 @@ produce.** Measured on the real `zlib.net` recipe: a comment added to its
 build block moves nothing, and one flag added to its `./configure` line moves
 the spec hash while the version stays `1.3.2`.
 
-It takes its roots, its platform and the revisions it expects **from the
-file**. Naming them again on the command line would let the two disagree, and
-the check would then be of a different question from the one the file answers
-— so it refuses a project name beside `--check`.
+It takes its roots, its platform, the revisions it expects **and how it was
+pinned** from the file. Naming any of them again on the command line would let
+the two disagree, and the check would then be of a different question from the
+one the file answers — so it refuses a project name, and `-runnable`, beside
+`--check`.
 
 A **revision that moved is said and is not fatal**: a pantry can move without
 moving any answer, and calling that drift would make the check cry wolf until

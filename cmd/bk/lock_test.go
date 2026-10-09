@@ -9,6 +9,7 @@ import (
 	"github.com/go-pkgx/bk/logical"
 	"github.com/go-pkgx/bk/pantry"
 	"github.com/go-pkgx/bk/target"
+	"github.com/go-pkgx/bottle"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +36,29 @@ func lockbed(t *testing.T, recipes map[string]string) (dir string, written *map[
 	lockNow = func() time.Time { return time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC) }
 	files := map[string][]byte{}
 	osWriteFile = func(name string, b []byte, _ os.FileMode) error { files[name] = b; return nil }
-	t.Cleanup(func() { lockNow, osWriteFile = prevNow, prevWrite })
+
+	// ⛔ THE FIXTURE PANTRY HAS NO REGISTRY BEHIND IT. `bk lock` now asks
+	// whether each pin is published, and left on the real function every
+	// test in this file would reach ghcr for a project like "app.org" that
+	// has never existed — putting the network inside a unit test and making
+	// the suite fail offline. Caught by asking what the new call did to the
+	// tests that were already here, rather than by noticing them go red.
+	//
+	// It answers "published", so these tests measure what they always
+	// measured. Publication is exercised on its own in lockpublished_test.go,
+	// where both answers are given deliberately.
+	prevTag, prevPick := lockPublishedTagFor, lockPickPublished
+	lockPublishedTagFor = func(_ string, v bottle.Ver, osn, arch string) (string, bool, error) {
+		return v.Raw + "--" + osn + "-" + arch, true, nil
+	}
+	lockPickPublished = func(_, _, _, _ string) (bottle.Ver, error) {
+		return bottle.Ver{}, errors.New("the fixture has no registry")
+	}
+
+	t.Cleanup(func() {
+		lockNow, osWriteFile = prevNow, prevWrite
+		lockPublishedTagFor, lockPickPublished = prevTag, prevPick
+	})
 	return dir, &files
 }
 
