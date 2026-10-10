@@ -338,7 +338,7 @@ func renderTest(rec *pantry.Recipe, project, ver, tag string, tgt target.Target,
 	// them, so offering their prefixes would render a path to something
 	// that is not there.
 	if strings.Contains(fmt.Sprint(rec.Test), "{{deps.") {
-		dt, err := build.DepTokens(rec.Dependencies, testDepMap(rec.Test), tgt, config.PkgxDir(), resolveTestDep)
+		dt, _, err := build.DepTokens(rec.Dependencies, testDepMap(rec.Test), tgt, config.PkgxDir(), resolveTestDep)
 		if err != nil {
 			return "", fmt.Errorf("resolve test deps: %w", err)
 		}

@@ -679,7 +679,7 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 		Dist: f.dist, Project: proj, Version: res.Version,
 		OS: f.osn, Arch: f.arch, Path: res.BottlePath,
 		Glibc: f.glibc, Key: f.key, Time: f.when,
-		Source: res.Source,
+		Source: res.Source, BuildEnv: res.BuildEnv,
 	})
 	if err != nil {
 		f.fail(proj, res.Version, "publish", err)

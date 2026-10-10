@@ -122,6 +122,16 @@ type Result struct {
 	// Source is empty for a recipe with no distributable (a few build entirely
 	// from their dependencies).
 	Source SourceRef
+	// BuildEnv is every dependency this build resolved, at the version it
+	// actually used — the compiler, its libc, and the tools the recipe
+	// invoked. It is what makes a published bottle able to say what compiled
+	// it, and the axis along which a rebuild for a toolchain vulnerability
+	// differs from the build before it.
+	//
+	// Empty when the runner has no ResolveDep (a recipe with no
+	// dependencies, and the test harness), which is a true statement rather
+	// than a missing one.
+	BuildEnv []moustache.Dep
 }
 
 // Build runs the pipeline for project@constraint built for tgt (running on host)
@@ -300,11 +310,16 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		moustache.Token{From: "pkgx.prefix", To: config.PkgxDir()},
 	)
 	if r.ResolveDep != nil {
-		dt, err := DepTokens(recipe.Dependencies, bd, tgt, config.PkgxDir(), r.ResolveDep)
+		dt, resolved, err := DepTokens(recipe.Dependencies, bd, tgt, config.PkgxDir(), r.ResolveDep)
 		if err != nil {
 			return res, fmt.Errorf("resolve deps: %w", err)
 		}
 		toks = append(toks, dt...)
+		// The build environment, kept rather than discarded: the compiler,
+		// its libc and every tool the recipe invoked, at the versions
+		// actually used. It is what a published bottle has to be able to
+		// name when it is rebuilt for a toolchain vulnerability.
+		res.BuildEnv = resolved
 	}
 	// A recipe that build-depends on itself still interpolates its own prefix.
 	// Appended AFTER the resolved tokens so it can only fill a gap, never

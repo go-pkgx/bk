@@ -253,7 +253,7 @@ func TestWithoutUnresolvableAsksTheConstraintDepTokensAsks(t *testing.T) {
 	}
 	// And the same question DepTokens would ask, from the same input.
 	viaTokens := map[string]string{}
-	_, _ = DepTokens(nil, in, lin(), "/pkgx", func(p, c string) (string, error) { viaTokens[p] = c; return "9.9.9", nil })
+	_, _, _ = DepTokens(nil, in, lin(), "/pkgx", func(p, c string) (string, error) { viaTokens[p] = c; return "9.9.9", nil })
 	for p := range in {
 		if got[p] != viaTokens[p] {
 			t.Errorf("%s: this check asks %q, DepTokens asks %q — they must agree", p, got[p], viaTokens[p])

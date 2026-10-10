@@ -134,7 +134,19 @@ func SpecProject(spec string) string {
 // install prefix ($PKGX_DIR/<project>/v<version>) and returns the
 // `{{deps.<project>.prefix}}` / `{{deps.<project>.version.*}}` moustache tokens.
 // resolve maps a project + constraint to a concrete version.
-func DepTokens(runtime, buildDeps map[string]any, tgt target.Target, pkgxDir string, resolve func(project, constraint string) (string, error)) ([]moustache.Token, error) {
+// DepTokens also returns the RESOLVED dependencies it built those tokens from.
+//
+// ⛔ IT USED TO THROW THEM AWAY. This list — project, version, prefix, for the
+// whole build and runtime closure, sorted — IS the build environment: the
+// compiler, its libc, every tool the recipe invoked, at the versions actually
+// used. It was computed on every build and discarded, which is why a published
+// bottle could not say what compiled it.
+//
+// Resolving a second time elsewhere would be the obvious alternative and the
+// wrong one: `resolve` reaches the registry, and two resolutions a moment
+// apart are two ANSWERS — measured on this fleet, the same pantry commit gave
+// tcl 9.0.4 and 9.1.0 four hours apart.
+func DepTokens(runtime, buildDeps map[string]any, tgt target.Target, pkgxDir string, resolve func(project, constraint string) (string, error)) ([]moustache.Token, []moustache.Dep, error) {
 	flat := reduceDepMap(runtime, tgt)
 	for p, c := range reduceDepMap(buildDeps, tgt) {
 		flat[p] = c
@@ -149,7 +161,7 @@ func DepTokens(runtime, buildDeps map[string]any, tgt target.Target, pkgxDir str
 	for _, p := range projects {
 		ver, err := resolve(p, flat[p])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		deps = append(deps, moustache.Dep{
 			Project: p,
@@ -157,7 +169,7 @@ func DepTokens(runtime, buildDeps map[string]any, tgt target.Target, pkgxDir str
 			Path:    filepath.Join(pkgxDir, filepath.FromSlash(p), "v"+ver),
 		})
 	}
-	return moustache.Deps(deps), nil
+	return moustache.Deps(deps), deps, nil
 }
 
 func platformKey(k string) (os, arch string, ok bool) {
