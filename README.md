@@ -50,7 +50,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `httpretry` | which failed HTTP attempts are worth repeating. Measured on one 23-failure batch, **eleven** were transient HTTP and nothing else — a factory that gives a flaky host exactly one chance reports its own bad luck as a broken recipe |
 | `useragent` | the one User-Agent every HTTP path in bk sends. It exists because they differed: `versions` set one and `fetch` did not, so bk could LIST a project's versions and then get 403 downloading the tarball it had just found |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | twenty-five subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
+| `cmd/bk` | twenty-six subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -388,6 +388,55 @@ compiled — that is how a release workflow re-run published binaries labelled
 with a tag they were not built from. This reads `debug.ReadBuildInfo`, so it
 cannot disagree with the binary it is in, and the release workflow checks it
 against the tag by equality alongside the build info of every binary it ships.
+
+### `bk buildenv` — what a published bottle says it was built with
+
+A rebuild for a toolchain vulnerability needs a **before**. When a Go patch
+release fixes a standard-library defect, nothing about the recipe or the
+upstream version changes — only the compiler in the build environment does. So
+"should this be rebuilt?" is "was it built with the fixed one?", and that
+question needs the artefact to have recorded an answer.
+
+Until v0.17.0 it recorded nothing. Measured on the published
+`stedolan.github.io/jq`, whose **signed** SLSA statement carried:
+
+```json
+"builder": { "id": "https://github.com/go-pkgx/bk" },
+"buildDefinition": { "externalParameters": {}, "internalParameters": {} }
+```
+
+— the same two constants every bottle in the registry holds. `DepTokens`
+resolved the whole build and runtime closure on every build and threw the list
+away.
+
+Now the provenance carries it, and this reads it back:
+
+```console
+$ bk buildenv --platform linux/aarch64 stedolan.github.io/jq 1.8.2
+github.com/kkos/oniguruma 6.9.10
+go.dev 1.27.2
+…
+```
+
+**`--list` sweeps**, and counts the three outcomes separately:
+
+```
+8 read · 0 record a build environment · 8 record none · 0 unreadable
+```
+
+⛔ Those three are never folded together. "Records nothing" is every bottle
+published before v0.17.0; "unreadable" is a registry that told us nothing, and
+counting it as an absence would be the same defect as a census that could not
+read reporting zero. An empty list is a failure rather than a clean registry,
+and a line the reader cannot use is named rather than skipped — a silent skip
+makes the totals smaller for a reason nobody can see.
+
+That first sweep is the answer to "can a rebuild counter be derived?": **not
+from what is published today.** Nothing in the registry is comparable yet, so
+the counter starts at zero for everything and becomes meaningful only after a
+rebuild under v0.17.0 or later. Debian's rule — *"the absence of a
+debian_revision is equivalent to a debian_revision of 0"* — is not a
+convention here, it is the literal state of the registry.
 
 ### What is still missing, named rather than left out
 
