@@ -20,6 +20,7 @@ import (
 	"github.com/go-attest/sign"
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/fixup"
+	"github.com/go-pkgx/bk/moustache"
 	"github.com/go-pkgx/bottle"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -264,6 +265,11 @@ type publishOptions struct {
 	// and the digest of what came back. Empty for `bk publish` on a bottle this
 	// process did not build, and for the few recipes with no distributable.
 	Source build.SourceRef
+	// BuildEnv is every dependency the build resolved, at the version it used:
+	// the compiler, its libc, the tools the recipe invoked. Empty for
+	// `bk publish` on a bottle this process did not build — the same honest
+	// gap as Source, and for the same reason.
+	BuildEnv []moustache.Dep
 }
 
 // publishBottle pushes a built bottle with its SBOM, SLSA provenance and (given
@@ -297,7 +303,7 @@ func publishBottle(o publishOptions) (string, ocispec.Descriptor, error) {
 	if when.IsZero() {
 		when = buildTime()
 	}
-	refs, err := buildReferrers(o.Project, o.Version, o.OS, o.Arch, tarball, o.Source, when, o.Key)
+	refs, err := buildReferrers(o.Project, o.Version, o.OS, o.Arch, tarball, o.Source, o.BuildEnv, when, o.Key)
 	if err != nil {
 		return "", ocispec.Descriptor{}, err
 	}
@@ -348,6 +354,30 @@ func flavoredTag(project, version, glibc string) string {
 	return version + "-glibc" + strings.TrimPrefix(glibc, "=")
 }
 
+// environmentMaterials renders the build environment as SLSA
+// resolvedDependencies: every dependency the build resolved, at the version it
+// actually used.
+//
+// ⛔ THIS IS THE AXIS A VULNERABILITY REBUILD MOVES ALONG. When a Go patch
+// release fixes a standard-library defect, nothing about the recipe or the
+// upstream version changes — only `go.dev` in this list does. A bottle that
+// does not record it cannot be asked "were you built with the fixed
+// compiler?", and a rebuild counter over such bottles would be a number
+// nobody could derive or check.
+//
+// A URI of `pkg:pkgx/<project>@<version>` rather than a path: the prefix is
+// where this machine put it, which is not a fact about the artefact. No digest
+// is claimed, because we have the version the build resolved and not the bytes
+// it read — and a material asserting a digest it did not verify would be the
+// same empty promise this whole change exists to remove.
+func environmentMaterials(env []moustache.Dep) []provenance.Material {
+	out := make([]provenance.Material, 0, len(env))
+	for _, d := range env {
+		out = append(out, provenance.Material{URI: "pkg:pkgx/" + d.Project + "@" + d.Version})
+	}
+	return out
+}
+
 // builderWithVersion is the SLSA builder id, carrying the bk that ran.
 //
 // A build with no version information is not one you can ask anything about
@@ -381,7 +411,7 @@ func buildParams(project, version, osn, arch string) map[string]string {
 // buildReferrers builds the CycloneDX SBOM and in-toto SLSA provenance
 // attestations for a bottle (subject = the bottle itself; the tarball digest
 // binds them).
-func buildReferrers(project, version, osn, arch string, tarball []byte, src build.SourceRef, now time.Time, kp *sign.Keypair) ([]bottle.Referrer, error) {
+func buildReferrers(project, version, osn, arch string, tarball []byte, src build.SourceRef, env []moustache.Dep, now time.Time, kp *sign.Keypair) ([]bottle.Referrer, error) {
 	sum := sha256.Sum256(tarball)
 	dg := hex.EncodeToString(sum[:])
 	purl := fmt.Sprintf("pkg:pkgx/%s@%s", project, version)
@@ -408,7 +438,7 @@ func buildReferrers(project, version, osn, arch string, tarball []byte, src buil
 		StartedOn:  now,
 		FinishedOn: now,
 		Params:     buildParams(project, version, osn, arch),
-		Materials:  materialsOf(src),
+		Materials:  append(materialsOf(src), environmentMaterials(env)...),
 	}
 	pr, err := provJSON(stmt)
 	if err != nil {

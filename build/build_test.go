@@ -167,7 +167,7 @@ func TestBaseToolchainAndEvalDeps(t *testing.T) {
 
 func TestDepTokens(t *testing.T) {
 	resolve := func(p, c string) (string, error) { return "1.2.3", nil }
-	toks, err := DepTokens(
+	toks, _, err := DepTokens(
 		map[string]any{"openssl.org": "^1.1"},
 		map[string]any{"freedesktop.org/pkg-config": "^0.29"},
 		lin(), "/opt/pkgx", resolve)
@@ -192,11 +192,11 @@ func TestDepTokens(t *testing.T) {
 		t.Error("build dep pkg-config token missing")
 	}
 	// resolve error propagates
-	if _, err := DepTokens(map[string]any{"x": "1"}, nil, lin(), "/p", func(string, string) (string, error) { return "", errBoom }); err == nil {
+	if _, _, err := DepTokens(map[string]any{"x": "1"}, nil, lin(), "/p", func(string, string) (string, error) { return "", errBoom }); err == nil {
 		t.Error("expected resolve error")
 	}
 	// empty deps → no tokens
-	if tk, _ := DepTokens(nil, nil, lin(), "/p", resolve); len(tk) != 0 {
+	if tk, _, _ := DepTokens(nil, nil, lin(), "/p", resolve); len(tk) != 0 {
 		t.Errorf("empty = %v", tk)
 	}
 }
@@ -719,5 +719,52 @@ func TestTouchAutotoolsOnGlibcsPreconfigure(t *testing.T) {
 	// claim it, and dragging it up here would defeat the whole ordering.
 	if !mt(filepath.Join(sys, "preconfigure.ac")).Before(mt(filepath.Join(dir, "aclocal.m4")).Add(time.Second)) {
 		t.Errorf("preconfigure.ac was pulled out of the inputs tier")
+	}
+}
+
+// ⛔⛔ THE RESOLVED LIST MUST REACH THE CALLER, not just the tokens.
+//
+// DepTokens computed project+version+prefix for the whole build and runtime
+// closure on every build and discarded it, which is why a published bottle
+// could not say what compiled it. A test of the ATTESTATION alone stays green
+// when this plumbing is severed — proved by a mutation that returned nil here
+// and was caught by nothing until this test existed.
+func TestDepTokensReturnsWhatItResolved(t *testing.T) {
+	resolve := func(p, c string) (string, error) {
+		if p == "go.dev" {
+			return "1.27.2", nil
+		}
+		return "1.2.3", nil
+	}
+	_, deps, err := DepTokens(
+		map[string]any{"openssl.org": "^1.1"},
+		map[string]any{"go.dev": "^1.27"},
+		lin(), "/opt/pkgx", resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 2 {
+		t.Fatalf("resolved %d deps, want 2: %+v", len(deps), deps)
+	}
+	got := map[string]string{}
+	for _, d := range deps {
+		got[d.Project] = d.Version
+	}
+	// RUNTIME AND BUILD DEPENDENCIES BOTH: the compiler is a build dep, and a
+	// list that held only the runtime half would miss the one axis a
+	// toolchain rebuild moves along.
+	if got["go.dev"] != "1.27.2" {
+		t.Errorf("the compiler is not in the resolved list: %+v", deps)
+	}
+	if got["openssl.org"] != "1.2.3" {
+		t.Errorf("the runtime dependency is missing: %+v", deps)
+	}
+	// Sorted, so two builds of the same closure render identically.
+	if deps[0].Project > deps[1].Project {
+		t.Errorf("the resolved list is not sorted: %+v", deps)
+	}
+	// And no deps means no list, rather than a list of nothing.
+	if _, none, _ := DepTokens(nil, nil, lin(), "/p", resolve); len(none) != 0 {
+		t.Errorf("empty deps produced %+v", none)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-pkgx/bk/build"
+	"github.com/go-pkgx/bk/moustache"
 	"github.com/go-pkgx/bottle"
 )
 
@@ -42,7 +43,7 @@ func decodeProv(t *testing.T, refs []bottle.Referrer) map[string]any {
 // a toolchain security fix was indistinguishable from the build before it.
 func TestTheProvenanceSaysWhichBkAndWhatItWasAsked(t *testing.T) {
 	refs, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
-		[]byte("tarball"), build.SourceRef{}, time.Unix(0, 0).UTC(), nil)
+		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,13 +98,13 @@ func TestTwoBuildersProduceDifferentProvenance(t *testing.T) {
 
 	buildInfo = at("v0.16.0")
 	a, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
-		[]byte("tarball"), build.SourceRef{}, time.Unix(0, 0).UTC(), nil)
+		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	buildInfo = at("v0.17.0")
 	b, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
-		[]byte("tarball"), build.SourceRef{}, time.Unix(0, 0).UTC(), nil)
+		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,4 +126,74 @@ func provBlob(t *testing.T, refs []bottle.Referrer) []byte {
 	}
 	t.Fatal("no in-toto referrer")
 	return nil
+}
+
+// ⛔⛔ THE AXIS A VULNERABILITY REBUILD MOVES ALONG. When a Go patch release
+// fixes a standard-library defect, nothing about the recipe or the upstream
+// version changes — only the compiler in the build environment does. A bottle
+// that does not record it cannot be asked "were you built with the fixed
+// compiler?", and a rebuild counter over such bottles would be a number
+// nobody could derive or check.
+//
+// DepTokens computed this list on every build and threw it away.
+func TestTheProvenanceRecordsTheBuildEnvironment(t *testing.T) {
+	env := []moustache.Dep{
+		{Project: "go.dev", Version: "1.27.1", Path: "/pkgx/go.dev/v1.27.1"},
+		{Project: "gnu.org/glibc", Version: "2.44.0", Path: "/pkgx/gnu.org/glibc/v2.44.0"},
+	}
+	refs, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
+		[]byte("tarball"), build.SourceRef{}, env, time.Unix(0, 0).UTC(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(provBlob(t, refs))
+	for _, want := range []string{"pkg:pkgx/go.dev@1.27.1", "pkg:pkgx/gnu.org/glibc@2.44.0"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the provenance does not name %s:\n%s", want, got)
+		}
+	}
+	// ⛔ THE PATH IS NOT RECORDED. It is where THIS MACHINE put the bottle,
+	// which is not a fact about the artefact — and two builds that differ
+	// only by $PKGX_DIR would otherwise produce different attestations.
+	if strings.Contains(got, "/pkgx/go.dev") {
+		t.Errorf("the provenance records a local path:\n%s", got)
+	}
+}
+
+// AND A TOOLCHAIN BUMP CHANGES THE BYTES. The point is not that versions
+// appear, it is that the same software built against a different compiler
+// produces a different attestation — which is what a rebuild counter would
+// have to be derived from.
+func TestADifferentToolchainProducesDifferentProvenance(t *testing.T) {
+	mk := func(goVer string) string {
+		refs, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
+			[]byte("tarball"), build.SourceRef{},
+			[]moustache.Dep{{Project: "go.dev", Version: goVer}}, time.Unix(0, 0).UTC(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(provBlob(t, refs))
+	}
+	a, b := mk("1.27.1"), mk("1.27.2")
+	if a == b {
+		t.Error("the same software built with two different Go versions produced identical provenance")
+	}
+	if !strings.Contains(a, "go.dev@1.27.1") || !strings.Contains(b, "go.dev@1.27.2") {
+		t.Errorf("neither statement names its own toolchain:\n%s\n---\n%s", a, b)
+	}
+}
+
+// A BUILD WITH NO ENVIRONMENT SAYS NOTHING RATHER THAN SOMETHING EMPTY.
+// `bk publish` on a bottle this process did not build, and the mirror path,
+// genuinely do not know — and an empty material would assert a dependency on
+// nothing.
+func TestNoEnvironmentProducesNoMaterials(t *testing.T) {
+	refs, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
+		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(provBlob(t, refs)), "pkg:pkgx/") {
+		t.Errorf("a build that knew no environment claimed one:\n%s", provBlob(t, refs))
+	}
 }
