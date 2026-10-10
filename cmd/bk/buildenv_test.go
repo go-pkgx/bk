@@ -116,14 +116,16 @@ func TestTheSweepCountsTheThreeOutcomesSeparately(t *testing.T) {
 	if err := os.WriteFile(list, []byte("a.org 1\n# a comment\n\nb.org 2\nc.org 3\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	old := buildEnvOf
-	t.Cleanup(func() { buildEnvOf = old })
-	buildEnvOf = func(_, proj, _, _, _ string) ([]attestedEnv, error) {
+	old := sourceAttestations
+	t.Cleanup(func() { sourceAttestations = old })
+	// The fakes now answer with what a REGISTRY answers — referrers — so
+	// envAttestedBy runs for real in every case instead of being bypassed.
+	sourceAttestations = func(_, proj, _, _, _ string) ([]bottle.Referrer, error) {
 		switch proj {
 		case "a.org":
-			return []attestedEnv{{Project: "go.dev", Version: "1.27.2"}}, nil
+			return []bottle.Referrer{provWith(map[string]any{"uri": "pkg:pkgx/go.dev@1.27.2"})}, nil
 		case "b.org":
-			return nil, errNoEnvironment
+			return []bottle.Referrer{provWith()}, nil // an attestation recording nothing
 		default:
 			return nil, errors.New("dial tcp: network is unreachable")
 		}
@@ -180,13 +182,13 @@ func TestAMalformedLineIsNamedRatherThanSkipped(t *testing.T) {
 // gates at 100% coverage, and a CLI entry nobody exercises is exactly where a
 // flag parses wrongly or an exit status is lost.
 func TestBuildEnvCommand(t *testing.T) {
-	old := buildEnvOf
-	t.Cleanup(func() { buildEnvOf = old })
-	buildEnvOf = func(_, proj, _, _, _ string) ([]attestedEnv, error) {
+	old := sourceAttestations
+	t.Cleanup(func() { sourceAttestations = old })
+	sourceAttestations = func(_, proj, _, _, _ string) ([]bottle.Referrer, error) {
 		if proj == "missing.org" {
-			return nil, errNoEnvironment
+			return []bottle.Referrer{provWith()}, nil
 		}
-		return []attestedEnv{{Project: "go.dev", Version: "1.27.2"}}, nil
+		return []bottle.Referrer{provWith(map[string]any{"uri": "pkg:pkgx/go.dev@1.27.2"})}, nil
 	}
 
 	t.Run("one bottle, environment recorded", func(t *testing.T) {
@@ -274,12 +276,12 @@ func TestBuildEnvCommand(t *testing.T) {
 
 // WITH NO --platform IT ASKS THE MACHINE, which is the default a person gets.
 func TestBuildEnvDefaultsToThisMachine(t *testing.T) {
-	old := buildEnvOf
-	t.Cleanup(func() { buildEnvOf = old })
+	old := sourceAttestations
+	t.Cleanup(func() { sourceAttestations = old })
 	var gotOS, gotArch string
-	buildEnvOf = func(_, _, _, osn, arch string) ([]attestedEnv, error) {
+	sourceAttestations = func(_, _, _, osn, arch string) ([]bottle.Referrer, error) {
 		gotOS, gotArch = osn, arch
-		return []attestedEnv{{Project: "go.dev", Version: "1.27.2"}}, nil
+		return []bottle.Referrer{provWith(map[string]any{"uri": "pkg:pkgx/go.dev@1.27.2"})}, nil
 	}
 	if code, _, errb := run2(t, "buildenv", "a.org", "1.2.3"); code != 0 {
 		t.Fatalf("code = %d err=%q", code, errb)
@@ -296,10 +298,10 @@ func TestBuildEnvDefaultsToThisMachine(t *testing.T) {
 // does not support makes the real function fail — the same case that once made
 // `bk lint` refuse to run. A fake would test the fake.
 func TestBuildEnvRefusesAnUnsupportedTarget(t *testing.T) {
-	old := buildEnvOf
-	t.Cleanup(func() { buildEnvOf = old })
+	old := sourceAttestations
+	t.Cleanup(func() { sourceAttestations = old })
 	reached := false
-	buildEnvOf = func(_, _, _, _, _ string) ([]attestedEnv, error) {
+	sourceAttestations = func(_, _, _, _, _ string) ([]bottle.Referrer, error) {
 		reached = true
 		return nil, nil
 	}

@@ -148,8 +148,16 @@ func buildEnvPlatform(p string) (osn, arch string, err error) {
 	return osn, arch, nil
 }
 
-// buildEnvOf is a seam: a sweep over the real registry is not a test.
-var buildEnvOf = func(dist, proj, ver, osn, arch string) ([]attestedEnv, error) {
+// buildEnvOf fetches a published bottle's attestations and reads the build
+// environment out of them.
+//
+// ⛔ NOT A SEAM, deliberately, and it was one for a day. sourceAttestations is
+// already the seam — the layer that actually reaches the registry — so a
+// second one here only hid this function's own body from the tests. The
+// coverage gate counts uncovered BLOCKS and said so; `go tool cover -func`
+// reported 100.0% for the same profile, which is exactly the rounding the gate
+// exists to stop trusting.
+func buildEnvOf(dist, proj, ver, osn, arch string) ([]attestedEnv, error) {
 	refs, err := sourceAttestations(dist, proj, ver, osn, arch)
 	if err != nil {
 		return nil, err
