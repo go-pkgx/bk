@@ -175,3 +175,147 @@ func TestAMalformedLineIsNamedRatherThanSkipped(t *testing.T) {
 		t.Errorf("the refusal locates nothing: %v", err)
 	}
 }
+
+// THE COMMAND ITSELF, through the dispatch a user reaches. The repository
+// gates at 100% coverage, and a CLI entry nobody exercises is exactly where a
+// flag parses wrongly or an exit status is lost.
+func TestBuildEnvCommand(t *testing.T) {
+	old := buildEnvOf
+	t.Cleanup(func() { buildEnvOf = old })
+	buildEnvOf = func(_, proj, _, _, _ string) ([]attestedEnv, error) {
+		if proj == "missing.org" {
+			return nil, errNoEnvironment
+		}
+		return []attestedEnv{{Project: "go.dev", Version: "1.27.2"}}, nil
+	}
+
+	t.Run("one bottle, environment recorded", func(t *testing.T) {
+		code, out, _ := run2(t, "buildenv", "--platform", "linux/aarch64", "a.org", "1.2.3")
+		if code != 0 {
+			t.Fatalf("code = %d", code)
+		}
+		if !strings.Contains(out, "go.dev 1.27.2") {
+			t.Errorf("the entry is not printed:\n%s", out)
+		}
+		// The totals, as everywhere else here: a command that prints a list
+		// and no count leaves the reader counting lines.
+		if !strings.Contains(out, "1 entry(ies) recorded") {
+			t.Errorf("no total:\n%s", out)
+		}
+	})
+
+	// ⛔ AN ABSENCE EXITS NON-ZERO AND SAYS WHICH BOTTLE. A script asking
+	// "is this comparable?" reads the status.
+	t.Run("one bottle, nothing recorded", func(t *testing.T) {
+		code, _, errb := run2(t, "buildenv", "--platform", "linux/aarch64", "missing.org", "1")
+		if code != 1 {
+			t.Errorf("code = %d, want 1", code)
+		}
+		if !strings.Contains(errb, "missing.org") || !strings.Contains(errb, "no build environment") {
+			t.Errorf("the refusal names neither the bottle nor the reason:\n%s", errb)
+		}
+	})
+
+	t.Run("a platform that is not os/arch is refused", func(t *testing.T) {
+		code, _, errb := run2(t, "buildenv", "--platform", "linux", "a.org", "1")
+		if code != 2 {
+			t.Errorf("code = %d, want 2", code)
+		}
+		if !strings.Contains(errb, "is not os/arch") {
+			t.Errorf("the refusal does not say why:\n%s", errb)
+		}
+	})
+
+	// Two arguments are needed, and the usage names BOTH forms — a reader
+	// who wanted the sweep should not have to guess that it exists.
+	t.Run("wrong argument count prints both usages", func(t *testing.T) {
+		code, _, errb := run2(t, "buildenv", "--platform", "linux/aarch64", "a.org")
+		if code != 2 {
+			t.Errorf("code = %d, want 2", code)
+		}
+		if !strings.Contains(errb, "--list") {
+			t.Errorf("the usage hides the sweep form:\n%s", errb)
+		}
+	})
+
+	t.Run("an unknown flag is refused", func(t *testing.T) {
+		if code, _, _ := run2(t, "buildenv", "--nope"); code != 2 {
+			t.Errorf("code = %d, want 2", code)
+		}
+	})
+
+	t.Run("the sweep runs through the command", func(t *testing.T) {
+		dir := t.TempDir()
+		list := filepath.Join(dir, "l.txt")
+		if err := os.WriteFile(list, []byte("a.org 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		code, out, _ := run2(t, "buildenv", "--platform", "linux/aarch64", "--list", list)
+		if code != 0 {
+			t.Fatalf("code = %d out=%q", code, out)
+		}
+		if !strings.Contains(out, "1 read · 1 record a build environment") {
+			t.Errorf("the sweep did not report:\n%s", out)
+		}
+	})
+
+	// A list that cannot be READ is not a list that is empty.
+	t.Run("an unreadable list is a refusal, not an empty sweep", func(t *testing.T) {
+		code, _, errb := run2(t, "buildenv", "--platform", "linux/aarch64", "--list",
+			filepath.Join(t.TempDir(), "absent.txt"))
+		if code != 2 {
+			t.Errorf("code = %d, want 2", code)
+		}
+		if strings.Contains(errb, "not an empty registry") {
+			t.Errorf("an unreadable list was reported as an empty one:\n%s", errb)
+		}
+	})
+}
+
+// WITH NO --platform IT ASKS THE MACHINE, which is the default a person gets.
+func TestBuildEnvDefaultsToThisMachine(t *testing.T) {
+	old := buildEnvOf
+	t.Cleanup(func() { buildEnvOf = old })
+	var gotOS, gotArch string
+	buildEnvOf = func(_, _, _, osn, arch string) ([]attestedEnv, error) {
+		gotOS, gotArch = osn, arch
+		return []attestedEnv{{Project: "go.dev", Version: "1.27.2"}}, nil
+	}
+	if code, _, errb := run2(t, "buildenv", "a.org", "1.2.3"); code != 0 {
+		t.Fatalf("code = %d err=%q", code, errb)
+	}
+	if gotOS == "" || gotArch == "" {
+		t.Errorf("the default platform resolved to %q/%q", gotOS, gotArch)
+	}
+}
+
+// ⛔ AND WHEN THE MACHINE CANNOT BE RESOLVED, it says so instead of reading
+// the registry for a platform it invented.
+//
+// No seam for this: target.Resolve() reads BREWKIT_TARGET, and a platform bk
+// does not support makes the real function fail — the same case that once made
+// `bk lint` refuse to run. A fake would test the fake.
+func TestBuildEnvRefusesAnUnsupportedTarget(t *testing.T) {
+	old := buildEnvOf
+	t.Cleanup(func() { buildEnvOf = old })
+	reached := false
+	buildEnvOf = func(_, _, _, _, _ string) ([]attestedEnv, error) {
+		reached = true
+		return nil, nil
+	}
+	t.Setenv("BREWKIT_TARGET", "plan9/pdp11")
+
+	var out, errb strings.Builder
+	// Not through run2: it clears BREWKIT_TARGET on purpose, which is the
+	// right thing for every other test here and the wrong thing for this one.
+	code := runBuildEnv([]string{"a.org", "1.2.3"}, &out, &errb)
+	if code != 2 {
+		t.Errorf("code = %d, want 2; stderr=%q", code, errb.String())
+	}
+	if reached {
+		t.Error("it read the registry for a platform it could not resolve")
+	}
+	if errb.Len() == 0 {
+		t.Error("it refused in silence")
+	}
+}
