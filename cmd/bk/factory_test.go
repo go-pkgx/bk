@@ -32,6 +32,10 @@ type publishedBottle struct {
 	project, version, tag, osn, arch, dist, path, glibc string
 	signed                                              bool
 	when                                                time.Time
+	// advisories is the tree the publish was told to build its OpenVEX
+	// document from. Recorded because a mutation that dropped it on the way to
+	// publishBottle — the whole feature — survived the suite without it.
+	advisories string
 }
 
 // factoryHarness stubs every factory seam (network, pantry, compiler) and
@@ -43,7 +47,14 @@ type factoryHarness struct {
 	// tests is where the recorded test outcomes go. Given a path like the
 	// other two, because the flag's default writes into the CURRENT
 	// directory and the suite was leaving a cmd/bk/tests.txt behind.
-	tests     string
+	tests string
+	// bottles is where built and mirrored bottles are staged, for the SAME
+	// reason tests, failures and detail are given paths — and it was the one
+	// of the four that was missed. The fix had been applied three times and
+	// `--bottles` still defaulted to the relative "dist", so a mirror test
+	// wrote `cmd/bk/dist/lib.org/linux/x86-64/v1.0.tar.xz` into the
+	// repository and `git add -A` staged it.
+	bottles   string
 	published []publishedBottle
 	checked   []string // "project@tag" the publish-check was asked about
 	built     []string // "project@constraint"
@@ -60,6 +71,7 @@ func newFactoryHarness(t *testing.T) *factoryHarness {
 		failures: filepath.Join(t.TempDir(), "failures.txt"),
 		detail:   filepath.Join(t.TempDir(), "failures-detail.txt"),
 		tests:    filepath.Join(t.TempDir(), "tests.txt"),
+		bottles:  filepath.Join(t.TempDir(), "dist"),
 	}
 	ov, li, re, pu, bu, hp, bf, lp := factoryOverrides, factoryList, factoryResolve, factoryPublish, factoryBuild, factoryHasPlatform, buildFactory, lookPath
 	t.Cleanup(func() {
@@ -88,6 +100,7 @@ func newFactoryHarness(t *testing.T) *factoryHarness {
 		h.published = append(h.published, publishedBottle{
 			project: o.Project, version: o.Version, tag: tag, osn: o.OS, arch: o.Arch,
 			dist: o.Dist, path: o.Path, glibc: o.Glibc, signed: o.Key != nil, when: o.Time,
+			advisories: o.Advisories,
 		})
 		// A distinct digest per bottle, so a test can tell one published
 		// manifest from another the way the index check does.
@@ -99,11 +112,24 @@ func newFactoryHarness(t *testing.T) *factoryHarness {
 }
 
 // args builds a command line with the harness's paths plus extras.
+// args are the flags every harness run passes.
+//
+// ⛔ --bottles IS NOT OPTIONAL HERE. It defaults to the RELATIVE path "dist",
+// and `go test` runs with the package directory as its working directory — so
+// a run that stages a bottle writes into cmd/bk/dist, inside the repository,
+// one `git add -A` from being committed. Measured: a mirror test staged
+// `cmd/bk/dist/lib.org/linux/x86-64/v1.0.tar.xz` and it got staged.
+//
+// The stub factoryPublish writes nothing, which is why this went unnoticed
+// until a test exercised the MIRROR path — that one puts the downloaded bytes
+// on disk before publishing them. The guard belongs here, not in each test:
+// the next test written without it is the one that escapes.
 func (h *factoryHarness) args(extra ...string) []string {
 	return append([]string{
 		"--platform", "linux/x86-64",
 		"--pantry", h.pantry,
 		"--overrides", "",
+		"--bottles", h.bottles,
 		"--failures", h.failures,
 		"--failures-detail", h.detail,
 		"--tests", h.tests,
@@ -166,8 +192,12 @@ func TestRunFactoryBuildsClosureDepsFirst(t *testing.T) {
 			t.Fatalf("attestation time = %v, want the pinned epoch", p.when)
 		}
 	}
-	if h.published[0].path != filepath.Join("dist", "lib.org", "v9.9.tar.gz") {
-		t.Fatalf("bottle path = %q", h.published[0].path)
+	// Staged under the --bottles directory, named by project and version. The
+	// literal "dist" used to be asserted here, which was asserting the FLAG's
+	// relative default — the very thing that let a mirror test write into the
+	// repository.
+	if h.published[0].path != filepath.Join(h.bottles, "lib.org", "v9.9.tar.gz") {
+		t.Fatalf("bottle path = %q, want it under %q", h.published[0].path, h.bottles)
 	}
 	out := h.out.String()
 	for _, want := range []string{
