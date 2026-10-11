@@ -24,6 +24,8 @@
 //	                     what state each one is in
 //	bk vulnfetch         ask OSV what it knows about a pantry, in one request,
 //	                     and (with -write) record it as dated detections
+//	bk attest            say what a PUBLISHED bottle carries — SBOM, provenance,
+//	                     signature, OpenVEX — and --require it
 package main
 
 import (
@@ -159,7 +161,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|buildenv|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|vulnid|advisories|vulnfetch|overrides|depgaps|builder|factory|source> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|buildenv|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|vulnid|advisories|vulnfetch|attest|overrides|depgaps|builder|factory|source> [args]")
 		return 2
 	}
 
@@ -239,6 +241,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runAdvisories(rest[1:], stdout, stderr)
 	case "vulnfetch":
 		return runVulnFetch(rest[1:], stdout, stderr)
+	case "attest":
+		return runAttest(rest[1:], stdout, stderr)
 	case "tohcl":
 		return runToHCL(rest[1:], stdout, stderr)
 	case "tools":
