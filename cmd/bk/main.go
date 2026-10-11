@@ -20,6 +20,8 @@
 //	bk source            fetch the source a published bottle attests it was built from
 //	bk vulnid            say, per project, the name a vulnerability database will
 //	                     accept — derived from the recipe, or declared in a table
+//	bk advisories        validate a tree of per-project advisory records and say
+//	                     what state each one is in
 package main
 
 import (
@@ -155,7 +157,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|buildenv|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|vulnid|overrides|depgaps|builder|factory|source> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|buildenv|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|vulnid|advisories|overrides|depgaps|builder|factory|source> [args]")
 		return 2
 	}
 
@@ -231,6 +233,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runLint(rest[1:], stdout, stderr)
 	case "vulnid":
 		return runVulnID(rest[1:], stdout, stderr)
+	case "advisories":
+		return runAdvisories(rest[1:], stdout, stderr)
 	case "tohcl":
 		return runToHCL(rest[1:], stdout, stderr)
 	case "tools":

@@ -50,7 +50,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `httpretry` | which failed HTTP attempts are worth repeating. Measured on one 23-failure batch, **eleven** were transient HTTP and nothing else — a factory that gives a flaky host exactly one chance reports its own bad luck as a broken recipe |
 | `useragent` | the one User-Agent every HTTP path in bk sends. It exists because they differed: `versions` set one and `fetch` did not, so bk could LIST a project's versions and then get 403 downloading the tarball it had just found |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | twenty-seven subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `vulnid`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
+| `cmd/bk` | twenty-eight subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `vulnid`, `advisories`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -546,19 +546,125 @@ Two rules it refuses to bend:
 Several names per database is deliberate, not a mistake: NVD files Berkeley DB
 under two product names, and dropping one loses the advisories filed there.
 
-### What this is not
-
-It is **identity only** — which name to ask under, not what the answer was.
-Wolfi keeps that other half in a separate `<package>.advisories.yaml` per
-package, as an ordered list of timestamped events (`detection`, `fixed` with a
-`fixed-version`, `false-positive-determination`, `pending-upstream-fix`). That
-shape is the right one and this repository does not have it yet. Putting both in
-one file would mean editing a file that names 1908 projects every time one
-vulnerability is triaged.
-
 Note also what is **not** in OSV's ecosystem list: `pkgx`. It has `Homebrew`,
 `Alpine`, `Wolfi`, `Chainguard` and `vcpkg`. The long-term answer for this fleet
 is to become one of those rather than to keep translating into someone else's.
+
+## `bk advisories` — what the answer was, and what we decided
+
+Identity is half of it. The other half is the finding itself, and the record
+that **justifies a rebuild**: one file per project, at
+`advisories/<project>/advisories.yaml`.
+
+```yaml
+schema-version: 1
+project: openssl.org
+advisories:
+  - id: CVE-2026-0001
+    aliases: [GHSA-xxxx-xxxx-xxxx]
+    events:
+      - timestamp: 2026-10-10T12:00:00Z
+        type: detection
+      - timestamp: 2026-10-11T09:00:00Z
+        type: fixed
+        fixed-version: 3.5.8_1
+```
+
+### Events, not a state
+
+The shape is Wolfi's, and the reason is that a state cannot be superseded.
+Wolfi's measured `curl.advisories.yaml` holds **59 advisories and 71 events** —
+so most have one and some have three, which is exactly the history a single
+`status:` field throws away. OpenVEX says the same from the other end:
+`timestamp` is a required field, and a statement's timestamp is "the time at
+which the information expressed in the Statement was known to be true". Two
+contradictory undated statements cannot be ordered, so neither can be believed.
+
+So: events, each **required** to carry a timestamp, and the last one in time
+decides. They are sorted on read, so a rebase that reorders two appends cannot
+change what a record means.
+
+The vocabulary is Wolfi's too — `detection`, `true-positive-determination`,
+`false-positive-determination`, `fixed`, `fix-not-planned`,
+`pending-upstream-fix` — because each maps onto a VEX status, and a record that
+cannot be emitted as VEX is a record only this fleet can read.
+
+### `fixed-version` is where the rebuild counter earns its keep
+
+`fixed-version: 3.5.8_1` says the **rebuild** carries the fix, not plain
+`3.5.8`. `Advisory.FixedBy` asks `bottle` through the constraint language the
+resolver already uses, so `3.5.8` does **not** satisfy it and `3.5.7_9` does
+not either. Wolfi's own `fixed-version: 8.5.0-r0` carries the same counter, in
+their spelling.
+
+Which is why a Debian-style `3.5.8-1` is **refused**: that is how Debian and
+Alpine spell the same thing, `bottle` splits a rebuild on `_`, and the record
+would otherwise claim that plain `3.5.8` carries a fix it does not have.
+
+### The path and the file must agree
+
+`bk advisories` refuses a file whose `project:` disagrees with its directory. A
+file copied from a neighbouring project and edited in part would otherwise
+attach its findings to the wrong package, and nothing else in the record says
+which project it is about.
+
+```
+$ bk advisories -dir advisories
+2 project(s) read from advisories, 3 advisory(ies)
+  detection                    2
+  true-positive-determination  0
+  false-positive-determination 0
+  fixed                        1
+  fix-not-planned              0
+  pending-upstream-fix         0
+```
+
+### OpenVEX out
+
+`vuln.EncodeVEX` writes the records as an OpenVEX v0.2.0 document, which is the
+form a scanner already reads. The mapping is the design decision, so it is a
+table and not a chain of ifs:
+
+| event | VEX status | |
+|---|---|---|
+| `detection` | `under_investigation` | a database said our NAME matched |
+| `true-positive-determination` | `affected` | + an action statement |
+| `false-positive-determination` | `not_affected` | + the justification **label** |
+| `fixed` | `fixed` | a version of ours carries it |
+| `fix-not-planned` | `affected` | + why nothing is coming |
+| `pending-upstream-fix` | `affected` | + what is being waited on |
+
+`detection` becoming `under_investigation` rather than `affected` is the one
+worth defending: a detection is a database saying our *name* matched, and the
+27-CVE openssl measurement above says what that is worth. Emitting those as
+`affected` would publish 23 false alarms with our signature on them.
+
+A `not_affected` statement carries the machine-readable `justification` label
+and puts the prose in `impact_statement` beside it, never instead of it —
+OpenVEX allows the text form and then says it "breaks VEX automation and
+interoperability".
+
+Each statement is dated with **its own event's** timestamp, not the document's,
+so a publish does not re-date the whole history to today. The encoding is
+deterministic — subjects by project, statements by id — because a document that
+differed run to run could not be compared with the one already attached to a
+bottle.
+
+The document is emitted by whatever **publishes** a bottle, not by a person:
+only the publisher knows the digest a statement must name. A bottle's product
+IRI is its OCI purl, which identifies it by digest and is therefore checkable:
+
+```
+pkg:oci/openssl@sha256:…?repository_url=ghcr.io/go-pkgx/openssl.org&tag=3.5.8_1--linux-x86-64
+```
+
+### What this half is still missing
+
+Nothing yet **fills** these files: there is no query against OSV or NVD, so
+every record is written by hand today. That is deliberate — one query per
+project is 1908 requests against a budget shared with Renovate, and `bk vulnid`
+exists to make the query list short first. And `bk publish` does not yet attach
+the VEX document as a referrer beside the SBOM and the provenance.
 
 ## Where the source came from, and whether it changed
 
