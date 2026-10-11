@@ -688,6 +688,25 @@ bk publish --to oci://ghcr.io/go-pkgx/bottles --project openssl.org \
            --advisories ./advisories  openssl.org-3.5.8_1.tar.xz
 ```
 
+`bk factory --advisories` takes the same flag and passes it to **every** publish
+it makes — the bottles it builds and the ones it mirrors, because what is known
+about a package is not a property of who compiled it.
+
+The factory also **validates the whole tree once, before the first build**.
+`vexReferrer` refuses to publish a bottle whose record does not parse, which is
+the right answer in the wrong place: a chunk of fifty runs for hours, and the
+fortieth bottle is where that refusal would land. The check runs before the
+pantry is read and before the closure walk resolves a single version over the
+network, and says what it loaded:
+
+```
+advisories: 1 project(s) with records, from advisories
+```
+
+The count is there because a run that loaded the tree and one pointed at the
+wrong path otherwise print the same thing — and an **empty** tree is an error,
+for the same reason `bk advisories` makes it one.
+
 With `--advisories`, the bottle gets a third referrer beside its CycloneDX SBOM
 and its in-toto SLSA provenance:
 

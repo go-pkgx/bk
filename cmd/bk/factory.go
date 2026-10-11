@@ -119,6 +119,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
 	bootstrap := fs.Bool("bootstrap", false, "FIRST FILL ONLY on an architecture no registry has: build without the base toolchain in the environment, taking those tools from the host. The base toolchain is a cycle with no entry point (see build.BootstrapToolDeps), so without this nothing can be built first. Bottles made this way were driven by unpinned host tools: publish them to a throwaway registry, use them to stage the sovereign rootfs, and rebuild everything inside it")
+	advisories := fs.String("advisories", envOr("ADVISORIES_DIR", ""), "advisory tree (`<dir>/<project>/advisories.yaml`) to attach as an OpenVEX document beside each bottle's SBOM and provenance, so a rebuild carries the finding that justified it. Validated ONCE before anything is built")
 	jobs := fs.Int("jobs", envInt("JOBS"), "parallelism handed to each recipe build (`hw.concurrency`); 0 = one per CPU. Lower it when the target is emulated.")
 	pinToDependents := fs.Bool("pin-to-dependents", envBool("PIN_TO_DEPENDENTS"), "hold a REQUESTED project to the constraints its dependents place on it, as a closure-only one already is. For a SEED, where every project is named and none would otherwise be held to anything: gnu.org/glibc asks for gnu.org/gcc 14 and a seed naming gcc built 16.2.0. OFF by default, because naming a project is how you say \"this version, whatever else wants\" — a repair run must not be talked out of it. An explicit project@constraint still wins. It only sees the dependents IN THIS RUN: a batch that does not reach gnu.org/glibc never learns glibc asks gcc for 14, so for a partial seed use `bk closure --build --pins` over the whole order file and pass the words")
 	keepBuildTrees := fs.Bool("keep-build-trees", envBool("KEEP_BUILD_TREES"), "leave each PUBLISHED build tree on disk. By default a tree is removed once its bottle is published, because a run of seventy-six keeps all seventy-six otherwise and the s390x seed filled its disk on the fifty-seventh. A FAILED build's tree is always kept: it is the only copy of what went wrong")
@@ -168,6 +169,23 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	// build links the pkgx glibc bottle rather than the container's.
 	if *glibc != "" && *libc == "" {
 		*libc = "pkgx"
+	}
+
+	// ⛔ THE ADVISORY TREE IS CHECKED HERE, AS EARLY AS IT CAN BE — before the
+	// pantry is read, before the closure walk resolves a single version over
+	// the network, and a long way before the first build.
+	//
+	// `vexReferrer` refuses to publish a bottle whose advisory file does not
+	// parse, which is the right answer in the wrong place: a chunk of fifty
+	// runs for hours and the fortieth bottle is where that refusal lands. One
+	// read of the tree up front makes it a usage error instead of a lost run.
+	advisoryCount, err := checkAdvisories(*advisories)
+	if err != nil {
+		fmt.Fprintln(stderr, "factory:", err)
+		return 1
+	}
+	if advisoryCount > 0 {
+		fmt.Fprintf(stdout, "advisories: %d project(s) with records, from %s\n", advisoryCount, *advisories)
 	}
 
 	kp, err := factorySigningKey(*signKey)
@@ -303,6 +321,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		keepBuildTrees:   *keepBuildTrees,
 		skippedOverrides: skippedOverrides,
 		requested:        requested,
+		advisories:       *advisories,
 		// A mirror run copies a bottle somebody else built and does not
 		// install it here, so there is nothing to test — asking would
 		// report "not run" for every package and say nothing.
@@ -422,6 +441,15 @@ type factory struct {
 	pinToDependents bool
 	// keepBuildTrees leaves a published build tree on disk. See dropBuildTree.
 	keepBuildTrees bool
+	// advisories is the advisory tree each published bottle's OpenVEX document
+	// is built from, "" = attach none.
+	//
+	// It is VALIDATED ONCE, before the first build, by checkAdvisories. The
+	// alternative is finding a record that does not parse on the fortieth
+	// bottle of a run that has been going for hours — `vexReferrer` refuses
+	// rather than publishing a bottle whose justification could not be read,
+	// which is right at the publish and far too late for the run.
+	advisories string
 	// wantPer overrides want for one project, from a `project@constraint` word
 	// in --recipes. Closing an index gap needs ONE named version of ONE project,
 	// and --versions applies to every requested project at once.
@@ -680,6 +708,7 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 		OS: f.osn, Arch: f.arch, Path: res.BottlePath,
 		Glibc: f.glibc, Key: f.key, Time: f.when,
 		Source: res.Source, BuildEnv: res.BuildEnv,
+		Advisories: f.advisories,
 	})
 	if err != nil {
 		f.fail(proj, res.Version, "publish", err)
@@ -900,10 +929,14 @@ func (f *factory) mirrorOne(proj, ver string) {
 			}
 		}
 	}
+	// A MIRRORED bottle gets the document too. We did not build it, but we
+	// are the one republishing it signed — and "what is known about this
+	// package" is not a property of who compiled it.
 	tag, desc, err := factoryPublish(publishOptions{
 		Dist: f.dist, Project: proj, Version: ver,
 		OS: f.osn, Arch: f.arch, Path: path,
 		Glibc: f.glibc, Key: f.key, Time: f.when,
+		Advisories: f.advisories,
 	})
 	if err != nil {
 		f.fail(proj, ver, "publish", err)

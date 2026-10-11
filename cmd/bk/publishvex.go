@@ -83,6 +83,45 @@ func vexReferrer(dir, project, version, osn, arch string, tarball []byte, now ti
 	return &bottle.Referrer{ArtifactType: artifactOpenVEX, MediaType: artifactOpenVEX, Blob: doc}, nil
 }
 
+// checkAdvisories reads every record in a tree and returns how many projects
+// have one, so a factory run refuses at the start rather than at a publish.
+//
+// It applies the same two checks `bk advisories` does — the file parses, and
+// its `project:` agrees with its directory — because those are exactly the two
+// that would stop a publish. An EMPTY tree is an error for the reason `bk
+// advisories` makes it one: a run that was told where the records are and found
+// none would otherwise publish every bottle with no document and look correct.
+//
+// An unset dir is not an error and reads nothing: attaching no document is the
+// honest state for a factory that has no advisory tree.
+func checkAdvisories(dir string) (int, error) {
+	if dir == "" {
+		return 0, nil
+	}
+	paths, err := advisoryPaths(dir)
+	if err != nil {
+		return 0, fmt.Errorf("advisories: %w", err)
+	}
+	if len(paths) == 0 {
+		return 0, fmt.Errorf("advisories: no %s under %s — the tree moved, or the wrong path was given", advisoryFile, dir)
+	}
+	for _, rel := range paths {
+		p := filepath.Join(dir, filepath.FromSlash(rel), advisoryFile)
+		b, err := osReadFile(p)
+		if err != nil {
+			return 0, fmt.Errorf("advisories: %w", err)
+		}
+		f, err := vuln.ParseAdvisories(b)
+		if err != nil {
+			return 0, fmt.Errorf("advisories: %s: %w", rel, err)
+		}
+		if f.Project != rel {
+			return 0, fmt.Errorf("advisories: %s: the file says project %q", rel, f.Project)
+		}
+	}
+	return len(paths), nil
+}
+
 // vexDocumentID is the document's IRI.
 //
 // It must be DETERMINISTIC — no timestamp, no counter — or a re-push of an
