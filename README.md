@@ -50,7 +50,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `httpretry` | which failed HTTP attempts are worth repeating. Measured on one 23-failure batch, **eleven** were transient HTTP and nothing else — a factory that gives a flaky host exactly one chance reports its own bad luck as a broken recipe |
 | `useragent` | the one User-Agent every HTTP path in bk sends. It exists because they differed: `versions` set one and `fetch` did not, so bk could LIST a project's versions and then get 403 downloading the tarball it had just found |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | twenty-eight subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `vulnid`, `advisories`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
+| `cmd/bk` | twenty-nine subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `vulnid`, `advisories`, `vulnfetch`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -719,12 +719,80 @@ Three details earn their keep:
   is simply *absent* is fine and attaches nothing, because most projects have
   never been triaged.
 
-### What this half is still missing
+## `bk vulnfetch` — asking a database, once
 
-Nothing yet **fills** these files: there is no query against OSV or NVD, so
-every record is written by hand today. That is deliberate — one query per
-project is 1908 requests against a budget shared with Renovate, and `bk vulnid`
-exists to make the query list short first.
+```
+$ bk vulnfetch -dir ~/Library/Caches/pkgx/pantry
+1563 recipe(s) read from …/pantry/projects
+129 identity(ies) asked, 1207 not answerable by OSV (repository- or CPE-keyed)
+55 finding(s) across 14 project(s)
+  bitwarden.com
+    MAL-2026-3020            npm:@bitwarden/cli
+  crates.io/bat
+    GHSA-p24j-h477-76q3      crates.io:bat
+    RUSTSEC-2021-0106        crates.io:bat
+  …
+nothing written — pass -write to record these as detections
+```
+
+**One HTTP request.** OSV's `/v1/querybatch` takes a list and answers in order,
+so 129 questions cost one round trip and no API key. Nothing here touches the
+GitHub API, so nothing here competes with Renovate.
+
+It **reports by default**. A sweep that writes on its first run writes whatever
+that run happened to find into files a person then has to audit; and the thing
+worth knowing before writing anything is the scale.
+
+### ⛔ OSV cannot be asked about a repository
+
+Measured against the live API on 2026-10-11:
+
+| asked | answered |
+|---|---|
+| `{"package":{"name":"time","ecosystem":"crates.io"}}` | 4 vulnerabilities |
+| `{"package":{"name":"bpb","ecosystem":"crates.io"}}` | `{}` — nothing known |
+| `{"package":{"purl":"pkg:github/curl/curl"}}` | `{}` |
+
+The first two are the normal pair. The third is the one that shapes the tool: an
+OSV query takes a package in an **ecosystem** (or a commit), and a GitHub
+repository is neither — so the `{}` there is *not* "no known vulnerabilities".
+
+Unanswerable identities are therefore **dropped before the request and counted
+out loud**, rather than sent and found empty. Of this pantry's identities, 1207
+are repository- or CPE-keyed: a sweep that stayed quiet about them would read as
+a clean bill of health for three quarters of the fleet. Those need GitHub's own
+advisory API, which does cost the shared budget, and that is a separate piece of
+work not pretended to here.
+
+### What `-write` does, and what it refuses to do
+
+It adds a `detection` event per new id, whose note records **which key found
+it** — with two identities per project that is not recoverable afterwards.
+
+Three things it will not do:
+
+- **Overwrite a decision.** An id already recorded is left entirely alone, and
+  the check includes every advisory's `aliases`, because a record filed under
+  its CVE is the same record OSV returns under a GHSA. Without this, every run
+  would drag a `fixed` back to `under_investigation` and the triage would never
+  converge.
+- **Trust a positional answer blindly.** OSV answers in the order asked and says
+  nothing about which query each result belongs to, so a response with fewer
+  results than queries is an **error** — otherwise every finding from that point
+  on would be attributed to the wrong package.
+- **Replace a file it cannot read.** A file that exists and does not parse stops
+  the sweep, rather than being replaced by one holding only today's detections,
+  which would delete every decision in it.
+
+### A known overstatement
+
+The finding count counts **ids, not vulnerabilities**. `RUSTSEC-2021-0106` and
+the GHSA beside it for `crates.io/bat` are the same defect — verified, its
+`aliases` contain `CVE-2021-36753` — and OSV's *batch* answer carries no
+aliases. So 55 ids are fewer than 55 distinct vulnerabilities. Resolving them
+costs one `/v1/vulns/{id}` request each and is not done yet; `MergeDetections`
+already de-duplicates against aliases *already recorded*, which is what keeps a
+hand-written record from being doubled on the next run.
 
 ## Where the source came from, and whether it changed
 
