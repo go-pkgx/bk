@@ -28,6 +28,10 @@ func opts(subjects ...Subject) VEXOptions {
 
 const product = "pkg:oci/openssl@sha256:abc?repository_url=ghcr.io/go-pkgx/openssl.org&tag=3.5.8_1--linux-x86-64"
 
+// prod is the one-product case, named only so the tests that do not care about
+// identifiers or hashes stay about what they test.
+func prod(id string) []Product { return []Product{{ID: id}} }
+
 // The document carries the five fields the spec marks required, and the
 // context names the VERSION — the spec says an omitted version defaults to
 // v0.0.1, so leaving it off is not a shorthand.
@@ -42,7 +46,7 @@ advisories:
         type: fixed
         fixed-version: 3.5.8_1
 `)
-	b, err := EncodeVEX(opts(Subject{File: f, Products: []string{product}}))
+	b, err := EncodeVEX(opts(Subject{File: f, Products: prod(product)}))
 	if err != nil {
 		t.Fatalf("EncodeVEX: %v", err)
 	}
@@ -88,6 +92,89 @@ advisories:
 	}
 }
 
+// The hash and the purl are what make a statement checkable rather than
+// plausible — and the hash key's spelling is a trap: OpenVEX's table says
+// `sha-256` while sha1 in the same table is `sha1`. `hashes` is a free-form
+// map, so the wrong key is a digest nobody reads and no error.
+func TestAProductCarriesItsPurlAndItsDigest(t *testing.T) {
+	f := mustParse(t, `schema-version: 1
+project: openssl.org
+advisories:
+  - id: CVE-2026-0001
+    events:
+      - timestamp: 2026-10-10T12:00:00Z
+        type: fixed
+        fixed-version: 3.5.8_1
+`)
+	b, err := EncodeVEX(opts(Subject{File: f, Products: []Product{{
+		ID:     "pkg:pkgx/openssl.org@3.5.8_1",
+		PURL:   "pkg:pkgx/openssl.org@3.5.8_1",
+		SHA256: "deadbeef",
+	}}}))
+	if err != nil {
+		t.Fatalf("EncodeVEX: %v", err)
+	}
+	var doc struct {
+		Statements []struct {
+			Products []struct {
+				ID          string            `json:"@id"`
+				Identifiers map[string]string `json:"identifiers"`
+				Hashes      map[string]string `json:"hashes"`
+			} `json:"products"`
+		} `json:"statements"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	p := doc.Statements[0].Products[0]
+	if p.ID != "pkg:pkgx/openssl.org@3.5.8_1" {
+		t.Errorf("@id = %q", p.ID)
+	}
+	if p.Identifiers["purl"] != "pkg:pkgx/openssl.org@3.5.8_1" {
+		t.Errorf("identifiers = %v, want a purl", p.Identifiers)
+	}
+	if p.Hashes["sha-256"] != "deadbeef" {
+		t.Errorf("hashes = %v, want the digest under %q", p.Hashes, "sha-256")
+	}
+	// And under NO other spelling, so a consumer cannot find it by accident.
+	if _, ok := p.Hashes["sha256"]; ok {
+		t.Errorf("the digest is also under %q: %v", "sha256", p.Hashes)
+	}
+}
+
+// Both maps are omitted when there is nothing to put in them — a product
+// carrying `"hashes": {}` claims to be hashed and is not.
+func TestAProductWithoutIdentifiersOmitsTheMaps(t *testing.T) {
+	f := mustParse(t, `schema-version: 1
+project: p
+advisories:
+  - id: CVE-1
+    events: [{timestamp: 2026-10-10T12:00:00Z, type: detection}]
+`)
+	b, err := EncodeVEX(opts(Subject{File: f, Products: prod(product)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "identifiers") || strings.Contains(string(b), "hashes") {
+		t.Errorf("empty maps were emitted:\n%s", b)
+	}
+}
+
+// A product with no @id is refused: the spec allows it, this does not, because
+// a statement whose subject cannot be named is one nobody can look up.
+func TestAProductWithoutAnIDIsRefused(t *testing.T) {
+	f := mustParse(t, `schema-version: 1
+project: p
+advisories:
+  - id: CVE-1
+    events: [{timestamp: 2026-10-10T12:00:00Z, type: detection}]
+`)
+	_, err := EncodeVEX(opts(Subject{File: f, Products: []Product{{SHA256: "deadbeef"}}}))
+	if err == nil || !strings.Contains(err.Error(), "no @id") {
+		t.Errorf("err = %v", err)
+	}
+}
+
 // not_affected MUST carry a justification label. A document without one is
 // rejected by consumers, and the prose form "breaks VEX automation".
 func TestNotAffectedCarriesItsJustification(t *testing.T) {
@@ -101,7 +188,7 @@ advisories:
         justification: vulnerable_code_not_present
         note: built without the affected backend
 `)
-	b, err := EncodeVEX(opts(Subject{File: f, Products: []string{product}}))
+	b, err := EncodeVEX(opts(Subject{File: f, Products: prod(product)}))
 	if err != nil {
 		t.Fatalf("EncodeVEX: %v", err)
 	}
@@ -136,7 +223,7 @@ func TestAffectedStatusesCarryDistinctActions(t *testing.T) {
 	} {
 		y := "schema-version: 1\nproject: p\nadvisories:\n  - id: CVE-1\n    events:\n" +
 			"      - timestamp: 2026-10-10T12:00:00Z\n        type: " + c.typ + "\n" + c.body
-		b, err := EncodeVEX(opts(Subject{File: mustParse(t, y), Products: []string{product}}))
+		b, err := EncodeVEX(opts(Subject{File: mustParse(t, y), Products: prod(product)}))
 		if err != nil {
 			t.Fatalf("%s: %v", c.typ, err)
 		}
@@ -176,7 +263,7 @@ advisories:
         type: detection
         note: matched by a bare CPE query, not yet triaged
 `)
-	b, err := EncodeVEX(opts(Subject{File: f, Products: []string{product}}))
+	b, err := EncodeVEX(opts(Subject{File: f, Products: prod(product)}))
 	if err != nil {
 		t.Fatalf("EncodeVEX: %v", err)
 	}
@@ -235,15 +322,15 @@ advisories:
     events: [{timestamp: 2026-10-10T12:00:00Z, type: detection}]
 `)
 	one, err := EncodeVEX(opts(
-		Subject{File: b, Products: []string{"pkg:oci/b@sha256:1"}},
-		Subject{File: a, Products: []string{"pkg:oci/a@sha256:2"}},
+		Subject{File: b, Products: prod("pkg:oci/b@sha256:1")},
+		Subject{File: a, Products: prod("pkg:oci/a@sha256:2")},
 	))
 	if err != nil {
 		t.Fatal(err)
 	}
 	two, err := EncodeVEX(opts(
-		Subject{File: a, Products: []string{"pkg:oci/a@sha256:2"}},
-		Subject{File: b, Products: []string{"pkg:oci/b@sha256:1"}},
+		Subject{File: a, Products: prod("pkg:oci/a@sha256:2")},
+		Subject{File: b, Products: prod("pkg:oci/b@sha256:1")},
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -269,7 +356,7 @@ advisories:
   - id: CVE-1
     events: [{timestamp: 2026-10-10T12:00:00Z, type: detection}]
 `)
-	subjects := []Subject{{File: f, Products: []string{"pkg:oci/a@sha256:2"}}}
+	subjects := []Subject{{File: f, Products: prod("pkg:oci/a@sha256:2")}}
 	if _, err := EncodeVEX(opts(subjects...)); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +372,7 @@ advisories:
   - id: CVE-1
     events: [{timestamp: 2026-10-10T12:00:00Z, type: detection}]
 `)
-	good := Subject{File: f, Products: []string{product}}
+	good := Subject{File: f, Products: prod(product)}
 	cases := []struct {
 		name string
 		mut  func(*VEXOptions)
@@ -296,7 +383,7 @@ advisories:
 		{"no timestamp", func(o *VEXOptions) { o.Timestamp = time.Time{} }, "no timestamp"},
 		{"version zero", func(o *VEXOptions) { o.Version = 0 }, "it starts at 1"},
 		{"no subjects", func(o *VEXOptions) { o.Subjects = nil }, "no subjects"},
-		{"a subject with no file", func(o *VEXOptions) { o.Subjects = []Subject{{Products: []string{product}}} }, "no advisory file"},
+		{"a subject with no file", func(o *VEXOptions) { o.Subjects = []Subject{{Products: prod(product)}} }, "no advisory file"},
 		{"a subject with no product", func(o *VEXOptions) { o.Subjects = []Subject{{File: f}} }, "names no product"},
 	}
 	for _, c := range cases {
@@ -323,7 +410,7 @@ func TestAnUnmappedEventTypeIsRefused(t *testing.T) {
 		ID:     "CVE-1",
 		Events: []Event{{Timestamp: time.Now(), Type: "invented-later"}},
 	}
-	if _, err := statementFor(a, []string{product}); err == nil || !strings.Contains(err.Error(), "maps to no VEX status") {
+	if _, err := statementFor(a, prod(product)); err == nil || !strings.Contains(err.Error(), "maps to no VEX status") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -341,7 +428,7 @@ func TestAnUnmappedEventTypeFailsTheWholeDocument(t *testing.T) {
 			Events: []Event{{Timestamp: time.Now(), Type: "invented-later"}},
 		}},
 	}
-	_, err := EncodeVEX(opts(Subject{File: f, Products: []string{product}}))
+	_, err := EncodeVEX(opts(Subject{File: f, Products: prod(product)}))
 	if err == nil {
 		t.Fatal("emitted a document with a statement it could not write")
 	}
@@ -361,7 +448,7 @@ advisories:
   - id: CVE-1
     events: [{timestamp: 2026-10-10T12:00:00Z, type: detection}]
 `)
-	o := opts(Subject{File: f, Products: []string{product}})
+	o := opts(Subject{File: f, Products: prod(product)})
 	bare, err := EncodeVEX(o)
 	if err != nil {
 		t.Fatal(err)

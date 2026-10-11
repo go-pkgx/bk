@@ -29,8 +29,12 @@ import (
 const (
 	artifactCycloneDX = "application/vnd.cyclonedx+json"
 	artifactInToto    = "application/vnd.in-toto+json"
-	buildType         = "https://github.com/go-pkgx/bk/buildtype@v1"
-	builderID         = "https://github.com/go-pkgx/bk"
+	// artifactOpenVEX is the media type an OpenVEX document is attached under.
+	// It is what makes the rebuild's JUSTIFICATION travel with the bottle
+	// rather than live in a repository nobody downstream reads.
+	artifactOpenVEX = "application/vnd.openvex+json"
+	buildType       = "https://github.com/go-pkgx/bk/buildtype@v1"
+	builderID       = "https://github.com/go-pkgx/bk"
 )
 
 // seams (swapped in tests).
@@ -206,6 +210,7 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 	platform := f.String("platform", "", "bottle os/arch, e.g. darwin/x86-64")
 	signKey := f.String("sign", "", "sign the bottle with this go-attest/sign secret key file")
 	glibc := f.String("glibc", "", "glibc version this bottle was built against; publishes under the flavored tag <version>-glibc<ver> so builds against different glibc coexist (linux only)")
+	advisories := f.String("advisories", "", "advisory tree to look this project up in; attaches an OpenVEX document saying what was decided about each vulnerability")
 	if err := f.Parse(args); err != nil {
 		return 2
 	}
@@ -230,6 +235,7 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 	if _, _, err := publishBottle(publishOptions{
 		Dist: *to, Project: *project, Version: *version,
 		OS: osn, Arch: arch, Path: f.Arg(0), Glibc: *glibc, Key: kp,
+		Advisories: *advisories,
 	}); err != nil {
 		fmt.Fprintln(stderr, "publish:", err)
 		return 1
@@ -270,6 +276,10 @@ type publishOptions struct {
 	// `bk publish` on a bottle this process did not build — the same honest
 	// gap as Source, and for the same reason.
 	BuildEnv []moustache.Dep
+	// Advisories is the advisory tree to look this project up in. Empty means
+	// no VEX document is attached, which is the honest state for a project
+	// nobody has triaged.
+	Advisories string
 }
 
 // publishBottle pushes a built bottle with its SBOM, SLSA provenance and (given
@@ -306,6 +316,16 @@ func publishBottle(o publishOptions) (string, ocispec.Descriptor, error) {
 	refs, err := buildReferrers(o.Project, o.Version, o.OS, o.Arch, tarball, o.Source, o.BuildEnv, when, o.Key)
 	if err != nil {
 		return "", ocispec.Descriptor{}, err
+	}
+	// The JUSTIFICATION, where there is one. A broken advisory file stops the
+	// publish rather than becoming a missing document, because an absent VEX
+	// reads as "nothing was ever found".
+	vexRef, err := vexReferrer(o.Advisories, o.Project, o.Version, o.OS, o.Arch, tarball, when)
+	if err != nil {
+		return "", ocispec.Descriptor{}, err
+	}
+	if vexRef != nil {
+		refs = append(refs, *vexRef)
 	}
 	tag := flavoredTag(o.Project, o.Version, o.Glibc)
 	var annotations map[string]string

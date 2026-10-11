@@ -36,20 +36,46 @@ const (
 	VEXUnderInvestigation = "under_investigation"
 )
 
+// Product is the artefact a statement is about.
+//
+// Choosing it is the CALLER's job and it is not cosmetic: a `fixed` statement
+// asserts that THESE versions contain the fix, so naming a bottle that does not
+// is a false claim. Advisory.FixedBy is the check.
+//
+// The hash is what makes the statement checkable rather than merely plausible.
+// A purl names a version; a digest names the bytes, and it is the same digest
+// the bottle's SBOM, its SLSA provenance and its cosign payload are bound to —
+// so all four attestations speak about one artefact instead of four
+// descriptions that happen to agree.
+type Product struct {
+	// ID is the IRI identifying the product. Optional in the spec; required
+	// here, because a statement whose subject cannot be named is not usable.
+	ID string
+	// PURL goes into `identifiers`, whose label for a Package URL is "purl"
+	// (OpenVEX "favors the use of purl"). Optional.
+	PURL string
+	// SHA256 is the hex digest, no "sha256:" prefix. Optional.
+	SHA256 string
+}
+
+// hashLabelSHA256 is the key a sha-256 digest goes under in `hashes`.
+//
+// ⛔ THE HYPHEN IS NOT OPTIONAL AND NOT CONSISTENT. OpenVEX's hash table
+// spells it `sha-256` while sha1 in the same table is `sha1`. Writing
+// `sha256`, which is what every other part of this repository calls it, puts
+// the digest under a key no consumer looks at — and nothing complains, because
+// `hashes` is a free-form map.
+const hashLabelSHA256 = "sha-256"
+
+// identifierLabelPURL is the key a Package URL goes under in `identifiers`,
+// from the spec's Software Identifier Types table.
+const identifierLabelPURL = "purl"
+
 // Subject is one project's advisories together with the artefacts they are
 // being asserted about.
-//
-// Products are IRIs — for a bottle, the purl of the published image, which
-// names it by DIGEST and is therefore checkable:
-//
-//	pkg:oci/openssl@sha256:…?repository_url=ghcr.io/go-pkgx/openssl.org&tag=3.5.8_1--linux-x86-64
-//
-// Choosing the products is the CALLER's job and it is not cosmetic: a `fixed`
-// statement asserts that these versions contain the fix, so naming a bottle
-// that does not is a false claim. Advisory.FixedBy is the check.
 type Subject struct {
 	File     *AdvisoryFile
-	Products []string
+	Products []Product
 }
 
 // VEXOptions is the document metadata. Every field here is required by the
@@ -109,7 +135,9 @@ type vexVulnerability struct {
 }
 
 type vexProduct struct {
-	ID string `json:"@id"`
+	ID          string            `json:"@id"`
+	Identifiers map[string]string `json:"identifiers,omitempty"`
+	Hashes      map[string]string `json:"hashes,omitempty"`
 }
 
 // statusFor maps one of our event types onto a VEX status.
@@ -209,11 +237,20 @@ func (o VEXOptions) check() error {
 		if len(s.Products) == 0 {
 			return fmt.Errorf("vuln: vex: %s names no product", s.File.Project)
 		}
+		for _, p := range s.Products {
+			// The spec makes @id optional and lets a product be identified by
+			// its `identifiers` alone. Required here: a statement whose
+			// subject has no name is one nobody can look up, and the caller
+			// always has one — the bottle's purl.
+			if strings.TrimSpace(p.ID) == "" {
+				return fmt.Errorf("vuln: vex: %s: a product has no @id", s.File.Project)
+			}
+		}
 	}
 	return nil
 }
 
-func statementFor(a Advisory, products []string) (vexStatement, error) {
+func statementFor(a Advisory, products []Product) (vexStatement, error) {
 	e := a.Latest()
 	status, ok := statusFor[e.Type]
 	if !ok {
@@ -232,7 +269,14 @@ func statementFor(a Advisory, products []string) (vexStatement, error) {
 		Status:    status,
 	}
 	for _, p := range products {
-		st.Products = append(st.Products, vexProduct{ID: p})
+		vp := vexProduct{ID: p.ID}
+		if p.PURL != "" {
+			vp.Identifiers = map[string]string{identifierLabelPURL: p.PURL}
+		}
+		if p.SHA256 != "" {
+			vp.Hashes = map[string]string{hashLabelSHA256: p.SHA256}
+		}
+		st.Products = append(st.Products, vp)
 	}
 	switch status {
 	case VEXNotAffected:
