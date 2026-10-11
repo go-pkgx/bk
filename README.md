@@ -500,20 +500,50 @@ A recipe usually already names something better, in its `versions:` block.
 $ bk vulnid -dir ~/Library/Caches/pkgx/pantry
 1563 recipe(s) read from …/pantry/projects
   declared  0
-  derived   1237
-  none      326
+  derived   1241
+  none      322
 by database:
   GitHub         1186
+  crates.io      114
   GitLab         40
-  npm            13
+  npm            14
+  RubyGems       1
 ```
 
-Three sources, and they rank. **derived** is read off the recipe and costs
-nothing. **declared** is an entry a person wrote in an identity table, and wins,
-because it exists only where the derivation was judged wrong or absent.
-**none** is the honest answer for the rest — `bk vulnid -list none` names them,
-and they cluster on a handful of upstream hosts (`ftp.gnu.org`, `www.x.org`,
-`sourceforge`), so the table that fixes them is short.
+Three sources, and they rank. **derived** costs nothing: it is read off the
+recipe's `versions:` block and off the project's own name. **declared** is an
+entry a person wrote in an identity table, and wins, because it exists only
+where the derivation was judged wrong or absent. **none** is the honest answer
+for the rest — `bk vulnid -list none` names them, and they cluster on a handful
+of upstream hosts (`ftp.gnu.org`, `www.x.org`, `sourceforge`), so the table that
+fixes them is short.
+
+### The project's own name is a source too
+
+Measured: `crates.io/bpb`, `crates.io/huniq`, `crates.io/stego` and
+`crates.io/albion_terminal_rpg` were reported as having **no identity at all**,
+while their own names say both the registry and the package. That is four
+projects the derivation could answer for and did not.
+
+The larger half is the **110** `crates.io/*` projects that *do* derive a GitHub
+repository from their recipe. For those this adds a second, better key rather
+than a first one: OSV keys Rust advisories (RUSTSEC) by `crates.io` with
+curated version ranges, where a repository-keyed advisory carries whatever
+range its filer wrote. Both keys are emitted — two keys mean two databases can
+be asked and neither has to be guessed.
+
+This is **not** the same trick as reading a `url:`. A distributable URL says
+where the source came from, which is a host and not a package name; that is the
+322-project CPE case, and inventing a package name from it is what produced 27
+openssl CVEs. A project called `crates.io/bpb` is different in kind: the
+pantry's naming convention put the registry and the package name there, and the
+package is what the registry calls it.
+
+The host and the ecosystem are not always the same word — `npmjs.com` is the
+host and `npm` is the OSV ecosystem — and getting that backwards produces a
+query that matches nothing, silently. A test compares the two maps, because
+`CPAN` and `CocoaPods` were in the first version of the host map and are not
+OSV ecosystems at all.
 
 No network call, ever. The alternative — one query per project — is 1908
 requests against a budget this fleet shares with Renovate, and the question
