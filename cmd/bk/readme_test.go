@@ -7,12 +7,20 @@ import (
 	"testing"
 )
 
-// numberWords is as far as this needs to count. A subcommand list that grew
-// past twenty-nine would want a different sentence anyway.
+// numberWords is as far as this needs to count.
+//
+// It used to stop at twenty-nine, with "a subcommand list that grew past
+// twenty-nine would want a different sentence anyway" — and `bk attest` made
+// it thirty, so that prediction has come true rather than been avoided. The
+// table is extended rather than the sentence rewritten: deciding that a prose
+// list of thirty names should become a table is a call about the README, not
+// about this guard, and making it silently here would hide it.
 var numberWords = map[int]string{
 	18: "eighteen", 19: "nineteen", 20: "twenty", 21: "twenty-one",
 	22: "twenty-two", 23: "twenty-three", 24: "twenty-four", 25: "twenty-five",
 	26: "twenty-six", 27: "twenty-seven", 28: "twenty-eight", 29: "twenty-nine",
+	30: "thirty", 31: "thirty-one", 32: "thirty-two", 33: "thirty-three",
+	34: "thirty-four", 35: "thirty-five",
 }
 
 // The README says how many subcommands bk has and names them. Both drifted:
