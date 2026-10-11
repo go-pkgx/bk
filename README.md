@@ -680,21 +680,51 @@ deterministic — subjects by project, statements by id — because a document t
 differed run to run could not be compared with the one already attached to a
 bottle.
 
-The document is emitted by whatever **publishes** a bottle, not by a person:
-only the publisher knows the digest a statement must name. A bottle's product
-IRI is its OCI purl, which identifies it by digest and is therefore checkable:
+### The bottle carries its own justification
 
 ```
-pkg:oci/openssl@sha256:…?repository_url=ghcr.io/go-pkgx/openssl.org&tag=3.5.8_1--linux-x86-64
+bk publish --to oci://ghcr.io/go-pkgx/bottles --project openssl.org \
+           --version 3.5.8_1 --platform linux/x86-64 \
+           --advisories ./advisories  openssl.org-3.5.8_1.tar.xz
 ```
+
+With `--advisories`, the bottle gets a third referrer beside its CycloneDX SBOM
+and its in-toto SLSA provenance:
+
+| referrer | says |
+|---|---|
+| `application/vnd.cyclonedx+json` | what is inside |
+| `application/vnd.in-toto+json` | how it was built, and by which `bk` |
+| `application/vnd.openvex+json` | which vulnerabilities were considered, and what was decided |
+
+This is what makes a rebuild **self-justifying**. Until now a bottle rebuilt
+for a security fix looked exactly like one rebuilt for any other reason: the
+version string said `_1` and nothing said why.
+
+Three details earn their keep:
+
+- The statement is bound to the **tarball digest**, the same anchor the SBOM,
+  the provenance and the cosign payload use. Four attestations about one
+  artefact, not four descriptions that happen to agree.
+- The document is dated with the build timestamp, which honours
+  `SOURCE_DATE_EPOCH`, and its `@id` carries no date or counter. So re-publishing
+  an unchanged bottle produces a byte-identical document — the same referrer
+  digest, an idempotent re-push rather than a second referrer beside the first.
+  The `@id` *does* carry the platform, because two platforms' bottles are two
+  artefacts.
+- **A broken advisory file stops the publish.** A file that exists and cannot be
+  parsed must not become a silent omission: the bottle would be pushed, look
+  complete and assert nothing — and an absent VEX document reads as "nothing was
+  ever found", which is the opposite of what a broken record means. A file that
+  is simply *absent* is fine and attaches nothing, because most projects have
+  never been triaged.
 
 ### What this half is still missing
 
 Nothing yet **fills** these files: there is no query against OSV or NVD, so
 every record is written by hand today. That is deliberate — one query per
 project is 1908 requests against a budget shared with Renovate, and `bk vulnid`
-exists to make the query list short first. And `bk publish` does not yet attach
-the VEX document as a referrer beside the SBOM and the provenance.
+exists to make the query list short first.
 
 ## Where the source came from, and whether it changed
 
