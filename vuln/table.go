@@ -1,12 +1,20 @@
 // Package vuln answers one question for a pkgx project: under what name will a
 // vulnerability database recognise it?
 //
-// There are two answers and they rank. The recipe's `versions:` block already
-// names a repository or an ecosystem for 1506 of 1908 projects, and
-// versions.Identities reads it (the DERIVED answer). The remaining 302 name
-// nothing but an upstream host, and for those a human writes the name down
-// once, in a table (the DECLARED answer). Declared wins, because it exists
-// only where the derivation was judged wrong or absent.
+// There are two answers and they rank. Most projects name a repository or an
+// ecosystem themselves, and versions.Identities plus FromProjectName read it
+// (the DERIVED answer). The rest name nothing but an upstream host, and for
+// those a human writes the name down once, in a table (the DECLARED answer).
+// Declared wins, because it exists only where the derivation was judged wrong
+// or absent.
+//
+// ⛔ TWO CENSUSES, TWO CORPORA, DO NOT MIX THEM. An offline census over the
+// pantry AND the overlay — 1908 recipes — counting build-dependency hints as
+// an ecosystem, found 1005 in an ecosystem, 1506 naming a repository, 302 with
+// only an upstream host and 14 with nothing. `bk vulnid` measures something
+// narrower and more useful: only what a QUERY can be built from. On the cached
+// pantry alone, 1563 recipes, it reports 1241 derived and 322 with no identity.
+// Neither number is wrong and neither substitutes for the other.
 //
 // # How the others do it
 //
@@ -115,7 +123,8 @@ var osvEcosystems = []string{
 // "GitHub" and "GitLab" name advisories keyed by REPOSITORY rather than by
 // package — the spelling versions.Identities already produces, so a declared
 // entry and a derived one are the same kind of thing. "cpe" is the NVD route,
-// kept for the 302 projects that name nothing but an upstream host.
+// kept for the projects that name nothing but an upstream host — 322 of the
+// cached pantry's 1563, as `bk vulnid` counts them.
 var extraDBs = []string{"cpe", "GitHub", "GitLab"}
 
 var knownDBs = func() map[string]bool {
@@ -206,10 +215,37 @@ func (t *Table) For(project string, recipeVersions any) ([]versions.Identity, So
 			return out, SourceDeclared
 		}
 	}
-	if ids := versions.Identities(recipeVersions); len(ids) > 0 {
-		return ids, SourceDerived
+	// UNION, not a choice. A `crates.io/*` project names its registry package
+	// in its own name AND a GitHub repository in its `versions:` block, and
+	// those are two different databases with two different answers: OSV keys
+	// Rust advisories by crates.io with curated version ranges, a
+	// repository-keyed advisory has whatever range its filer wrote. Taking
+	// either one alone would discard a question that can be asked.
+	ids := FromProjectName(project)
+	ids = append(ids, versions.Identities(recipeVersions)...)
+	if len(ids) == 0 {
+		return nil, SourceNone
 	}
-	return nil, SourceNone
+	ids = dedupe(ids)
+	sortIdentities(ids)
+	return ids, SourceDerived
+}
+
+// dedupe removes repeats while keeping one of each. The two derived sources
+// can name the same key — a project called `npmjs.com/x` whose versions block
+// also says `npm: x` — and a duplicated identity would be counted twice in
+// every census built on this.
+func dedupe(ids []Identity) []Identity {
+	seen := make(map[Identity]bool, len(ids))
+	out := ids[:0:0]
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func sortIdentities(ids []versions.Identity) {

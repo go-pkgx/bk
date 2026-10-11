@@ -10,11 +10,16 @@ import "sort"
 // answers badly: `cpeName=…openssl:3.5.7` returned 27 CVEs including four from
 // 2009, because those records say `openssl:*` with no upper bound at all.
 //
-// A recipe already names something better. Of 1908 recipes, 1005 imply a
-// package ecosystem and 1506 name a source repository; only 302 offer nothing
-// but an upstream host, and those are concentrated on a handful (ftp.gnu.org
-// 48, www.x.org 38, sourceforge 29). This turns what a recipe says into the
-// key a database will accept.
+// A recipe already names something better. An offline census over the pantry
+// AND the overlay — 1908 recipes, counting a build dependency on go.dev or
+// rust-lang.org as an ecosystem hint — found 1005 in a package ecosystem and
+// 1506 naming a source repository; only 302 offered nothing but an upstream
+// host, concentrated on a handful (ftp.gnu.org 48, www.x.org 38, sourceforge
+// 29). This turns what a recipe says into the key a database will accept.
+//
+// ⛔ Those are NOT `bk vulnid`'s numbers. It measures something narrower —
+// only what a query can be built from, not what a build dependency hints at —
+// and over the cached pantry alone. See vuln.Table's comment for both.
 type Identity struct {
 	// DB is which database can be asked: "GitHub" and "GitLab" for advisories
 	// keyed by repository, "npm" for the package ecosystem.
