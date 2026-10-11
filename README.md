@@ -50,7 +50,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `httpretry` | which failed HTTP attempts are worth repeating. Measured on one 23-failure batch, **eleven** were transient HTTP and nothing else — a factory that gives a flaky host exactly one chance reports its own bad luck as a broken recipe |
 | `useragent` | the one User-Agent every HTTP path in bk sends. It exists because they differed: `versions` set one and `fetch` did not, so bk could LIST a project's versions and then get 403 downloading the tarball it had just found |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | twenty-six subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
+| `cmd/bk` | twenty-seven subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `vulnid`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -482,6 +482,83 @@ hash do. It does not cover the **output bytes** of the built bottle. `bottle`
 can *verify* a digest but has no exported way to be *asked* for one, and a lock
 taken before anything is built has no output to name. The header of every lock
 says so, rather than letting a reader assume a guarantee that is not there.
+
+## `bk vulnid` — under what name does a CVE database know this package?
+
+Rebuilding a bottle to fix a vulnerability needs a vulnerability to point at,
+and pointing at one needs a name both sides agree on. `pkg:pkgx/openssl.org@4.0.2`
+is a name **no database knows**: OSV answers `{}` to a `pkg:generic/…` purl, and
+NVD's CPE route answers for anything and answers badly — measured on
+2026-10-11, `cpeName=…openssl:3.5.7` returned **27 CVEs, four of them from
+2009**, because every openssl criterion in the reply reads `openssl:*` with no
+upper bound at all.
+
+A recipe usually already names something better, in its `versions:` block.
+`bk vulnid` reads it:
+
+```
+$ bk vulnid -dir ~/Library/Caches/pkgx/pantry
+1563 recipe(s) read from …/pantry/projects
+  declared  0
+  derived   1237
+  none      326
+by database:
+  GitHub         1186
+  GitLab         40
+  npm            13
+```
+
+Three sources, and they rank. **derived** is read off the recipe and costs
+nothing. **declared** is an entry a person wrote in an identity table, and wins,
+because it exists only where the derivation was judged wrong or absent.
+**none** is the honest answer for the rest — `bk vulnid -list none` names them,
+and they cluster on a handful of upstream hosts (`ftp.gnu.org`, `www.x.org`,
+`sourceforge`), so the table that fixes them is short.
+
+No network call, ever. The alternative — one query per project — is 1908
+requests against a budget this fleet shares with Renovate, and the question
+"can this be asked at all?" is answered by the recipes.
+
+### The identity table
+
+```yaml
+schema-version: 1
+projects:
+  openssl.org:
+    cpe: [openssl:openssl]
+  oracle.com/berkeley-db:
+    cpe: [oracle:oracle_berkeley_db, oracle:berkeley_db]
+```
+
+Two rules it refuses to bend:
+
+- **A `cpe` name must carry its vendor.** Yocto's documentation gives the reason
+  from the other end: *"'tar' has been matching CVEs for the GNU tar package and
+  also the node-tar node.js extension. To avoid this problem, use the vendor
+  name as a prefix"*. A bare `openssl` is the 27-CVE answer above.
+- **A database key is checked against an allowlist**, which is OSV's own list of
+  defined ecosystems copied whole, spelling and case included — plus `cpe`,
+  `GitHub` and `GitLab`, which are not ecosystems but repository-keyed
+  advisories. A typo (`githb:`) in a denylist world is not a typo, it is a
+  project that silently has no identity, indistinguishable from one nobody has
+  looked at yet.
+
+Several names per database is deliberate, not a mistake: NVD files Berkeley DB
+under two product names, and dropping one loses the advisories filed there.
+
+### What this is not
+
+It is **identity only** — which name to ask under, not what the answer was.
+Wolfi keeps that other half in a separate `<package>.advisories.yaml` per
+package, as an ordered list of timestamped events (`detection`, `fixed` with a
+`fixed-version`, `false-positive-determination`, `pending-upstream-fix`). That
+shape is the right one and this repository does not have it yet. Putting both in
+one file would mean editing a file that names 1908 projects every time one
+vulnerability is triaged.
+
+Note also what is **not** in OSV's ecosystem list: `pkgx`. It has `Homebrew`,
+`Alpine`, `Wolfi`, `Chainguard` and `vcpkg`. The long-term answer for this fleet
+is to become one of those rather than to keep translating into someone else's.
 
 ## Where the source came from, and whether it changed
 

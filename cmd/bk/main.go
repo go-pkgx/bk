@@ -18,6 +18,8 @@
 //	                     (-runnable pins what is PUBLISHED, so `pkgx --lock` can run the file)
 //	bk factory           build a recipe set's whole closure and publish every bottle
 //	bk source            fetch the source a published bottle attests it was built from
+//	bk vulnid            say, per project, the name a vulnerability database will
+//	                     accept — derived from the recipe, or declared in a table
 package main
 
 import (
@@ -153,7 +155,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|buildenv|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|overrides|depgaps|builder|factory|source> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|buildenv|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|vulnid|overrides|depgaps|builder|factory|source> [args]")
 		return 2
 	}
 
@@ -227,6 +229,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runOverrides(rest[1:], stdout, stderr)
 	case "lint":
 		return runLint(rest[1:], stdout, stderr)
+	case "vulnid":
+		return runVulnID(rest[1:], stdout, stderr)
 	case "tohcl":
 		return runToHCL(rest[1:], stdout, stderr)
 	case "tools":
