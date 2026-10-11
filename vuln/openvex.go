@@ -1,0 +1,251 @@
+package vuln
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+)
+
+// OpenVEX emission: the advisory records above, said in the one format a
+// scanner already reads.
+//
+// Why bother, when the records are already structured? Because a record only
+// this fleet can read is a record that costs every consumer a re-triage. VEX
+// exists so that "we are not affected, and here is the machine-readable reason"
+// travels with the artefact. The spec is explicit about the cost of the prose
+// alternative: an `impact_statement` "breaks VEX automation and
+// interoperability", so the label is what gets emitted and the prose rides
+// along beside it.
+//
+// Field names, requiredness and the two fixed vocabularies are from
+// openvex/spec OPENVEX-SPEC.md as read on 2026-10-11.
+
+// VEXContext is the context URL for the spec version this encoder writes. The
+// spec says an omitted version "defaults to v0.0.1", so writing it explicitly
+// is not decoration: without it a consumer reads a v0.2.0 document as the
+// oldest one.
+const VEXContext = "https://openvex.dev/ns/v0.2.0"
+
+// VEX status labels.
+const (
+	VEXNotAffected        = "not_affected"
+	VEXAffected           = "affected"
+	VEXFixed              = "fixed"
+	VEXUnderInvestigation = "under_investigation"
+)
+
+// Subject is one project's advisories together with the artefacts they are
+// being asserted about.
+//
+// Products are IRIs — for a bottle, the purl of the published image, which
+// names it by DIGEST and is therefore checkable:
+//
+//	pkg:oci/openssl@sha256:…?repository_url=ghcr.io/go-pkgx/openssl.org&tag=3.5.8_1--linux-x86-64
+//
+// Choosing the products is the CALLER's job and it is not cosmetic: a `fixed`
+// statement asserts that these versions contain the fix, so naming a bottle
+// that does not is a false claim. Advisory.FixedBy is the check.
+type Subject struct {
+	File     *AdvisoryFile
+	Products []string
+}
+
+// VEXOptions is the document metadata. Every field here is required by the
+// spec, and EncodeVEX refuses a document missing any of them rather than
+// emitting one a consumer will reject — or worse, accept with a default.
+type VEXOptions struct {
+	// ID is the IRI identifying this document.
+	ID string
+	// Author identifies who is asserting this. The spec asks for a machine
+	// readable identifier and says the identity SHOULD be cryptographically
+	// associated with the document's signature — which, here, is the cosign
+	// signature the bottle already carries.
+	Author string
+	// Role is optional.
+	Role string
+	// Timestamp is when the document was issued.
+	Timestamp time.Time
+	// Version must be incremented whenever any content changes. It starts at
+	// 1; a zero version is refused, because "unset" and "the first version"
+	// are different things and only one of them is a document.
+	Version int
+	// Tooling is optional and says what generated this.
+	Tooling  string
+	Subjects []Subject
+}
+
+// vexDocument, vexStatement and the two structs below mirror the spec's field
+// names exactly. `omitempty` on every optional field, because a VEX consumer
+// reading `"justification": ""` on a not_affected statement sees a document
+// that violates the one rule the spec is strict about.
+type vexDocument struct {
+	Context     string         `json:"@context"`
+	ID          string         `json:"@id"`
+	Author      string         `json:"author"`
+	Role        string         `json:"role,omitempty"`
+	Timestamp   string         `json:"timestamp"`
+	Version     int            `json:"version"`
+	Tooling     string         `json:"tooling,omitempty"`
+	LastUpdated string         `json:"last_updated,omitempty"`
+	Statements  []vexStatement `json:"statements"`
+}
+
+type vexStatement struct {
+	Vulnerability   vexVulnerability `json:"vulnerability"`
+	Timestamp       string           `json:"timestamp"`
+	Products        []vexProduct     `json:"products"`
+	Status          string           `json:"status"`
+	Justification   string           `json:"justification,omitempty"`
+	ImpactStatement string           `json:"impact_statement,omitempty"`
+	ActionStatement string           `json:"action_statement,omitempty"`
+	StatusNotes     string           `json:"status_notes,omitempty"`
+}
+
+type vexVulnerability struct {
+	Name    string   `json:"name"`
+	Aliases []string `json:"aliases,omitempty"`
+}
+
+type vexProduct struct {
+	ID string `json:"@id"`
+}
+
+// statusFor maps one of our event types onto a VEX status.
+//
+// The mapping is the whole design decision in this file, so it is a table and
+// not a chain of ifs:
+//
+//	detection                    under_investigation  a match, not a finding
+//	true-positive-determination  affected             it does affect us
+//	false-positive-determination not_affected         + the justification label
+//	fixed                        fixed                a version of ours has it
+//	fix-not-planned              affected             + why nothing is coming
+//	pending-upstream-fix         affected             + what is being waited on
+//
+// `detection` becoming `under_investigation` rather than `affected` is the one
+// worth defending: a detection is a database saying our NAME matched, and this
+// fleet measured what that is worth — a bare CPE query for openssl returned 27
+// records, four of them from 2009. Emitting those as `affected` would publish
+// 23 false alarms with our signature on them.
+var statusFor = map[string]string{
+	EventDetection:          VEXUnderInvestigation,
+	EventTruePositive:       VEXAffected,
+	EventFalsePositive:      VEXNotAffected,
+	EventFixed:              VEXFixed,
+	EventFixNotPlanned:      VEXAffected,
+	EventPendingUpstreamFix: VEXAffected,
+}
+
+// actionFor is the action statement an `affected` status must carry. The spec
+// says a statement with affected status "MUST include a statement that SHOULD
+// describe actions to remediate or mitigate", and the three event types that
+// become `affected` mean quite different things to someone reading it.
+var actionFor = map[string]string{
+	EventTruePositive:       "Upgrade to a version that carries the fix once one is published.",
+	EventFixNotPlanned:      "No fix is planned for this package; use a maintained alternative.",
+	EventPendingUpstreamFix: "A fix requires work upstream; no action here will remove the exposure.",
+}
+
+// EncodeVEX writes an OpenVEX document for the given subjects, indented.
+//
+// Statements are ordered by vulnerability id within each subject, and subjects
+// by project, so the same records produce the same bytes — a document that
+// differed run to run could not be attached to a bottle and compared.
+func EncodeVEX(o VEXOptions) ([]byte, error) {
+	if err := o.check(); err != nil {
+		return nil, err
+	}
+	doc := vexDocument{
+		Context:   VEXContext,
+		ID:        o.ID,
+		Author:    o.Author,
+		Role:      o.Role,
+		Timestamp: o.Timestamp.UTC().Format(time.RFC3339),
+		Version:   o.Version,
+		Tooling:   o.Tooling,
+	}
+	subjects := make([]Subject, len(o.Subjects))
+	copy(subjects, o.Subjects)
+	sort.SliceStable(subjects, func(i, j int) bool {
+		return subjects[i].File.Project < subjects[j].File.Project
+	})
+	for _, s := range subjects {
+		advisories := make([]Advisory, len(s.File.Advisories))
+		copy(advisories, s.File.Advisories)
+		sort.SliceStable(advisories, func(i, j int) bool { return advisories[i].ID < advisories[j].ID })
+		for _, a := range advisories {
+			st, err := statementFor(a, s.Products)
+			if err != nil {
+				return nil, fmt.Errorf("vuln: vex: %s: %s: %w", s.File.Project, a.ID, err)
+			}
+			doc.Statements = append(doc.Statements, st)
+		}
+	}
+	return json.MarshalIndent(doc, "", "  ")
+}
+
+func (o VEXOptions) check() error {
+	switch {
+	case strings.TrimSpace(o.ID) == "":
+		return fmt.Errorf("vuln: vex: no @id — the spec requires an IRI identifying the document")
+	case strings.TrimSpace(o.Author) == "":
+		return fmt.Errorf("vuln: vex: no author — a statement nobody is asserting is not a statement")
+	case o.Timestamp.IsZero():
+		return fmt.Errorf("vuln: vex: no timestamp — nothing can supersede an undated document")
+	case o.Version < 1:
+		return fmt.Errorf("vuln: vex: version %d — it starts at 1, and unset is not a version", o.Version)
+	case len(o.Subjects) == 0:
+		return fmt.Errorf("vuln: vex: no subjects — an empty document asserts nothing")
+	}
+	for _, s := range o.Subjects {
+		if s.File == nil {
+			return fmt.Errorf("vuln: vex: a subject has no advisory file")
+		}
+		// No products means the statement inherits them from the document,
+		// and this encoder sets none at document level — so it would assert
+		// something about nothing at all.
+		if len(s.Products) == 0 {
+			return fmt.Errorf("vuln: vex: %s names no product", s.File.Project)
+		}
+	}
+	return nil
+}
+
+func statementFor(a Advisory, products []string) (vexStatement, error) {
+	e := a.Latest()
+	status, ok := statusFor[e.Type]
+	if !ok {
+		// Reachable only if an event type is added to the parser's allowlist
+		// without being mapped here. That is exactly the silent half-change
+		// worth refusing: the alternative is a document missing statements.
+		return vexStatement{}, fmt.Errorf("event type %q maps to no VEX status", e.Type)
+	}
+	st := vexStatement{
+		Vulnerability: vexVulnerability{Name: a.ID, Aliases: a.Aliases},
+		// The statement's own timestamp is "the time at which the information
+		// expressed in the Statement was known to be true" — which is when the
+		// event happened, NOT when the document was written. Using the
+		// document's time would date every finding to the last publish.
+		Timestamp: e.Timestamp.UTC().Format(time.RFC3339),
+		Status:    status,
+	}
+	for _, p := range products {
+		st.Products = append(st.Products, vexProduct{ID: p})
+	}
+	switch status {
+	case VEXNotAffected:
+		// Guaranteed non-empty and in the vocabulary by ParseAdvisories; set
+		// here because the spec makes it mandatory for this status and a
+		// consumer rejects the statement without it.
+		st.Justification = e.Justification
+		st.ImpactStatement = e.Note
+	case VEXAffected:
+		st.ActionStatement = actionFor[e.Type]
+		st.StatusNotes = e.Note
+	default:
+		st.StatusNotes = e.Note
+	}
+	return st, nil
+}
