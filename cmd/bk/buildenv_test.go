@@ -131,7 +131,7 @@ func TestTheSweepCountsTheThreeOutcomesSeparately(t *testing.T) {
 		}
 	}
 	var out, errb strings.Builder
-	code := sweepBuildEnv(list, "oci://x", "linux", "aarch64", &out, &errb)
+	code := sweepBuildEnv(list, "oci://x", "linux", "aarch64", requirement{}, &out, &errb)
 	if code != 1 {
 		t.Errorf("code = %d, want 1 (something is not recorded)", code)
 	}
@@ -153,7 +153,7 @@ func TestTheSweepRefusesAnEmptyList(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errb strings.Builder
-	if code := sweepBuildEnv(list, "oci://x", "linux", "aarch64", &out, &errb); code != 2 {
+	if code := sweepBuildEnv(list, "oci://x", "linux", "aarch64", requirement{}, &out, &errb); code != 2 {
 		t.Errorf("code = %d, want 2", code)
 	}
 	if !strings.Contains(errb.String(), "not an empty registry") {
@@ -319,5 +319,183 @@ func TestBuildEnvRefusesAnUnsupportedTarget(t *testing.T) {
 	}
 	if errb.Len() == 0 {
 		t.Error("it refused in silence")
+	}
+}
+
+// ⛔⛔ "DOES NOT USE IT" IS NEITHER STALE NOR OK, and keeping it apart is the
+// whole care in judge().
+//
+// A C package has no `go.dev`. Counted as STALE it would rebuild the entire
+// registry for a Go release; counted as OK it would make the figure
+// meaningless. That is the mistake a denylist makes when it inherits a
+// taxonomy's blind spot.
+func TestJudgeKeepsFourOutcomesApart(t *testing.T) {
+	want := requirement{Project: "go.dev", Version: "1.27.2"}
+	for name, c := range map[string]struct {
+		env  []attestedEnv
+		want envVerdict
+	}{
+		"nothing recorded":   {nil, vUnknown},
+		"older compiler":     {[]attestedEnv{{"go.dev", "1.27.1"}}, vStale},
+		"the wanted version": {[]attestedEnv{{"go.dev", "1.27.2"}}, vOK},
+		"a newer one":        {[]attestedEnv{{"go.dev", "1.28.0"}}, vOK},
+		"a C package":        {[]attestedEnv{{"gnu.org/glibc", "2.44.0"}}, vNotUsed},
+		// ⛔ A REBUILD OF THE COMPILER COUNTS. go.dev 1.27.1_1 is 1.27.1 built
+		// again, which does NOT contain the fix that landed in 1.27.2.
+		"a rebuild of the old one": {[]attestedEnv{{"go.dev", "1.27.1_1"}}, vStale},
+	} {
+		if got := judge(c.env, want); got != c.want {
+			t.Errorf("%s: judge = %v, want %v", name, got, c.want)
+		}
+	}
+}
+
+// -needs REFUSES WHAT IT CANNOT MEAN rather than judging against nonsense.
+func TestNeedsRefusesWhatItCannotMean(t *testing.T) {
+	for _, s := range []string{"go.dev", "@1.27.2", "go.dev@", "go.dev@1.2.3\x1b[2K"} {
+		if _, err := parseRequirement(s); err == nil {
+			t.Errorf("%q was accepted as a requirement", s)
+		}
+	}
+	// THE POSITIVE CONTROL, without which the four above would pass on a
+	// parser that accepts nothing.
+	r, err := parseRequirement("go.dev@1.27.2")
+	if err != nil || r.Project != "go.dev" || r.Version != "1.27.2" {
+		t.Errorf("a real requirement was refused: %+v %v", r, err)
+	}
+}
+
+// THE SWEEP COUNTS THE JUDGEMENT SEPARATELY FROM THE READING, and says both.
+// A sweep that reported "3 stale" without saying how many it could not judge
+// would be read as "3 of 3".
+func TestTheSweepSaysWhatItCouldNotJudge(t *testing.T) {
+	dir := t.TempDir()
+	list := filepath.Join(dir, "l.txt")
+	if err := os.WriteFile(list, []byte("old.org 1\nnew.org 1\nc.org 1\nblank.org 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := sourceAttestations
+	t.Cleanup(func() { sourceAttestations = old })
+	sourceAttestations = func(_, proj, _, _, _ string) ([]bottle.Referrer, error) {
+		switch proj {
+		case "old.org":
+			return []bottle.Referrer{provWith(map[string]any{"uri": "pkg:pkgx/go.dev@1.27.1"})}, nil
+		case "new.org":
+			return []bottle.Referrer{provWith(map[string]any{"uri": "pkg:pkgx/go.dev@1.27.2"})}, nil
+		case "c.org":
+			return []bottle.Referrer{provWith(map[string]any{"uri": "pkg:pkgx/gnu.org/glibc@2.44.0"})}, nil
+		default:
+			return []bottle.Referrer{provWith()}, nil
+		}
+	}
+	var out, errb strings.Builder
+	code := sweepBuildEnv(list, "oci://x", "linux", "aarch64",
+		requirement{Project: "go.dev", Version: "1.27.2"}, &out, &errb)
+	if code != 1 {
+		t.Errorf("code = %d, want 1 (something is stale)", code)
+	}
+	got := out.String()
+	if !strings.Contains(got, "of those: 1 need rebuilding for go.dev>=1.27.2 · 1 already have it · 1 never used it") {
+		t.Errorf("the judgement is not counted in four:\n%s", got)
+	}
+	// ⛔ AND IT SAYS WHAT IT COULD NOT JUDGE. Without this line the reader
+	// takes "1 need rebuilding" for the whole answer.
+	if !strings.Contains(got, "1 record nothing, so this says nothing about them") {
+		t.Errorf("the unjudgeable bottle is not named as such:\n%s", got)
+	}
+	// The stale line carries the version it HAS, not only that it is old.
+	if !strings.Contains(got, "STALE   old.org 1: go.dev 1.27.1, want >=1.27.2") {
+		t.Errorf("the stale line does not say which version it has:\n%s", got)
+	}
+}
+
+// WITHOUT -needs IT DOES NOT JUDGE, and must not print a verdict nobody asked
+// for.
+func TestWithoutNeedsThereIsNoJudgement(t *testing.T) {
+	dir := t.TempDir()
+	list := filepath.Join(dir, "l.txt")
+	if err := os.WriteFile(list, []byte("a.org 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := sourceAttestations
+	t.Cleanup(func() { sourceAttestations = old })
+	sourceAttestations = func(_, _, _, _, _ string) ([]bottle.Referrer, error) {
+		return []bottle.Referrer{provWith(map[string]any{"uri": "pkg:pkgx/go.dev@1.0.0"})}, nil
+	}
+	var out, errb strings.Builder
+	if code := sweepBuildEnv(list, "oci://x", "linux", "aarch64", requirement{}, &out, &errb); code != 0 {
+		t.Errorf("code = %d, want 0", code)
+	}
+	if strings.Contains(out.String(), "need rebuilding") || strings.Contains(out.String(), "STALE") {
+		t.Errorf("it judged without being asked:\n%s", out.String())
+	}
+	// ⛔ AND THE PLAIN LINE IS STILL THERE. Asserting only the ABSENCE of a
+	// verdict let a mutation through: routed into the judgement with an empty
+	// requirement, nothing matches the empty project name, so every bottle
+	// prints "n/a" — which contains neither "STALE" nor "need rebuilding"
+	// and passed. A negative assertion needs its positive beside it.
+	if !strings.Contains(out.String(), "env     a.org 1: 1 entry(ies)") {
+		t.Errorf("the plain reading line is missing:\n%s", out.String())
+	}
+}
+
+// -needs THROUGH THE COMMAND, both the good path and the refusal. The flag is
+// parsed in runBuildEnv, so a test on parseRequirement alone leaves the wiring
+// — and its exit status — unexercised.
+func TestNeedsThroughTheCommand(t *testing.T) {
+	dir := t.TempDir()
+	list := filepath.Join(dir, "l.txt")
+	if err := os.WriteFile(list, []byte("old.org 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := sourceAttestations
+	t.Cleanup(func() { sourceAttestations = old })
+	sourceAttestations = func(_, _, _, _, _ string) ([]bottle.Referrer, error) {
+		return []bottle.Referrer{provWith(map[string]any{"uri": "pkg:pkgx/go.dev@1.27.1"})}, nil
+	}
+
+	t.Run("a stale bottle exits non-zero and says which version it has", func(t *testing.T) {
+		code, out, _ := run2(t, "buildenv", "--platform", "linux/aarch64",
+			"--needs", "go.dev@1.27.2", "--list", list)
+		if code != 1 {
+			t.Errorf("code = %d, want 1", code)
+		}
+		if !strings.Contains(out, "STALE   old.org 1: go.dev 1.27.1") {
+			t.Errorf("the stale line is missing:\n%s", out)
+		}
+	})
+
+	// ⛔ A MALFORMED REQUIREMENT IS REFUSED BEFORE ANY READING. Judging
+	// against nonsense would produce a verdict somebody might act on.
+	t.Run("a malformed requirement is refused", func(t *testing.T) {
+		reached := false
+		sourceAttestations = func(_, _, _, _, _ string) ([]bottle.Referrer, error) {
+			reached = true
+			return nil, nil
+		}
+		code, _, errb := run2(t, "buildenv", "--platform", "linux/aarch64",
+			"--needs", "go.dev", "--list", list)
+		if code != 2 {
+			t.Errorf("code = %d, want 2", code)
+		}
+		if reached {
+			t.Error("it read the registry before refusing the requirement")
+		}
+		if !strings.Contains(errb, "not project@version") {
+			t.Errorf("the refusal does not say why:\n%s", errb)
+		}
+	})
+}
+
+// versionOf answers "" for a project the environment does not hold — which is
+// the shape the n/a line relies on, and the branch the four-outcome test
+// reaches only through judge().
+func TestVersionOfAProjectThatIsNotThere(t *testing.T) {
+	env := []attestedEnv{{Project: "go.dev", Version: "1.27.2"}}
+	if got := versionOf(env, "go.dev"); got != "1.27.2" {
+		t.Errorf("versionOf = %q", got)
+	}
+	if got := versionOf(env, "gnu.org/glibc"); got != "" {
+		t.Errorf("versionOf of an absent project = %q, want empty", got)
 	}
 }

@@ -87,6 +87,65 @@ var (
 	errNoEnvironment = errors.New("the provenance records no build environment")
 )
 
+// requirement is "the build environment must hold this project at this
+// version or newer" — `go.dev@1.27.2` after a Go security release.
+type requirement struct {
+	Project string
+	Version string // "" when no requirement was given
+}
+
+func parseRequirement(s string) (requirement, error) {
+	// The LAST "@", as everywhere here: a project name is a path and may
+	// hold one, a version never does.
+	i := strings.LastIndex(s, "@")
+	if i <= 0 || i == len(s)-1 {
+		return requirement{}, fmt.Errorf("%q is not project@version", s)
+	}
+	r := requirement{Project: s[:i], Version: s[i+1:]}
+	if err := bottle.ValidateVersionString(r.Version); err != nil {
+		return requirement{}, fmt.Errorf("%q: %w", s, err)
+	}
+	return r, nil
+}
+
+// envVerdict is what a requirement says about one bottle's recorded environment.
+type envVerdict int
+
+const (
+	// vUnknown: the bottle records no environment, so nothing can be said.
+	// Every bottle published before bk v0.17.0 is here.
+	vUnknown envVerdict = iota
+	// vStale: it records the project, at an older version. Rebuild.
+	vStale
+	// vOK: it records the project, at or above the wanted version.
+	vOK
+	// ⛔ vNotUsed: it records an environment, and this project is not in it.
+	//
+	// Neither stale nor ok, and keeping it apart is the whole care in this
+	// function. A C package has no `go.dev`: counted as STALE it would
+	// rebuild the world for a Go release, and counted as OK it would make
+	// the figure meaningless. The same mistake a denylist makes when it
+	// inherits a taxonomy's blind spot.
+	vNotUsed
+)
+
+// judge applies a requirement to one bottle's recorded environment.
+func judge(env []attestedEnv, want requirement) envVerdict {
+	if len(env) == 0 {
+		return vUnknown
+	}
+	for _, e := range env {
+		if e.Project != want.Project {
+			continue
+		}
+		if bottle.ParseVer(e.Version).Satisfies(">=" + want.Version) {
+			return vOK
+		}
+		return vStale
+	}
+	return vNotUsed
+}
+
 // runBuildEnv reports what build environment published bottles record.
 //
 // It exists because the question "should this be rebuilt for a toolchain
@@ -101,6 +160,7 @@ func runBuildEnv(args []string, stdout, stderr io.Writer) int {
 	dist := fs.String("dist", bottle.DistBase, "the registry the bottles were published to")
 	platform := fs.String("platform", "", "os/arch to read, e.g. linux/aarch64 (default: this machine)")
 	list := fs.String("list", "", "file of `project version` lines to sweep instead of one project")
+	needs := fs.String("needs", "", "judge each bottle against a requirement on its build environment, e.g. -needs go.dev@1.27.2: which bottles were built with something older, which record nothing, and which never used it at all")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -111,8 +171,17 @@ func runBuildEnv(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	var want requirement
+	if *needs != "" {
+		want, err = parseRequirement(*needs)
+		if err != nil {
+			fmt.Fprintf(stderr, "buildenv: -needs %v\n", err)
+			return 2
+		}
+	}
+
 	if *list != "" {
-		return sweepBuildEnv(*list, *dist, osn, arch, stdout, stderr)
+		return sweepBuildEnv(*list, *dist, osn, arch, want, stdout, stderr)
 	}
 	if fs.NArg() != 2 {
 		fmt.Fprintln(stderr, "usage: bk buildenv [--dist d] [--platform os/arch] <project> <version>")
@@ -171,7 +240,7 @@ func buildEnvOf(dist, proj, ver, osn, arch string) ([]attestedEnv, error) {
 // folded into "records nothing": an unreachable registry has told us nothing,
 // and a sweep that reported it as an absence would be the same defect as a
 // census that could not read reporting zero.
-func sweepBuildEnv(path, dist, osn, arch string, stdout, stderr io.Writer) int {
+func sweepBuildEnv(path, dist, osn, arch string, want requirement, stdout, stderr io.Writer) int {
 	pairs, err := readProjectVersions(path)
 	if err != nil {
 		fmt.Fprintln(stderr, "buildenv:", err)
@@ -182,6 +251,7 @@ func sweepBuildEnv(path, dist, osn, arch string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	var recorded, none, unreadable int
+	var stale, ok, notUsed int
 	for _, pv := range pairs {
 		env, err := buildEnvOf(dist, pv[0], pv[1], osn, arch)
 		switch {
@@ -191,17 +261,57 @@ func sweepBuildEnv(path, dist, osn, arch string, stdout, stderr io.Writer) int {
 		case err != nil:
 			unreadable++
 			fmt.Fprintf(stdout, "ERROR   %s %s: %v\n", pv[0], pv[1], err)
-		default:
+		case want.Version == "":
 			recorded++
 			fmt.Fprintf(stdout, "env     %s %s: %d entry(ies)\n", pv[0], pv[1], len(env))
+		default:
+			recorded++
+			switch judge(env, want) {
+			case vStale:
+				stale++
+				fmt.Fprintf(stdout, "STALE   %s %s: %s %s, want >=%s\n",
+					pv[0], pv[1], want.Project, versionOf(env, want.Project), want.Version)
+			case vNotUsed:
+				notUsed++
+				fmt.Fprintf(stdout, "n/a     %s %s: does not use %s\n", pv[0], pv[1], want.Project)
+			default:
+				ok++
+				fmt.Fprintf(stdout, "ok      %s %s: %s %s\n",
+					pv[0], pv[1], want.Project, versionOf(env, want.Project))
+			}
 		}
 	}
 	fmt.Fprintf(stdout, "\n%d read · %d record a build environment · %d record none · %d unreadable\n",
 		len(pairs), recorded, none, unreadable)
-	if none > 0 || unreadable > 0 {
+	if want.Version != "" {
+		// ⛔ "DOES NOT USE IT" IS ITS OWN COLUMN. A C package has no
+		// `go.dev`: folded into STALE it would rebuild the world for a Go
+		// release, folded into OK it would make the figure meaningless.
+		fmt.Fprintf(stdout, "of those: %d need rebuilding for %s>=%s · %d already have it · %d never used it\n",
+			stale, want.Project, want.Version, ok, notUsed)
+		// The bottles that CANNOT be judged are the ones to act on first, and
+		// they are the whole registry until it has been rebuilt once under
+		// bk v0.17.0 or later.
+		if none > 0 {
+			fmt.Fprintf(stdout, "and %d record nothing, so this says nothing about them\n", none)
+		}
+	}
+	if none > 0 || unreadable > 0 || stale > 0 {
 		return 1
 	}
 	return 0
+}
+
+// versionOf is the version the recorded environment holds for a project, or
+// "" — used only to say WHICH version a stale bottle has, because "it is old"
+// without the number sends the reader back to the registry.
+func versionOf(env []attestedEnv, project string) string {
+	for _, e := range env {
+		if e.Project == project {
+			return e.Version
+		}
+	}
+	return ""
 }
 
 // readProjectVersions reads `project version` lines, # comments and blanks

@@ -438,6 +438,43 @@ rebuild under v0.17.0 or later. Debian's rule — *"the absence of a
 debian_revision is equivalent to a debian_revision of 0"* — is not a
 convention here, it is the literal state of the registry.
 
+#### `--needs` — which bottles a security release obsoletes
+
+The operator's real question after a Go patch release is not "what was this
+built with" but **"which of these need rebuilding"**:
+
+```console
+$ bk buildenv --platform linux/aarch64 --needs go.dev@1.27.2 --list recipes.txt
+STALE   acme.org/tool 1.2.3: go.dev 1.27.1, want >=1.27.2
+n/a     zlib.net 1.3.2: does not use go.dev
+ok      other.org 2.0.0: go.dev 1.27.2
+
+3 read · 3 record a build environment · 0 record none · 0 unreadable
+of those: 1 need rebuilding for go.dev>=1.27.2 · 1 already have it · 1 never used it
+```
+
+⛔ **"Does not use it" is its own column.** A C package has no `go.dev`:
+counted as stale it would rebuild the whole registry for a Go release, counted
+as ok it would make the figure meaningless. That is the mistake a denylist
+makes when it inherits a taxonomy's blind spot.
+
+⛔ **And a rebuild of the compiler counts as the compiler.** `go.dev 1.27.1_1`
+is 1.27.1 built again, which does not contain a fix that landed in 1.27.2 — so
+it is stale, and the version comparison has to see the rebuild suffix to say
+so.
+
+The judgement is reported **beside** the reading, never instead of it. Run
+against the registry as it stands today:
+
+```
+8 read · 0 record a build environment · 8 record none · 0 unreadable
+of those: 0 need rebuilding for go.dev>=1.27.2 · 0 already have it · 0 never used it
+and 8 record nothing, so this says nothing about them
+```
+
+`0 need rebuilding` would read as an all-clear on its own. The last line is
+what stops it being one.
+
 ### What is still missing, named rather than left out
 
 The spec hash covers the **inputs**, as Nix's derivation hash and Spack's spec
