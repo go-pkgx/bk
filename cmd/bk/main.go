@@ -22,6 +22,8 @@
 //	                     accept — derived from the recipe, or declared in a table
 //	bk advisories        validate a tree of per-project advisory records and say
 //	                     what state each one is in
+//	bk vulnfetch         ask OSV what it knows about a pantry, in one request,
+//	                     and (with -write) record it as dated detections
 package main
 
 import (
@@ -157,7 +159,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|buildenv|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|vulnid|advisories|overrides|depgaps|builder|factory|source> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|buildenv|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|vulnid|advisories|vulnfetch|overrides|depgaps|builder|factory|source> [args]")
 		return 2
 	}
 
@@ -235,6 +237,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runVulnID(rest[1:], stdout, stderr)
 	case "advisories":
 		return runAdvisories(rest[1:], stdout, stderr)
+	case "vulnfetch":
+		return runVulnFetch(rest[1:], stdout, stderr)
 	case "tohcl":
 		return runToHCL(rest[1:], stdout, stderr)
 	case "tools":
