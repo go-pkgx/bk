@@ -436,3 +436,139 @@ func TestVulnFetchDispatch(t *testing.T) {
 		t.Errorf("want the totals on stdout, got %q", out.String())
 	}
 }
+
+// catalogFile writes a published catalogue naming what we ship.
+func catalogFile(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "catalog.json")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// ⛔ THE VERSION IS WHAT MAKES THE ANSWER ACTIONABLE. Measured over the pkgxdev
+// pantry on 2026-10-17 with a published darwin/aarch64 catalogue:
+//
+//	as a whole package       748 finding(s) across 21 project(s)
+//	at the published version  90 finding(s) across  5 project(s)
+//
+// 658 of the 748 do not affect anything we ship. A list that large with no
+// decision behind any line is read once and never again.
+func TestVulnFetchAsksAtThePublishedVersion(t *testing.T) {
+	url, asked := fetchServer(t, `{"results":[{}]}`)
+	cat := catalogFile(t, `{"generated":"2026-10-17T00:00:00Z","projects":[
+	  {"project":"crates.io/bat","versions":["0.24.0"]}]}`)
+	rc, out, errb := vulnfetch(t, "-dir", fetchPantry(t), "-endpoint", url, "-catalog", cat)
+	if rc != 0 {
+		t.Fatalf("rc = %d, stderr:\n%s", rc, errb)
+	}
+	if !strings.Contains(*asked, `"version":"0.24.0"`) {
+		t.Errorf("the request does not carry the published version:\n%s", *asked)
+	}
+	if !strings.Contains(out, "1 of them asked AT the version") {
+		t.Errorf("the mode is not stated:\n%s", out)
+	}
+}
+
+// ⛔ AND WITHOUT -catalog IT SAYS SO. The same count means a different thing in
+// each mode, and a reader who does not know which was asked cannot use either.
+func TestVulnFetchSaysWhenItAskedAboutTheWholePackage(t *testing.T) {
+	url, asked := fetchServer(t, `{"results":[{}]}`)
+	_, out, _ := vulnfetch(t, "-dir", fetchPantry(t), "-endpoint", url)
+	if strings.Contains(*asked, `"version"`) {
+		t.Errorf("a version was sent with no catalogue to read it from:\n%s", *asked)
+	}
+	if !strings.Contains(out, "AS A WHOLE") || !strings.Contains(out, "-catalog") {
+		t.Errorf("it does not say which question it asked, nor how to ask the other:\n%s", out)
+	}
+}
+
+// ⛔ THE COUNT IS OF WHAT WILL BE ASKED, not of what was pinned. The first
+// version counted every pinned identity including the repository-keyed ones
+// that are dropped before the request, and printed "1217 of them asked AT the
+// version" one line above "171 identity(ies) asked". A subset larger than its
+// superset is a different population, not a rounding error.
+func TestVulnFetchCountsOnlyTheIdentitiesItCanAsk(t *testing.T) {
+	url, _ := fetchServer(t, `{"results":[{}]}`)
+	// Both projects get a published version, but only crates.io/bat has an
+	// identity OSV can answer; curl.se is repository-keyed.
+	cat := catalogFile(t, `{"generated":"2026-10-17T00:00:00Z","projects":[
+	  {"project":"crates.io/bat","versions":["0.24.0"]},
+	  {"project":"curl.se","versions":["8.20.0"]}]}`)
+	_, out, _ := vulnfetch(t, "-dir", fetchPantry(t), "-endpoint", url, "-catalog", cat)
+	if !strings.Contains(out, "1 of them asked AT the version") {
+		t.Errorf("the count includes identities that are never asked:\n%s", out)
+	}
+}
+
+func TestVulnFetchRefusesACatalogueItCannotRead(t *testing.T) {
+	url, _ := fetchServer(t, `{"results":[{}]}`)
+	rc, _, errb := vulnfetch(t, "-dir", fetchPantry(t), "-endpoint", url,
+		"-catalog", filepath.Join(t.TempDir(), "absent.json"))
+	if rc != 2 {
+		t.Errorf("rc = %d, want 2", rc)
+	}
+	if !strings.Contains(errb, "-catalog") {
+		t.Errorf("the error does not name the flag: %s", errb)
+	}
+}
+
+// ⛔ ONE IDENTITY, TWO PROJECTS, TWO PUBLISHED VERSIONS — ASK WITHOUT ONE.
+//
+// Two recipes can carry the same upstream identity. If they publish different
+// versions there is no single version to ask about, and picking either would
+// UNDER-report for the other. Under-reporting is the direction that hides a
+// vulnerability, so the question widens back to the whole package.
+func TestVulnFetchWillNotGuessBetweenTwoPublishedVersions(t *testing.T) {
+	url, asked := fetchServer(t, `{"results":[{}]}`)
+	dir := lintTree(t, map[string]string{
+		"a.example/package.yml": "distributable:\n  url: http://x/y.tgz\nversions:\n  url: http://a.example/s/\n  match: /x-\\d/\n",
+		"b.example/package.yml": "distributable:\n  url: http://x/y.tgz\nversions:\n  url: http://b.example/s/\n  match: /x-\\d/\n",
+	})
+	// Both declare the SAME ConanCenter identity.
+	tab := filepath.Join(t.TempDir(), "t.yml")
+	if err := os.WriteFile(tab, []byte("schema-version: 1\nprojects:\n  a.example:\n    ConanCenter: [shared]\n  b.example:\n    ConanCenter: [shared]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// …and publish DIFFERENT versions.
+	cat := catalogFile(t, `{"generated":"2026-10-17T00:00:00Z","projects":[
+	  {"project":"a.example","versions":["1.0.0"]},
+	  {"project":"b.example","versions":["2.0.0"]}]}`)
+
+	rc, out, errb := vulnfetch(t, "-dir", dir, "-endpoint", url, "-table", tab, "-catalog", cat)
+	if rc != 0 {
+		t.Fatalf("rc = %d, stderr:\n%s", rc, errb)
+	}
+	if strings.Contains(*asked, `"version"`) {
+		t.Errorf("it guessed a version for an identity two projects publish differently:\n%s", *asked)
+	}
+	if !strings.Contains(out, "AS A WHOLE") {
+		t.Errorf("the count claims a pin it did not make:\n%s", out)
+	}
+	// ⛔ AND IT MUST NOT TELL THEM TO PASS -catalog: they did. This assertion
+	// is why the message has three branches instead of two — the first draft
+	// gave advice the reader had already followed, which reads as the tool
+	// not having noticed.
+	if strings.Contains(out, "pass -catalog") {
+		t.Errorf("it suggests the flag that was already given:\n%s", out)
+	}
+	if !strings.Contains(out, "names no single published version") {
+		t.Errorf("it does not say WHY nothing was pinned:\n%s", out)
+	}
+}
+
+// A catalogue that reads but does not parse is an error, not an empty one.
+// Treating it as "no versions known" would silently fall back to asking about
+// whole packages — the louder answer, which is the one that looks fine.
+func TestVulnFetchRefusesACatalogueItCannotParse(t *testing.T) {
+	url, _ := fetchServer(t, `{"results":[{}]}`)
+	rc, _, errb := vulnfetch(t, "-dir", fetchPantry(t), "-endpoint", url,
+		"-catalog", catalogFile(t, `{"projects": this is not json`))
+	if rc != 2 {
+		t.Errorf("rc = %d, want 2", rc)
+	}
+	if !strings.Contains(errb, "-catalog") {
+		t.Errorf("the error does not name the flag: %s", errb)
+	}
+}

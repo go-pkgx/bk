@@ -60,6 +60,11 @@ type osvRequest struct {
 
 type osvQuery struct {
 	Package osvPackage `json:"package"`
+	// omitempty is what makes the two questions different ones. With a
+	// version OSV returns only the advisories that AFFECT it; without the
+	// field it returns everything the package has ever had. Sending an empty
+	// string is not the second question — it is a version named "".
+	Version string `json:"version,omitempty"`
 }
 
 type osvPackage struct {
@@ -105,12 +110,46 @@ type Finding struct {
 // identical in the response, and conflating them would report 1186 repository
 // identities as "no known vulnerabilities".
 func (c *OSVClient) Ask(ids []Identity) (found []Finding, skipped []Identity, err error) {
-	var ask []Identity
-	for _, id := range ids {
-		if Queryable(id) {
-			ask = append(ask, id)
+	ps := make([]Pinned, len(ids))
+	for i, id := range ids {
+		ps[i] = Pinned{Identity: id}
+	}
+	return c.AskPinned(ps)
+}
+
+// Pinned is an identity AT a version — the thing we actually publish.
+//
+// Separate from Identity rather than a field on it: an identity says WHO a
+// package is, and `versions.Identity` is shared with code that has no version
+// to offer. Conflating them would make every caller answer a question it was
+// not asked.
+//
+// An empty Version means "any version", which is Ask's behaviour and OSV's
+// default.
+type Pinned struct {
+	Identity Identity
+	Version  string
+}
+
+// AskPinned is Ask, told which version of each identity we ship.
+//
+// ⛔ THE TWO ANSWER DIFFERENT QUESTIONS, and the difference is the whole point.
+// Measured over the pkgxdev pantry on 2026-10-17: asking by identity alone
+// returned **748 findings across 21 projects** — every advisory those packages
+// have ever carried, including ones fixed long before the version we publish.
+// A maintainer reading 748 cannot act on it, and a list nobody can act on is
+// read once and then never again.
+//
+// Asking at a version returns only what affects that version, which is a list
+// with a decision behind each line: rebuild, or record a VEX statement saying
+// why not.
+func (c *OSVClient) AskPinned(ps []Pinned) (found []Finding, skipped []Identity, err error) {
+	var ask []Pinned
+	for _, p := range ps {
+		if Queryable(p.Identity) {
+			ask = append(ask, p)
 		} else {
-			skipped = append(skipped, id)
+			skipped = append(skipped, p.Identity)
 		}
 	}
 	for chunk := range slices.Chunk(ask, OSVBatchLimit) {
@@ -135,10 +174,13 @@ func (c *OSVClient) url() string {
 	return c.Endpoint
 }
 
-func (c *OSVClient) askChunk(ids []Identity) ([]Finding, error) {
-	req := osvRequest{Queries: make([]osvQuery, 0, len(ids))}
-	for _, id := range ids {
-		req.Queries = append(req.Queries, osvQuery{Package: osvPackage{Name: id.Name, Ecosystem: id.DB}})
+func (c *OSVClient) askChunk(ps []Pinned) ([]Finding, error) {
+	req := osvRequest{Queries: make([]osvQuery, 0, len(ps))}
+	for _, p := range ps {
+		req.Queries = append(req.Queries, osvQuery{
+			Package: osvPackage{Name: p.Identity.Name, Ecosystem: p.Identity.DB},
+			Version: p.Version,
+		})
 	}
 	// osvRequest holds nothing but strings and a slice of them, so marshalling
 	// it cannot fail — there is no error arm here rather than an unreachable
@@ -168,14 +210,14 @@ func (c *OSVClient) askChunk(ids []Identity) ([]Finding, error) {
 	// in the order asked and says nothing about which query each result
 	// belongs to. A response with fewer results than queries would silently
 	// attribute every finding to the wrong package from that point on.
-	if len(out.Results) != len(ids) {
+	if len(out.Results) != len(ps) {
 		return nil, fmt.Errorf("vuln: osv: asked %d, answered %d — the results are positional and cannot be matched up",
-			len(ids), len(out.Results))
+			len(ps), len(out.Results))
 	}
 	var found []Finding
 	for i, r := range out.Results {
 		for _, v := range r.Vulns {
-			found = append(found, Finding{Identity: ids[i], ID: v.ID, Modified: v.Modified})
+			found = append(found, Finding{Identity: ps[i].Identity, ID: v.ID, Modified: v.Modified})
 		}
 	}
 	return found, nil

@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/vuln"
+	"github.com/go-pkgx/bottle"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,6 +35,8 @@ func runVulnFetch(args []string, stdout, stderr io.Writer) int {
 	write := fset.Bool("write", false, "write detections into the advisory tree instead of only reporting")
 	endpoint := fset.String("endpoint", "", "OSV batch query endpoint (default "+vuln.OSVEndpoint+")")
 	only := fset.String("project", "", "ask about this project alone")
+	catalog := fset.String("catalog", "",
+		"a published catalogue; ask OSV about the version it says we publish, not about the package as a whole")
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
@@ -48,11 +51,37 @@ func runVulnFetch(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
+	pinned, atVersion, code := pinIdentities(*catalog, ids, byIdentity, stderr)
+	if code != 0 {
+		return code
+	}
+
 	client := &vuln.OSVClient{Endpoint: *endpoint}
-	found, skipped, err := client.Ask(ids)
+	found, skipped, err := client.AskPinned(pinned)
 	if err != nil {
 		fmt.Fprintf(stderr, "vulnfetch: %v\n", err)
 		return 1
+	}
+
+	// ⛔ SAY WHICH QUESTION WAS ASKED. Without a catalogue this reports every
+	// advisory a package has ever carried, most of them fixed long before the
+	// version we ship — 748 findings across 21 projects over the pkgxdev
+	// pantry on 2026-10-17, and a list that large with no decision behind any
+	// line is read once and never again. The number means something different
+	// in each mode and the output must not let them be confused.
+	switch {
+	case atVersion > 0:
+		fmt.Fprintf(stdout, "%d of them asked AT the version the catalogue publishes; the rest as a whole package\n", atVersion)
+	case *catalog != "":
+		// ⛔ NOT the "pass -catalog" line: they did. A catalogue that names no
+		// version for anything asked is a different situation from no
+		// catalogue at all, and advice the reader has already followed reads
+		// as the tool not having noticed. Found by a test whose pantry
+		// published two versions behind one identity, so nothing could be
+		// pinned and the suggestion came back anyway.
+		fmt.Fprintf(stdout, "asked about each package AS A WHOLE — %s names no single published version for any identity asked\n", *catalog)
+	default:
+		fmt.Fprintln(stdout, "asked about each package AS A WHOLE — pass -catalog to ask only about the versions we publish")
 	}
 
 	// ⛔ WHAT WAS NOT ASKED, FIRST. OSV cannot answer about a repository, and
@@ -216,4 +245,70 @@ func sortedProjects(m map[string][]vuln.Finding) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// pinIdentities attaches the version the CATALOGUE says we publish to each
+// identity, so OSV is asked about what we ship rather than about the package
+// in the abstract.
+//
+// Without -catalog every identity is asked as a whole package, which is what
+// this command did before and is still the right question when nothing has
+// been published yet.
+//
+// ⛔ AN IDENTITY SHARED BY PROJECTS AT DIFFERENT VERSIONS IS ASKED WITHOUT ONE.
+// Two projects can carry the same upstream identity, and if they publish
+// different versions there is no single version to ask about. Picking either
+// would under-report for the other, and under-reporting is the direction that
+// hides a vulnerability — so the question widens back to the whole package and
+// the count says so.
+func pinIdentities(path string, ids []vuln.Identity, byIdentity map[vuln.Identity][]string, stderr io.Writer) (pinned []vuln.Pinned, atVersion, code int) {
+	out := make([]vuln.Pinned, 0, len(ids))
+	if path == "" {
+		for _, id := range ids {
+			out = append(out, vuln.Pinned{Identity: id})
+		}
+		return out, 0, 0
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "vulnfetch: -catalog: %v\n", err)
+		return nil, 0, 2
+	}
+	cat, err := bottle.UnmarshalCatalog(raw)
+	if err != nil {
+		fmt.Fprintf(stderr, "vulnfetch: -catalog %s: %v\n", path, err)
+		return nil, 0, 2
+	}
+	published := map[string]string{}
+	for _, p := range cat.Projects {
+		if len(p.Versions) > 0 {
+			published[p.Project] = p.Versions[0]
+		}
+	}
+	at := 0
+	for _, id := range ids {
+		v := ""
+		for _, project := range byIdentity[id] {
+			pv := published[project]
+			if pv == "" {
+				continue
+			}
+			if v != "" && v != pv {
+				v = "" // two versions behind one identity: ask about the package
+				break
+			}
+			v = pv
+		}
+		// ⛔ COUNT ONLY WHAT WILL ACTUALLY BE ASKED. The first version of this
+		// counted every pinned identity, including the repository- and
+		// CPE-keyed ones that AskPinned drops before the request — and
+		// printed "1217 of them asked AT the version" one line above "171
+		// identity(ies) asked". A number larger than the total it is a
+		// subset of is not a rounding problem, it is a different population.
+		if v != "" && vuln.Queryable(id) {
+			at++
+		}
+		out = append(out, vuln.Pinned{Identity: id, Version: v})
+	}
+	return out, at, 0
 }
