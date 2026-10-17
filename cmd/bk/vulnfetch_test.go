@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -570,5 +571,99 @@ func TestVulnFetchRefusesACatalogueItCannotParse(t *testing.T) {
 	}
 	if !strings.Contains(errb, "-catalog") {
 		t.Errorf("the error does not name the flag: %s", errb)
+	}
+}
+
+// ⛔ THE GATE IS ON WHAT IS NEW. A job that failed while any finding existed
+// would be red from its first run — 90 of them over the real pantry on
+// 2026-10-17 — and a check that is red every day is one people scroll past.
+// versioncheck on the landing site was red for eight days running for exactly
+// that reason.
+func TestVulnFetchFailsOnAFindingWithNoDecision(t *testing.T) {
+	url, _ := fetchServer(t, `{"results":[{"vulns":[{"id":"RUSTSEC-2021-0106","modified":"2026-02-04T02:31:56Z"}]}]}`)
+	rc, out, errb := vulnfetch(t, "-dir", fetchPantry(t), "-endpoint", url,
+		"-advisories", filepath.Join(t.TempDir(), "adv"), "-fail-on-new")
+	if rc != 1 {
+		t.Fatalf("rc = %d, want 1\nout:\n%s\nerr:\n%s", rc, out, errb)
+	}
+	if !strings.Contains(errb, "no decision") {
+		t.Errorf("the error does not say what is wrong: %s", errb)
+	}
+	// It must say what ENDS it, not only that it failed.
+	if !strings.Contains(errb, "rebuild") || !strings.Contains(errb, "not affected") {
+		t.Errorf("the error does not name either way out: %s", errb)
+	}
+}
+
+// ⛔ AND IT IS GREEN ONCE THE DECISION EXISTS — the half that makes the gate
+// usable. Without this, "fail when anything is found" would pass the test
+// above and be useless in practice.
+func TestVulnFetchIsGreenOnceTheFindingIsRecorded(t *testing.T) {
+	url, _ := fetchServer(t, `{"results":[{"vulns":[{"id":"RUSTSEC-2021-0106","modified":"2026-02-04T02:31:56Z"}]}]}`)
+	adv := filepath.Join(t.TempDir(), "adv")
+	pantry := fetchPantry(t)
+
+	// First pass records it.
+	if rc, out, errb := vulnfetch(t, "-dir", pantry, "-endpoint", url, "-advisories", adv, "-write"); rc != 0 {
+		t.Fatalf("recording: rc = %d\n%s\n%s", rc, out, errb)
+	}
+	// Second pass finds the same thing, now decided, and says so by exiting 0.
+	rc, out, errb := vulnfetch(t, "-dir", pantry, "-endpoint", url, "-advisories", adv, "-fail-on-new")
+	if rc != 0 {
+		t.Fatalf("a recorded finding still failed the gate: rc = %d\n%s\n%s", rc, out, errb)
+	}
+}
+
+// Without the flag it still only reports, whatever it finds — the mode the
+// command had before, kept so a sweep can measure without gating.
+func TestVulnFetchWithoutTheGateStillOnlyReports(t *testing.T) {
+	url, _ := fetchServer(t, `{"results":[{"vulns":[{"id":"RUSTSEC-2021-0106","modified":"2026-02-04T02:31:56Z"}]}]}`)
+	rc, out, _ := vulnfetch(t, "-dir", fetchPantry(t), "-endpoint", url,
+		"-advisories", filepath.Join(t.TempDir(), "adv"))
+	if rc != 0 {
+		t.Fatalf("rc = %d, want 0 without -fail-on-new", rc)
+	}
+	// And it says how many are undecided, which is the number the gate acts on.
+	if !strings.Contains(out, "1 of these are not yet recorded") {
+		t.Errorf("the undecided count is not reported:\n%s", out)
+	}
+}
+
+// ⛔ A REPORT MUST NOT WRITE. Without -write nothing may appear in the
+// advisory tree — not a file, not a directory. Found by a mutation that made
+// the dry path write anyway and which the suite SURVIVED: every other test
+// checked what was printed, and none checked that the tree was left alone.
+//
+// This fleet has shipped that defect before, in an audit that wrote go.sum
+// into two pull requests titled "README only".
+func TestVulnFetchWithoutWriteLeavesTheTreeAlone(t *testing.T) {
+	url, _ := fetchServer(t, `{"results":[{"vulns":[{"id":"RUSTSEC-2021-0106","modified":"2026-02-04T02:31:56Z"}]}]}`)
+	adv := filepath.Join(t.TempDir(), "adv")
+	if err := os.MkdirAll(adv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rc, out, _ := vulnfetch(t, "-dir", fetchPantry(t), "-endpoint", url, "-advisories", adv)
+	if rc != 0 {
+		t.Fatalf("rc = %d", rc)
+	}
+	// A finding was reported, so the write path had something to write.
+	if !strings.Contains(out, "RUSTSEC-2021-0106") {
+		t.Fatalf("no finding to be tempted by:\n%s", out)
+	}
+	var found []string
+	err := filepath.WalkDir(adv, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p != adv {
+			found = append(found, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 0 {
+		t.Errorf("a report wrote into the tree it was reporting on: %v", found)
 	}
 }
