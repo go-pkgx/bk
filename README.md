@@ -797,6 +797,56 @@ It **reports by default**. A sweep that writes on its first run writes whatever
 that run happened to find into files a person then has to audit; and the thing
 worth knowing before writing anything is the scale.
 
+### ⛔ Ask at the version we publish, or the number means nothing
+
+Without `-catalog` the question is about the package **as a whole**, so the
+answer is every advisory it has ever carried — including ones fixed long
+before the version we ship. The two questions over the same pantry, the same
+run, on **2026-10-17**:
+
+```
+$ bk vulnfetch -dir pantry
+171 identity(ies) asked, 1500 not answerable by OSV (repository- or CPE-keyed)
+748 finding(s) across 21 project(s)
+
+$ bk vulnfetch -dir pantry -catalog catalog/darwin-aarch64.json
+137 of them asked AT the version the catalogue publishes; the rest as a whole package
+171 identity(ies) asked, 1500 not answerable by OSV (repository- or CPE-keyed)
+90 finding(s) across 5 project(s)
+```
+
+**658 of the 748 do not affect anything we publish.** A list that large with
+no decision behind any line is read once and then never again. The five that
+remain are a list someone can work.
+
+The output says **which** question it asked, in both modes, because the same
+count means a different thing in each.
+
+⛔ **It will not guess.** Two projects can carry one identity; if they publish
+different versions there is no single version to ask about, and picking either
+would under-report for the other. Under-reporting hides a vulnerability, so
+the question widens back to the whole package and the count says so.
+
+### `-fail-on-new` — a verdict, not just a report
+
+`vulnfetch` returned 0 whatever it found. With `-fail-on-new` it exits
+non-zero when a finding has **no decision recorded** in the advisory tree:
+
+```
+vulnfetch: 1 finding(s) with no decision in advisories —
+  rebuild, or record why the published version is not affected
+```
+
+⛔ **The gate is on what is NEW, not on what exists.** A job that failed while
+any finding existed would be red from its first run — 90 of them on
+2026-10-17 — and a check that is red every day is one people learn to scroll
+past. That is not hypothetical in this fleet: `versioncheck` on the landing
+site was red for eight days running for exactly that reason, fixed by hand
+each time rather than noticed.
+
+Red on something **new** is a question with an answer, and the error names
+both ways out because either one makes it green again.
+
 ### ⛔ OSV cannot be asked about a repository
 
 Measured against the live API on 2026-10-11:
