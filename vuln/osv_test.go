@@ -275,3 +275,65 @@ func TestWhatMergeWritesParsesBack(t *testing.T) {
 // yamlMarshal is the same encoder the sweep uses, named here so the round-trip
 // test above cannot pass by using a different one.
 func yamlMarshal(v any) ([]byte, error) { return yaml.Marshal(v) }
+
+// ⛔ THE VERSION IS WHAT MAKES THE ANSWER ACTIONABLE. Asking by identity alone
+// returns every advisory a package has ever carried: measured over the pkgxdev
+// pantry on 2026-10-17, 748 findings across 21 projects, most of them fixed
+// long before the version we publish. Asking at a version returns the ones a
+// person has to decide about.
+func TestAskPinnedSendsTheVersionWeShip(t *testing.T) {
+	s, asked := osvServer(t, `{"results":[{}]}`)
+	c := &OSVClient{Endpoint: s.URL}
+	_, _, err := c.AskPinned([]Pinned{
+		{Identity: Identity{DB: "npm", Name: "next"}, Version: "14.2.3"},
+	})
+	if err != nil {
+		t.Fatalf("AskPinned: %v", err)
+	}
+	if !strings.Contains(*asked, `"version":"14.2.3"`) {
+		t.Errorf("the request does not carry the version:\n%s", *asked)
+	}
+	if !strings.Contains(*asked, `"name":"next"`) {
+		t.Errorf("the request lost the package:\n%s", *asked)
+	}
+}
+
+// ⛔ AND THE OTHER DIRECTION, which is the half that can rot silently. Ask
+// must send NO version field at all: `"version":""` is not "any version", it
+// is a version named "", and OSV would answer about nothing. omitempty is
+// what makes the two calls different questions, and a test that only checked
+// AskPinned would pass with omitempty deleted.
+func TestAskSendsNoVersionField(t *testing.T) {
+	s, asked := osvServer(t, `{"results":[{}]}`)
+	c := &OSVClient{Endpoint: s.URL}
+	if _, _, err := c.Ask([]Identity{{DB: "npm", Name: "next"}}); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if strings.Contains(*asked, `"version"`) {
+		t.Errorf("Ask sent a version field, so it no longer asks about the package as a whole:\n%s", *asked)
+	}
+}
+
+// An unanswerable identity is dropped before the request here too, and the
+// version does not rescue it: a repository key is unanswerable whatever
+// version is attached.
+func TestAskPinnedStillDropsWhatOSVCannotAnswer(t *testing.T) {
+	s, asked := osvServer(t, `{"results":[{}]}`)
+	c := &OSVClient{Endpoint: s.URL}
+	found, skipped, err := c.AskPinned([]Pinned{
+		{Identity: Identity{DB: "npm", Name: "next"}, Version: "14.2.3"},
+		{Identity: Identity{DB: "GitHub", Name: "curl/curl"}, Version: "8.20.0"},
+	})
+	if err != nil {
+		t.Fatalf("AskPinned: %v", err)
+	}
+	if len(found) != 0 {
+		t.Errorf("found = %v", found)
+	}
+	if len(skipped) != 1 || skipped[0].Name != "curl/curl" {
+		t.Errorf("skipped = %v, want the repository identity alone", skipped)
+	}
+	if strings.Contains(*asked, "curl/curl") {
+		t.Errorf("an unanswerable identity was sent anyway:\n%s", *asked)
+	}
+}
