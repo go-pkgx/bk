@@ -37,6 +37,8 @@ func runVulnFetch(args []string, stdout, stderr io.Writer) int {
 	only := fset.String("project", "", "ask about this project alone")
 	catalog := fset.String("catalog", "",
 		"a published catalogue; ask OSV about the version it says we publish, not about the package as a whole")
+	failOnNew := fset.Bool("fail-on-new", false,
+		"exit non-zero when a finding has no decision recorded in the advisory tree")
 	if err := fset.Parse(args); err != nil {
 		return 2
 	}
@@ -105,13 +107,32 @@ func runVulnFetch(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "    %-24s %s:%s\n", f.ID, f.Identity.DB, f.Identity.Name)
 		}
 	}
-	if !*write {
-		if len(found) > 0 {
-			fmt.Fprintln(stdout, "nothing written — pass -write to record these as detections")
-		}
-		return 0
+	// The merge runs in BOTH modes, writing only under -write. Counting what
+	// is new is the same work as recording it, and doing it only on the write
+	// path is what made this command a report with no verdict: 90 findings
+	// printed, every one of them already triaged or not, and no way to tell
+	// which without reading the tree by hand.
+	unrecorded, code := recordDetections(*out, perProject, !*write, stdout, stderr)
+	if code != 0 {
+		return code
 	}
-	return recordDetections(*out, perProject, stdout, stderr)
+	if !*write && len(found) > 0 {
+		fmt.Fprintf(stdout, "nothing written — %d of these are not yet recorded; pass -write to record them as detections\n", unrecorded)
+	}
+	// ⛔ THE GATE IS ON WHAT IS NEW, NOT ON WHAT EXISTS. A job that failed
+	// while any finding existed would be red from its first run — 90 of them
+	// on 2026-10-17 — and a check that is red every day is one people learn
+	// to scroll past. That is not hypothetical here: versioncheck on the
+	// landing site was red for eight days running for exactly that reason.
+	//
+	// Red on something NEW is a question with an answer: rebuild, or record
+	// why the bottle is not affected. Both make it green again.
+	if *failOnNew && unrecorded > 0 {
+		fmt.Fprintf(stderr, "vulnfetch: %d finding(s) with no decision in %s — rebuild, or record why the published version is not affected\n",
+			unrecorded, *out)
+		return 1
+	}
+	return 0
 }
 
 // loadIdentityTable reads the optional table, or returns the exit code.
@@ -182,7 +203,13 @@ func pantryIdentities(dir, only string, tab *vuln.Table, stdout, stderr io.Write
 }
 
 // recordDetections merges the findings into each project's advisory file.
-func recordDetections(out string, perProject map[string][]vuln.Finding, stdout, stderr io.Writer) int {
+// recordDetections merges every finding into the advisory tree and returns how
+// many were NOT already there.
+//
+// With dry set it does the same merge in memory and writes nothing — the count
+// is the point, and computing it any other way would be a second definition of
+// "already recorded" that could disagree with the one that writes.
+func recordDetections(out string, perProject map[string][]vuln.Finding, dry bool, stdout, stderr io.Writer) (int, int) {
 	now := time.Now().UTC().Truncate(time.Second)
 	added, touched := 0, 0
 	for _, project := range sortedProjects(perProject) {
@@ -190,10 +217,15 @@ func recordDetections(out string, perProject map[string][]vuln.Finding, stdout, 
 		f, err := loadOrCreate(path, project)
 		if err != nil {
 			fmt.Fprintf(stderr, "vulnfetch: %s: %v\n", project, err)
-			return 1
+			return 0, 1
 		}
 		n := vuln.MergeDetections(f, perProject[project], now)
 		if n == 0 {
+			continue
+		}
+		added += n
+		touched++
+		if dry {
 			continue
 		}
 		// An AdvisoryFile holds strings, ints and time.Time, all of which
@@ -202,17 +234,17 @@ func recordDetections(out string, perProject map[string][]vuln.Finding, stdout, 
 		b, _ := yaml.Marshal(f)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			fmt.Fprintf(stderr, "vulnfetch: %v\n", err)
-			return 1
+			return 0, 1
 		}
 		if err := os.WriteFile(path, b, 0o644); err != nil {
 			fmt.Fprintf(stderr, "vulnfetch: %v\n", err)
-			return 1
+			return 0, 1
 		}
-		added += n
-		touched++
 	}
-	fmt.Fprintf(stdout, "%d detection(s) written across %d file(s)\n", added, touched)
-	return 0
+	if !dry {
+		fmt.Fprintf(stdout, "%d detection(s) written across %d file(s)\n", added, touched)
+	}
+	return added, 0
 }
 
 // loadOrCreate reads a project's advisory file, or returns an empty one.
