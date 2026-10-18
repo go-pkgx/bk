@@ -108,6 +108,24 @@ type Event struct {
 	Type      string    `yaml:"type"`
 	// FixedVersion is required by, and only meaningful for, EventFixed.
 	FixedVersion string `yaml:"fixed-version,omitempty"`
+	// DetectedVersion is the version WE PUBLISH that the database was asked
+	// about, and it is only meaningful for EventDetection.
+	//
+	// ⛔ WITHOUT IT A DECISION OUTLIVES ITS SUBJECT. A purl names a version,
+	// so the OpenVEX document we publish is a statement ABOUT a version —
+	// while a `false-positive-determination` carries none and therefore
+	// reads as "not affected, full stop". Determine that for 1.0.0, publish
+	// 2.0.0, and the same record re-emits `not_affected` about a version
+	// nobody examined. Practitioner guidance on VEX is explicit that a
+	// "not affected" goes stale when the component changes and that a gate
+	// should re-check rather than treat it as permanent; an unjustified or
+	// stale one is worse than issuing nothing, because it stops the reader
+	// looking. See go-pkgx/bk#340.
+	//
+	// Recorded on the DETECTION, which is the event that has a question
+	// behind it. Scoping the determination itself would change what our VEX
+	// promises, and that is a decision #340 leaves open.
+	DetectedVersion string `yaml:"detected-version,omitempty"`
 	// Justification is required by, and only meaningful for,
 	// EventFalsePositive. One of vexJustifications.
 	Justification string `yaml:"justification,omitempty"`
