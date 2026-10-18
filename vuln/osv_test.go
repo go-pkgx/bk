@@ -337,3 +337,109 @@ func TestAskPinnedStillDropsWhatOSVCannotAnswer(t *testing.T) {
 		t.Errorf("an unanswerable identity was sent anyway:\n%s", *asked)
 	}
 }
+
+func detectedAt(f *AdvisoryFile, id string) []string {
+	var out []string
+	for _, a := range f.Advisories {
+		if a.ID != id {
+			continue
+		}
+		for _, e := range a.Events {
+			if e.Type == EventDetection {
+				out = append(out, e.DetectedVersion)
+			}
+		}
+	}
+	return out
+}
+
+// ⛔ A DECISION TAKEN ABOUT ONE VERSION SAYS NOTHING ABOUT THE NEXT.
+//
+// A purl names a version, so the OpenVEX document is a statement ABOUT a
+// version — while a false-positive-determination carries none. Determine it
+// for 1.0.0, publish 2.0.0, and the same record re-emits `not_affected`
+// about a version nobody examined (go-pkgx/bk#340).
+func TestMergeDetectsAgainWhenThePublishedVersionChanges(t *testing.T) {
+	now := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	f := &AdvisoryFile{Project: "crates.io/demo", Advisories: []Advisory{{
+		ID: "CVE-2026-0001",
+		Events: []Event{
+			{Timestamp: now.Add(-48 * time.Hour), Type: EventDetection, DetectedVersion: "1.0.0"},
+			{Timestamp: now.Add(-24 * time.Hour), Type: EventFalsePositive, Justification: "component_not_present"},
+		},
+	}}}
+	id := Identity{DB: "crates.io", Name: "demo"}
+
+	// Same version: nothing new, the decision stands.
+	if n := MergeDetections(f, []Finding{{Identity: id, ID: "CVE-2026-0001", Version: "1.0.0"}}, now); n != 0 {
+		t.Errorf("re-detected a version already examined: n=%d", n)
+	}
+	// A DIFFERENT published version: detected again.
+	if n := MergeDetections(f, []Finding{{Identity: id, ID: "CVE-2026-0001", Version: "2.0.0"}}, now); n != 1 {
+		t.Fatalf("a new published version was not re-detected: n=%d", n)
+	}
+	if got := detectedAt(f, "CVE-2026-0001"); len(got) != 2 || got[1] != "2.0.0" {
+		t.Errorf("detections = %v, want the new version recorded", got)
+	}
+	// ⛔ ONE RECORD, not two: every reader assumes one advisory per id, and
+	// the OpenVEX emitter would otherwise publish two statements for one
+	// vulnerability.
+	if len(f.Advisories) != 1 {
+		t.Errorf("%d advisories for one id", len(f.Advisories))
+	}
+}
+
+// ⛔ A RECORD WRITTEN BEFORE THE FIELD EXISTED KEEPS THE OLD BEHAVIOUR.
+//
+// Treating "names no version" as "does not cover 2.0.0" would re-detect every
+// legacy record on the first scan — 90 of them over the real pantry — and a
+// gate that goes red for everything at once is one people learn to scroll
+// past. It grows into the new behaviour the first time something is detected
+// at a version.
+func TestMergeLeavesALegacyRecordAlone(t *testing.T) {
+	now := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	f := &AdvisoryFile{Project: "crates.io/demo", Advisories: []Advisory{{
+		ID:     "CVE-2026-0002",
+		Events: []Event{{Timestamp: now.Add(-time.Hour), Type: EventDetection}}, // no version
+	}}}
+	id := Identity{DB: "crates.io", Name: "demo"}
+	if n := MergeDetections(f, []Finding{{Identity: id, ID: "CVE-2026-0002", Version: "9.9.9"}}, now); n != 0 {
+		t.Errorf("a legacy record was re-detected: n=%d", n)
+	}
+}
+
+// Asking about the package as a whole carries no version, so there is nothing
+// to compare and the id alone decides — the behaviour before #335.
+func TestMergeWithNoVersionIsIdOnly(t *testing.T) {
+	now := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	f := &AdvisoryFile{Project: "crates.io/demo", Advisories: []Advisory{{
+		ID:     "CVE-2026-0003",
+		Events: []Event{{Timestamp: now.Add(-time.Hour), Type: EventDetection, DetectedVersion: "1.0.0"}},
+	}}}
+	id := Identity{DB: "crates.io", Name: "demo"}
+	if n := MergeDetections(f, []Finding{{Identity: id, ID: "CVE-2026-0003"}}, now); n != 0 {
+		t.Errorf("a version-less question re-detected a scoped record: n=%d", n)
+	}
+}
+
+// A re-detection under an ALIAS joins the record it belongs to. OSV returns
+// the same vulnerability under whichever name the database it came from
+// uses, and filing it separately would give one vulnerability two records.
+func TestMergeFilesAReDetectionUnderItsAlias(t *testing.T) {
+	now := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	f := &AdvisoryFile{Project: "crates.io/demo", Advisories: []Advisory{{
+		ID:      "CVE-2026-0004",
+		Aliases: []string{"GHSA-xxxx-yyyy-zzzz"},
+		Events:  []Event{{Timestamp: now.Add(-time.Hour), Type: EventDetection, DetectedVersion: "1.0.0"}},
+	}}}
+	id := Identity{DB: "crates.io", Name: "demo"}
+	if n := MergeDetections(f, []Finding{{Identity: id, ID: "GHSA-xxxx-yyyy-zzzz", Version: "2.0.0"}}, now); n != 1 {
+		t.Fatalf("n=%d", n)
+	}
+	if len(f.Advisories) != 1 {
+		t.Errorf("the alias made a second record: %d advisories", len(f.Advisories))
+	}
+	if got := detectedAt(f, "CVE-2026-0004"); len(got) != 2 || got[1] != "2.0.0" {
+		t.Errorf("detections = %v", got)
+	}
+}

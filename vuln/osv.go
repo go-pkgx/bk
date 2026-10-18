@@ -99,6 +99,10 @@ type Finding struct {
 	Identity Identity
 	ID       string
 	Modified string
+	// Version is the published version the question was asked AT, empty when
+	// the question was about the package as a whole. It is what lets a
+	// detection say which version it is about — see Event.DetectedVersion.
+	Version string
 }
 
 // Ask returns what OSV knows about each identity, in one request per
@@ -217,7 +221,7 @@ func (c *OSVClient) askChunk(ps []Pinned) ([]Finding, error) {
 	var found []Finding
 	for i, r := range out.Results {
 		for _, v := range r.Vulns {
-			found = append(found, Finding{Identity: ps[i].Identity, ID: v.ID, Modified: v.Modified})
+			found = append(found, Finding{Identity: ps[i].Identity, ID: v.ID, Modified: v.Modified, Version: ps[i].Version})
 		}
 	}
 	return found, nil
@@ -232,32 +236,98 @@ func (c *OSVClient) askChunk(ps []Pinned) ([]Finding, error) {
 // `under_investigation` on every run, and the triage would never converge. The
 // id is also checked against every advisory's ALIASES, because a record filed
 // under its CVE is the same record OSV returns under a GHSA.
+// ⛔ AND A KNOWN ID IS DETECTED AGAIN WHEN THE PUBLISHED VERSION CHANGES,
+// because a decision taken about one version says nothing about the next —
+// go-pkgx/bk#340. The new detection carries the version, so the next reader
+// can see which one was examined.
+//
+// Only when the record ALREADY names versions. A record written before this
+// field existed names none, and treating that as "no event covers 2.0.0"
+// would re-detect every one of them on the first scan — 90 findings going
+// red at once, which is how a gate teaches people to ignore it. Such a
+// record keeps the old id-only behaviour and grows into the new one the
+// first time something is detected at a version.
 func MergeDetections(f *AdvisoryFile, found []Finding, now time.Time) int {
 	known := map[string]bool{}
+	// versionsSeen[id] is the set of published versions already recorded for
+	// it, and scoped[id] says whether the record names any version at all.
+	versionsSeen := map[string]map[string]bool{}
+	scoped := map[string]bool{}
+	note := func(id string, a Advisory) {
+		known[id] = true
+		if versionsSeen[id] == nil {
+			versionsSeen[id] = map[string]bool{}
+		}
+		for _, e := range a.Events {
+			if e.DetectedVersion != "" {
+				versionsSeen[id][e.DetectedVersion] = true
+				scoped[id] = true
+			}
+		}
+	}
 	for _, a := range f.Advisories {
-		known[a.ID] = true
+		note(a.ID, a)
 		for _, al := range a.Aliases {
-			known[al] = true
+			note(al, a)
 		}
 	}
 	added := 0
 	for _, fi := range found {
-		if known[fi.ID] {
+		switch {
+		case !known[fi.ID]:
+			// New id: recorded as before, now carrying its version.
+		case fi.Version == "" || !scoped[fi.ID] || versionsSeen[fi.ID][fi.Version]:
+			// Known, and either the question had no version, or the record
+			// predates versions, or this exact version is already covered.
 			continue
 		}
 		known[fi.ID] = true
-		f.Advisories = append(f.Advisories, Advisory{
-			ID: fi.ID,
-			Events: []Event{{
-				Timestamp: now.UTC(),
-				Type:      EventDetection,
-				// WHICH KEY produced the hit. With two identities per project
-				// this is not recoverable afterwards, and it is the first
-				// thing a person triaging the finding needs.
-				Note: "reported by OSV for " + fi.Identity.DB + ":" + fi.Identity.Name,
-			}},
-		})
+		if versionsSeen[fi.ID] == nil {
+			versionsSeen[fi.ID] = map[string]bool{}
+		}
+		if fi.Version != "" {
+			versionsSeen[fi.ID][fi.Version] = true
+			scoped[fi.ID] = true
+		}
+		ev := Event{
+			Timestamp: now.UTC(),
+			Type:      EventDetection,
+			// WHICH KEY produced the hit. With two identities per project
+			// this is not recoverable afterwards, and it is the first
+			// thing a person triaging the finding needs.
+			Note:            "reported by OSV for " + fi.Identity.DB + ":" + fi.Identity.Name,
+			DetectedVersion: fi.Version,
+		}
+		// ⛔ A SECOND EVENT ON THE EXISTING RECORD, never a second record.
+		// One advisory per id is what every reader assumes — the OpenVEX
+		// emitter walks the list and would produce two statements for one
+		// vulnerability. A re-detection is a new thing that HAPPENED to a
+		// known vulnerability, which is exactly what an event list is for.
+		if i := indexOfAdvisory(f.Advisories, fi.ID); i >= 0 {
+			f.Advisories[i].Events = append(f.Advisories[i].Events, ev)
+		} else {
+			f.Advisories = append(f.Advisories, Advisory{ID: fi.ID, Events: []Event{ev}})
+		}
 		added++
 	}
 	return added
+}
+
+// indexOfAdvisory finds a record by its id OR by one of its aliases, because
+// OSV can return the same vulnerability under a different name than the one
+// it was first filed under — which is why MergeDetections indexes aliases
+// too. Looking it up by id alone would file the re-detection as a new record
+// under the alias, and one vulnerability would have two.
+func indexOfAdvisory(as []Advisory, id string) int {
+	for i, a := range as {
+		if a.ID == id {
+			return i
+		}
+		for _, al := range a.Aliases {
+			if al == id {
+				return i
+			}
+		}
+	}
+	return -1
 }
