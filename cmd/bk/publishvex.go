@@ -74,7 +74,11 @@ func vexReferrer(dir, project, version, osn, arch string, tarball []byte, now ti
 			// Bound to the tarball DIGEST, the same anchor the SBOM, the
 			// provenance and the cosign payload use. Four attestations about
 			// one artefact, not four descriptions that happen to agree.
-			Products: []vuln.Product{{ID: purl, PURL: purl, SHA256: dg}},
+			// Version as well as the purl that already spells it: the encoder
+			// decides from this field whether the record has anything to say
+			// about THIS bottle, and a check that re-parsed the purl would be
+			// a second spelling of the same fact (go-pkgx/bk#340).
+			Products: []vuln.Product{{ID: purl, Version: version, PURL: purl, SHA256: dg}},
 		}},
 	})
 	if err != nil {

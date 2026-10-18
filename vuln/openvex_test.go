@@ -28,9 +28,15 @@ func opts(subjects ...Subject) VEXOptions {
 
 const product = "pkg:oci/openssl@sha256:abc?repository_url=ghcr.io/go-pkgx/openssl.org&tag=3.5.8_1--linux-x86-64"
 
+// productVersion is the version `product` is a bottle of. It is a constant
+// rather than a literal in each fixture because the scoping rule compares it
+// against what a record names, and two spellings of "the version under test"
+// would make a failure look like a disagreement about the rule.
+const productVersion = "3.5.8_1"
+
 // prod is the one-product case, named only so the tests that do not care about
 // identifiers or hashes stay about what they test.
-func prod(id string) []Product { return []Product{{ID: id}} }
+func prod(id string) []Product { return []Product{{ID: id, Version: productVersion}} }
 
 // The document carries the five fields the spec marks required, and the
 // context names the VERSION — the spec says an omitted version defaults to
@@ -107,9 +113,10 @@ advisories:
         fixed-version: 3.5.8_1
 `)
 	b, err := EncodeVEX(opts(Subject{File: f, Products: []Product{{
-		ID:     "pkg:pkgx/openssl.org@3.5.8_1",
-		PURL:   "pkg:pkgx/openssl.org@3.5.8_1",
-		SHA256: "deadbeef",
+		ID:      "pkg:pkgx/openssl.org@3.5.8_1",
+		Version: productVersion,
+		PURL:    "pkg:pkgx/openssl.org@3.5.8_1",
+		SHA256:  "deadbeef",
 	}}}))
 	if err != nil {
 		t.Fatalf("EncodeVEX: %v", err)
@@ -183,6 +190,9 @@ project: openssl.org
 advisories:
   - id: CVE-2026-0002
     events:
+      - timestamp: 2026-10-10T11:00:00Z
+        type: detection
+        detected-version: 3.5.8_1
       - timestamp: 2026-10-10T12:00:00Z
         type: false-positive-determination
         justification: vulnerable_code_not_present
@@ -410,7 +420,7 @@ func TestAnUnmappedEventTypeIsRefused(t *testing.T) {
 		ID:     "CVE-1",
 		Events: []Event{{Timestamp: time.Now(), Type: "invented-later"}},
 	}
-	if _, err := statementFor(a, prod(product)); err == nil || !strings.Contains(err.Error(), "maps to no VEX status") {
+	if _, err := statementsFor(a, prod(product)); err == nil || !strings.Contains(err.Error(), "maps to no VEX status") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -464,5 +474,263 @@ advisories:
 	}
 	if !strings.Contains(string(full), "Document Creator") || !strings.Contains(string(full), "\"tooling\": \"bk\"") {
 		t.Errorf("set optional fields were dropped:\n%s", full)
+	}
+}
+
+// --- #340: a statement names a version, so a decision about one version is
+// not restated about another ---
+
+// vexStatements decodes the fields the scoping tests care about, in order.
+func vexStatements(t *testing.T, b []byte) []struct {
+	Status          string `json:"status"`
+	Justification   string `json:"justification"`
+	ImpactStatement string `json:"impact_statement"`
+	StatusNotes     string `json:"status_notes"`
+	Products        []struct {
+		ID string `json:"@id"`
+	} `json:"products"`
+} {
+	t.Helper()
+	var doc struct {
+		Statements []struct {
+			Status          string `json:"status"`
+			Justification   string `json:"justification"`
+			ImpactStatement string `json:"impact_statement"`
+			StatusNotes     string `json:"status_notes"`
+			Products        []struct {
+				ID string `json:"@id"`
+			} `json:"products"`
+		} `json:"statements"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("the document is not JSON: %v\n%s", err, b)
+	}
+	return doc.Statements
+}
+
+// determined is a record whose false-positive determination follows a
+// detection taken at `at`.
+func determined(t *testing.T, at string) *AdvisoryFile {
+	t.Helper()
+	return mustParse(t, `schema-version: 1
+project: demo
+advisories:
+  - id: CVE-2026-0001
+    events:
+      - timestamp: 2026-10-10T11:00:00Z
+        type: detection
+        detected-version: `+at+`
+      - timestamp: 2026-10-10T12:00:00Z
+        type: false-positive-determination
+        justification: component_not_present
+        note: the affected release was withdrawn upstream
+`)
+}
+
+func at(version string) []Product {
+	return []Product{{ID: "pkg:pkgx/demo@" + version, Version: version}}
+}
+
+// The version that WAS examined keeps its determination, justification and
+// prose. This is the row that makes the next test mean something: without it,
+// a rule that downgraded everything would pass just as well.
+func TestADeterminationHoldsForTheVersionItWasMadeAbout(t *testing.T) {
+	b, err := EncodeVEX(opts(Subject{File: determined(t, "1.0.0"), Products: at("1.0.0")}))
+	if err != nil {
+		t.Fatalf("EncodeVEX: %v", err)
+	}
+	sts := vexStatements(t, b)
+	if len(sts) != 1 {
+		t.Fatalf("%d statement(s), want 1:\n%s", len(sts), b)
+	}
+	if sts[0].Status != VEXNotAffected {
+		t.Errorf("status = %q, want %q", sts[0].Status, VEXNotAffected)
+	}
+	if sts[0].Justification != "component_not_present" {
+		t.Errorf("justification = %q", sts[0].Justification)
+	}
+	if sts[0].StatusNotes != "" {
+		t.Errorf("an undowngraded statement carries a downgrade note: %q", sts[0].StatusNotes)
+	}
+}
+
+// ⛔ THE DEFECT. A determination made about 1.0.0 must not reach 2.0.0 — and
+// neither must the justification or the prose, which are the two fields that
+// would put the reassurance back in by the side door.
+func TestADeterminationDoesNotReachAVersionNobodyExamined(t *testing.T) {
+	b, err := EncodeVEX(opts(Subject{File: determined(t, "1.0.0"), Products: at("2.0.0")}))
+	if err != nil {
+		t.Fatalf("EncodeVEX: %v", err)
+	}
+	sts := vexStatements(t, b)
+	if len(sts) != 1 {
+		t.Fatalf("%d statement(s), want 1:\n%s", len(sts), b)
+	}
+	s := sts[0]
+	if s.Status != VEXUnderInvestigation {
+		t.Errorf("status = %q, want %q — 2.0.0 was never examined", s.Status, VEXUnderInvestigation)
+	}
+	if s.Justification != "" || s.ImpactStatement != "" {
+		t.Errorf("the determination's reasoning travelled onto an unexamined version: %+v", s)
+	}
+	// The note has to say what WAS examined, or "under investigation" reads
+	// as "nobody has got to it yet" — which is not what happened.
+	for _, want := range []string{"1.0.0", "2.0.0", "not_affected"} {
+		if !strings.Contains(s.StatusNotes, want) {
+			t.Errorf("status_notes %q does not mention %q", s.StatusNotes, want)
+		}
+	}
+}
+
+// A record that names no version anywhere says nothing about the artefact in
+// hand. Silence is not consent: every record written before detections
+// carried versions is in exactly this state.
+func TestADeterminationWithNoVersionAnywhereReachesNothing(t *testing.T) {
+	f := mustParse(t, `schema-version: 1
+project: demo
+advisories:
+  - id: CVE-2026-0001
+    events:
+      - timestamp: 2026-10-10T12:00:00Z
+        type: false-positive-determination
+        justification: component_not_present
+`)
+	b, err := EncodeVEX(opts(Subject{File: f, Products: at("1.0.0")}))
+	if err != nil {
+		t.Fatalf("EncodeVEX: %v", err)
+	}
+	sts := vexStatements(t, b)
+	if sts[0].Status != VEXUnderInvestigation {
+		t.Errorf("status = %q, want %q", sts[0].Status, VEXUnderInvestigation)
+	}
+	if !strings.Contains(sts[0].StatusNotes, "no event in it names a version") {
+		t.Errorf("status_notes = %q", sts[0].StatusNotes)
+	}
+}
+
+// `fixed` is silenced for the same reason `not_affected` is: it tells a reader
+// this artefact carries the fix, and saying that about a version nobody
+// examined is the same false reassurance in a different word.
+func TestFixedDoesNotReachAVersionNobodyExamined(t *testing.T) {
+	f := mustParse(t, `schema-version: 1
+project: demo
+advisories:
+  - id: CVE-2026-0001
+    events:
+      - timestamp: 2026-10-10T12:00:00Z
+        type: fixed
+        fixed-version: 1.0.0_1
+`)
+	// The version the fix landed in keeps its statement...
+	b, err := EncodeVEX(opts(Subject{File: f, Products: at("1.0.0_1")}))
+	if err != nil {
+		t.Fatalf("EncodeVEX: %v", err)
+	}
+	if got := vexStatements(t, b)[0].Status; got != VEXFixed {
+		t.Errorf("status for the fixed version = %q, want %q", got, VEXFixed)
+	}
+	// ...and a different one does not.
+	b, err = EncodeVEX(opts(Subject{File: f, Products: at("0.9.0")}))
+	if err != nil {
+		t.Fatalf("EncodeVEX: %v", err)
+	}
+	if got := vexStatements(t, b)[0].Status; got != VEXUnderInvestigation {
+		t.Errorf("status for an unexamined version = %q, want %q", got, VEXUnderInvestigation)
+	}
+}
+
+// ⛔ THE CONTROL IN THE OTHER DIRECTION. `affected` is NOT downgraded.
+// Restating it for an unexamined version over-warns; downgrading it would
+// turn a warning into "we are looking into it", and nothing should ever move
+// that way by itself.
+func TestAffectedIsNotDowngradedForAnUnexaminedVersion(t *testing.T) {
+	f := mustParse(t, `schema-version: 1
+project: demo
+advisories:
+  - id: CVE-2026-0001
+    events:
+      - timestamp: 2026-10-10T11:00:00Z
+        type: detection
+        detected-version: 1.0.0
+      - timestamp: 2026-10-10T12:00:00Z
+        type: true-positive-determination
+`)
+	b, err := EncodeVEX(opts(Subject{File: f, Products: at("2.0.0")}))
+	if err != nil {
+		t.Fatalf("EncodeVEX: %v", err)
+	}
+	s := vexStatements(t, b)[0]
+	if s.Status != VEXAffected {
+		t.Errorf("status = %q, want %q — a warning must not weaken on its own", s.Status, VEXAffected)
+	}
+}
+
+// Two products of different versions under one record cannot share one
+// status. Before #340 this function returned a single statement, which is
+// what made the wrong answer unavoidable rather than merely possible.
+func TestTwoVersionsUnderOneRecordGetTwoStatements(t *testing.T) {
+	b, err := EncodeVEX(opts(Subject{
+		File: determined(t, "1.0.0"),
+		Products: []Product{
+			{ID: "pkg:pkgx/demo@1.0.0", Version: "1.0.0"},
+			{ID: "pkg:pkgx/demo@2.0.0", Version: "2.0.0"},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("EncodeVEX: %v", err)
+	}
+	sts := vexStatements(t, b)
+	if len(sts) != 2 {
+		t.Fatalf("%d statement(s), want 2:\n%s", len(sts), b)
+	}
+	if sts[0].Status != VEXNotAffected || len(sts[0].Products) != 1 || sts[0].Products[0].ID != "pkg:pkgx/demo@1.0.0" {
+		t.Errorf("first statement = %+v", sts[0])
+	}
+	if sts[1].Status != VEXUnderInvestigation || len(sts[1].Products) != 1 || sts[1].Products[0].ID != "pkg:pkgx/demo@2.0.0" {
+		t.Errorf("second statement = %+v", sts[1])
+	}
+}
+
+// A product with no version is refused, not assumed. The alternatives were to
+// assert anyway — the defect — or to downgrade silently, which would empty
+// the documents of a caller that had merely not been updated.
+func TestAProductWithNoVersionIsRefused(t *testing.T) {
+	_, err := EncodeVEX(opts(Subject{
+		File:     determined(t, "1.0.0"),
+		Products: []Product{{ID: "pkg:pkgx/demo@1.0.0"}},
+	}))
+	if err == nil {
+		t.Fatal("accepted a product with no version")
+	}
+	for _, want := range []string{"demo", "pkg:pkgx/demo@1.0.0", "no version"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// Splitting one record into two statements must not cost determinism: the
+// same input still has to produce the same bytes, or a re-push of an
+// unchanged bottle would attach a second referrer beside the first.
+func TestASplitDocumentIsStillByteStable(t *testing.T) {
+	mk := func() ([]byte, error) {
+		return EncodeVEX(opts(Subject{
+			File: determined(t, "1.0.0"),
+			Products: []Product{
+				{ID: "pkg:pkgx/demo@1.0.0", Version: "1.0.0"},
+				{ID: "pkg:pkgx/demo@2.0.0", Version: "2.0.0"},
+			},
+		}))
+	}
+	one, err := mk()
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := mk()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(one) != string(two) {
+		t.Errorf("two encodings of one input differ:\n%s\n%s", one, two)
 	}
 }
