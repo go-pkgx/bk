@@ -53,7 +53,7 @@ func runVulnFetch(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	pinned, atVersion, code := pinIdentities(*catalog, ids, byIdentity, stderr)
+	pinned, atVersion, unpublished, code := pinIdentities(*catalog, ids, byIdentity, stderr)
 	if code != 0 {
 		return code
 	}
@@ -85,14 +85,34 @@ func runVulnFetch(args []string, stdout, stderr io.Writer) int {
 	default:
 		fmt.Fprintln(stdout, "asked about each package AS A WHOLE — pass -catalog to ask only about the versions we publish")
 	}
+	// ⛔ OUTSIDE THE SWITCH, so the loudest case is not also the quietest.
+	//
+	// A project the catalogue gives no version for is not published on this
+	// platform, and a vulnerability in it is not a finding about us — the
+	// first run with -catalog reported "90 finding(s) across 5 project(s)"
+	// and every one of the five answered `no bottle here`. Right figures,
+	// different meaning.
+	//
+	// But narrowing a scan is only honest if the count says by how much.
+	// Written inside the `atVersion > 0` arm, as it was first, this line
+	// vanished exactly when EVERYTHING was skipped — the case a reader most
+	// needs told, and the one a test caught.
+	if unpublished > 0 {
+		fmt.Fprintf(stdout, "%d identity(ies) NOT asked: %s publishes no version of them for this platform\n", unpublished, *catalog)
+	}
 
 	// ⛔ WHAT WAS NOT ASKED, FIRST. OSV cannot answer about a repository, and
 	// an unasked question looks exactly like a clean answer. Measured: 1186 of
 	// this pantry's identities are repository-keyed, so a sweep that stayed
 	// quiet about them would report "no known vulnerabilities" for three
 	// quarters of the fleet.
+	// ⛔ COUNTED AGAINST `pinned`, NOT `ids`. Once an identity can be dropped
+	// before AskPinned sees it, `skipped` comes from a SMALLER population
+	// than `ids`, and len(ids)-len(skipped) overstates: the first run of the
+	// skip printed "589 identity(ies) asked" where 137 were. Same arithmetic
+	// mistake as the "1217 of 171" one below, in the other direction.
 	fmt.Fprintf(stdout, "%d identity(ies) asked, %d not answerable by OSV (repository- or CPE-keyed)\n",
-		len(ids)-len(skipped), len(skipped))
+		len(pinned)-len(skipped), len(skipped))
 
 	perProject := map[string][]vuln.Finding{}
 	for _, f := range found {
@@ -293,23 +313,23 @@ func sortedProjects(m map[string][]vuln.Finding) []string {
 // would under-report for the other, and under-reporting is the direction that
 // hides a vulnerability — so the question widens back to the whole package and
 // the count says so.
-func pinIdentities(path string, ids []vuln.Identity, byIdentity map[vuln.Identity][]string, stderr io.Writer) (pinned []vuln.Pinned, atVersion, code int) {
+func pinIdentities(path string, ids []vuln.Identity, byIdentity map[vuln.Identity][]string, stderr io.Writer) (pinned []vuln.Pinned, atVersion, unpublished, code int) {
 	out := make([]vuln.Pinned, 0, len(ids))
 	if path == "" {
 		for _, id := range ids {
 			out = append(out, vuln.Pinned{Identity: id})
 		}
-		return out, 0, 0
+		return out, 0, 0, 0
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(stderr, "vulnfetch: -catalog: %v\n", err)
-		return nil, 0, 2
+		return nil, 0, 0, 2
 	}
 	cat, err := bottle.UnmarshalCatalog(raw)
 	if err != nil {
 		fmt.Fprintf(stderr, "vulnfetch: -catalog %s: %v\n", path, err)
-		return nil, 0, 2
+		return nil, 0, 0, 2
 	}
 	published := map[string]string{}
 	for _, p := range cat.Projects {
@@ -320,16 +340,35 @@ func pinIdentities(path string, ids []vuln.Identity, byIdentity map[vuln.Identit
 	at := 0
 	for _, id := range ids {
 		v := ""
+		// ⛔ TWO REASONS FOR AN EMPTY VERSION, AND THEY ARE NOT THE SAME.
+		// Nothing published for this platform means the project is out of
+		// scope here; two projects disagreeing about the version means there
+		// is no single one to ask about and the question must widen. Treating
+		// both as "ask about the whole package" is what made the first run
+		// report 90 findings across 5 projects that this platform does not
+		// carry — figures that were right and meant something else.
+		anyPublished, conflict := false, false
 		for _, project := range byIdentity[id] {
 			pv := published[project]
 			if pv == "" {
 				continue
 			}
+			anyPublished = true
 			if v != "" && v != pv {
-				v = "" // two versions behind one identity: ask about the package
+				conflict = true
 				break
 			}
 			v = pv
+		}
+		if conflict {
+			v = "" // ask about the package: under-reporting would hide one
+		}
+		if !anyPublished {
+			// Not asked at all. A vulnerability in something we do not ship
+			// is not a finding about us, and 90 of them drowned the one
+			// question that mattered.
+			unpublished++
+			continue
 		}
 		// ⛔ COUNT ONLY WHAT WILL ACTUALLY BE ASKED. The first version of this
 		// counted every pinned identity, including the repository- and
@@ -342,5 +381,5 @@ func pinIdentities(path string, ids []vuln.Identity, byIdentity map[vuln.Identit
 		}
 		out = append(out, vuln.Pinned{Identity: id, Version: v})
 	}
-	return out, at, 0
+	return out, at, unpublished, 0
 }

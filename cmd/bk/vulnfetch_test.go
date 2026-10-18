@@ -667,3 +667,86 @@ func TestVulnFetchWithoutWriteLeavesTheTreeAlone(t *testing.T) {
 		t.Errorf("a report wrote into the tree it was reporting on: %v", found)
 	}
 }
+
+// ⛔ A PROJECT THE PLATFORM DOES NOT CARRY IS NOT ASKED ABOUT.
+//
+// With -catalog the question is "what is wrong with what we SHIP". A project
+// the catalogue gives no version for is not shipped here, and asking about it
+// falls back to the whole-package question — which is how the first run
+// reported "90 finding(s) across 5 project(s)" where all five answered
+// `no bottle here`. Right figures, different meaning.
+func TestVulnFetchSkipsAProjectWithNoBottleForThePlatform(t *testing.T) {
+	url, asked := fetchServer(t, `{"results":[{}]}`)
+	// crates.io/bat is published; the catalogue says nothing about it being
+	// absent, and curl.se is repository-keyed so it is dropped anyway.
+	cat := catalogFile(t, `{"generated":"2026-10-18T00:00:00Z","projects":[]}`)
+	rc, out, errb := vulnfetch(t, "-dir", fetchPantry(t), "-endpoint", url, "-catalog", cat)
+	if rc != 0 {
+		t.Fatalf("rc = %d, stderr:\n%s", rc, errb)
+	}
+	if strings.Contains(*asked, "bat") {
+		t.Errorf("a project with no published version was asked about anyway:\n%s", *asked)
+	}
+	if !strings.Contains(out, "NOT asked") {
+		t.Errorf("the skip is silent — a scan that narrows without saying so cannot be trusted:\n%s", out)
+	}
+}
+
+// ⛔ AND THE COUNTS MUST STILL ADD UP. Once an identity can be dropped before
+// AskPinned sees it, `skipped` comes from a smaller population than the full
+// identity list, and counting against the wrong one overstates: the first run
+// printed "589 identity(ies) asked" where 137 were.
+func TestVulnFetchCountsAskedAgainstWhatWasActuallySent(t *testing.T) {
+	url, _ := fetchServer(t, `{"results":[{}]}`)
+	cat := catalogFile(t, `{"generated":"2026-10-18T00:00:00Z","projects":[
+	  {"project":"crates.io/bat","versions":["0.24.0"]}]}`)
+	_, out, _ := vulnfetch(t, "-dir", fetchPantry(t), "-endpoint", url, "-catalog", cat)
+	// The three identities split three ways, and they must ADD UP:
+	//   crates.io:bat        published → asked
+	//   GitHub:sharkdp/bat   published (same project) but repository-keyed → unanswerable
+	//   GitHub:curl/curl     curl.se is not in the catalogue → NOT asked
+	// My first expectation here was "1 asked, 2 not answerable", which does
+	// not account for the third bucket existing at all.
+	for _, want := range []string{
+		"1 identity(ies) asked, 1 not answerable",
+		"1 identity(ies) NOT asked",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+}
+
+// ⛔ A CONFLICT IS NOT AN ABSENCE. Two projects publishing different versions
+// of one identity still get asked — as a whole package, because
+// under-reporting hides a vulnerability. Skipping them would be the opposite
+// of conservative, and the two cases look identical in the code that
+// computes the version.
+func TestVulnFetchStillAsksWhenTwoProjectsDisagreeOnTheVersion(t *testing.T) {
+	url, asked := fetchServer(t, `{"results":[{}]}`)
+	dir := lintTree(t, map[string]string{
+		"a.example/package.yml": "distributable:\n  url: http://x/y.tgz\nversions:\n  url: http://a.example/s/\n  match: /x-\\d/\n",
+		"b.example/package.yml": "distributable:\n  url: http://x/y.tgz\nversions:\n  url: http://b.example/s/\n  match: /x-\\d/\n",
+	})
+	tab := filepath.Join(t.TempDir(), "t.yml")
+	if err := os.WriteFile(tab, []byte("schema-version: 1\nprojects:\n  a.example:\n    ConanCenter: [shared]\n  b.example:\n    ConanCenter: [shared]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat := catalogFile(t, `{"generated":"2026-10-18T00:00:00Z","projects":[
+	  {"project":"a.example","versions":["1.0.0"]},
+	  {"project":"b.example","versions":["2.0.0"]}]}`)
+
+	rc, out, errb := vulnfetch(t, "-dir", dir, "-endpoint", url, "-table", tab, "-catalog", cat)
+	if rc != 0 {
+		t.Fatalf("rc = %d, stderr:\n%s", rc, errb)
+	}
+	if !strings.Contains(*asked, "shared") {
+		t.Errorf("a conflicted identity was skipped instead of widened:\n%s", *asked)
+	}
+	if strings.Contains(*asked, `"version"`) {
+		t.Errorf("it guessed a version for a conflicted identity:\n%s", *asked)
+	}
+	if !strings.Contains(out, "1 identity(ies) asked") {
+		t.Errorf("the conflicted identity was not counted as asked:\n%s", out)
+	}
+}
