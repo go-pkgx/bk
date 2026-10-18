@@ -59,8 +59,16 @@ var buildInfo = debug.ReadBuildInfo
 // the recipes can build (what `bk factory --lock` is about to build), true
 // pins the newest published for the target (what `pkgx --lock` can install).
 // They are different sets — see lockpublished.go, where the measurement is.
+// rootPins carries the constraint a ROOT was named with, if any.
+//
+// ⛔ ONLY a root's own, and only one. `versions.Resolve` takes a single
+// constraint while `demands` is a list, and folding several into one is the
+// intersection problem of go-pkgx/bk#140 — not something to invent here. A
+// root is the case where there is exactly one and nothing else speaks for it,
+// so it is the case that can be fixed without pretending to solve the rest.
 func resolveLock(set *logical.Set, overlayDir, pantryDir string, tgt target.Target,
-	order []string, demands map[string][]string, read map[string][]*pantry.Recipe, runnable bool) ([]lockedPin, []string) {
+	order []string, demands map[string][]string, read map[string][]*pantry.Recipe, runnable bool,
+	rootPins map[string]string) ([]lockedPin, []string) {
 	var pins []lockedPin
 	var unresolved []string
 	hashes := map[string]string{}
@@ -70,7 +78,7 @@ func resolveLock(set *logical.Set, overlayDir, pantryDir string, tgt target.Targ
 			unresolved = append(unresolved, fmt.Sprintf("%s (no recipe: %v)", proj, err))
 			continue
 		}
-		v, _, err := versions.Resolve(r.Versions, "")
+		v, _, err := versions.Resolve(r.Versions, rootPins[proj])
 		if err != nil || v == "" {
 			unresolved = append(unresolved, fmt.Sprintf("%s (%v)", proj, err))
 			continue
@@ -198,7 +206,13 @@ func checkLock(want lockDoc, roots []string, pantryDir, overlayDir, overridesDir
 	tgt := target.Target{Platform: osn, Arch: arch}
 	warn := func(s string) { fmt.Fprintln(stderr, s) }
 
-	expanded := expandSets(lset, overlayDir, pantryDir, closureRoots(roots, warn), warn)
+	// ⛔ --check MUST apply the roots' constraints too, and they come from the
+	// FILE's own `roots`. Re-resolving `nodejs.org@22` without the `@22` would
+	// pick 26 and report drift against a lock that is exactly right — a report
+	// of movement that never happened, which is the one thing --check must not
+	// produce.
+	bare, rootPins := closureRoots(roots, warn)
+	expanded := expandSets(lset, overlayDir, pantryDir, bare, warn)
 	order, demands, read := closureOf(lset, overlayDir, pantryDir, tgt, expanded, warn)
 	if len(order) == 0 {
 		fmt.Fprintln(stderr, "lock: the closure is empty — nothing was read, so this says nothing about the lock")
@@ -211,7 +225,10 @@ func checkLock(want lockDoc, roots []string, pantryDir, overlayDir, overridesDir
 	// roots and platform for the same reason, and takes the mode from the
 	// file just as it takes those.
 	mode := bottle.LockPinned(want)
-	now, unresolved := resolveLock(lset, overlayDir, pantryDir, tgt, order, demands, read, mode == bottle.PinsPublished)
+	for proj, c := range rootPins {
+		demands[proj] = append(demands[proj], c)
+	}
+	now, unresolved := resolveLock(lset, overlayDir, pantryDir, tgt, order, demands, read, mode == bottle.PinsPublished, rootPins)
 
 	fmt.Fprintf(stdout, "lock: %s · %s · %d pinned, %s · pinned from the %s\n",
 		platform, want.Generated, len(want.Pins), lockAge(want.Generated, lockNow()), mode)

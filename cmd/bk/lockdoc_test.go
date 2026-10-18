@@ -390,3 +390,35 @@ func TestCheckKeepsUnresolvedApartFromDrift(t *testing.T) {
 		t.Errorf("an unresolved project was counted as drift:\n%s", out.String())
 	}
 }
+
+// ⛔ --check MUST APPLY THE ROOTS' CONSTRAINTS, which it reads from the file.
+//
+// A lock written for `app.org@1.2.3` pins 1.2.3 while the recipe also offers
+// 1.2.4. Re-resolving without the `@1.2.3` picks 1.2.4 and reports drift
+// against a lock that is exactly right — a report of movement that never
+// happened, which is the one thing --check must not produce.
+func TestLockCheckAppliesTheRootsConstraintFromTheFile(t *testing.T) {
+	p, files := lockbed(t, map[string]string{"app.org": lockableRecipe})
+	lockPath := filepath.Join(t.TempDir(), "pinned.hcl")
+
+	var out, errb bytes.Buffer
+	if code := runLock([]string{"--pantry", p, "--platform", "linux/x86-64", "-o", lockPath, "app.org@1.2.3"}, &out, &errb); code != 0 {
+		t.Fatalf("writing: code=%d err=%q", code, errb.String())
+	}
+	body := (*files)[lockPath]
+	if !strings.Contains(string(body), `version = "1.2.3"`) {
+		t.Fatalf("the fixture did not pin the older version, so this proves nothing:\n%s", body)
+	}
+	if err := os.WriteFile(lockPath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := runLock([]string{"--pantry", p, "--check", lockPath}, &out, &errb); code != 0 {
+		t.Fatalf("a constrained lock was reported as drifted: code=%d\n%s%s", code, out.String(), errb.String())
+	}
+	if !strings.Contains(out.String(), "none moved") {
+		t.Errorf("check said: %q", out.String())
+	}
+}

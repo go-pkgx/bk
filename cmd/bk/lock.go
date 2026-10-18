@@ -122,14 +122,21 @@ func runLock(args []string, stdout, stderr io.Writer) int {
 	tgt := target.Target{Platform: osn, Arch: arch}
 	warn := func(s string) { fmt.Fprintln(stderr, s) }
 
-	roots := expandSets(lset, *overlayDir, *pantryDir, closureRoots(fs.Args(), warn), warn)
+	bare, rootPins := closureRoots(fs.Args(), warn)
+	roots := expandSets(lset, *overlayDir, *pantryDir, bare, warn)
 	order, demands, read := closureOf(lset, *overlayDir, *pantryDir, tgt, roots, warn)
 	if len(order) == 0 {
 		fmt.Fprintln(stderr, "lock: the closure is empty — nothing was read, which is a failure and not a clean result")
 		return 1
 	}
 
-	pins, unresolved := resolveLock(lset, *overlayDir, *pantryDir, tgt, order, demands, read, *runnable)
+	// A root speaks for itself. Nothing else will: `demands` is built from
+	// DEPENDENTS, and a root has none — which is why `bk lock nodejs.org@22`
+	// used to write a file whose `roots` said 22 and whose pin said 26.
+	for proj, c := range rootPins {
+		demands[proj] = append(demands[proj], c)
+	}
+	pins, unresolved := resolveLock(lset, *overlayDir, *pantryDir, tgt, order, demands, read, *runnable, rootPins)
 
 	doc := lockDoc{
 		Version:   lockfileVersion,

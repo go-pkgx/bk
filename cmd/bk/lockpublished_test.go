@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -356,5 +358,77 @@ func TestAVerdictSeesTheProjectsThatCouldNotBePinnedAtAll(t *testing.T) {
 	reportUnpublished(&b, pins, nil, nil, "linux/aarch64", bottle.PinsPublished, 0)
 	if !strings.Contains(b.String(), "can run this file") {
 		t.Errorf("a complete lock was not endorsed:\n%s", b.String())
+	}
+}
+
+// ⛔ A ROOT'S CONSTRAINT REACHES THE PUBLISHED RESOLVER TOO.
+//
+// `-runnable` resolves through publishedVersionFor(project, demands[project]),
+// and `demands` is built from DEPENDENTS — a root has none, so without the
+// root's own constraint being appended it arrived empty and the newest
+// published version won whatever was asked.
+//
+// This seam exists because dropping constraints was the original defect; it
+// records what the resolver was handed, which is the only way to tell "asked
+// for 1.2.3 and got it" from "asked for nothing and happened to get 1.2.3".
+func TestRunnableLockHandsTheRootsConstraintToThePublishedResolver(t *testing.T) {
+	p, _ := lockbed(t, map[string]string{"app.org": lockableRecipe})
+	seen := fakeConstrainedPick(t, func(_ string, _ []string) (string, error) { return "1.2.3", nil })
+
+	var out, errb bytes.Buffer
+	if code := runLock([]string{"--pantry", p, "--platform", "linux/x86-64", "-runnable", "app.org@1.2.3"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb.String())
+	}
+	got := (*seen)["app.org"]
+	if len(got) != 1 || got[0] != "1.2.3" {
+		t.Errorf("the published resolver was handed %v, want [1.2.3]", got)
+	}
+}
+
+// The control: no constraint on the root, nothing handed over. Without it,
+// "always append something" would satisfy the test above.
+func TestRunnableLockHandsNothingWhenTheRootIsUnconstrained(t *testing.T) {
+	p, _ := lockbed(t, map[string]string{"app.org": lockableRecipe})
+	seen := fakeConstrainedPick(t, func(_ string, _ []string) (string, error) { return "1.2.4", nil })
+
+	var out, errb bytes.Buffer
+	if code := runLock([]string{"--pantry", p, "--platform", "linux/x86-64", "-runnable", "app.org"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb.String())
+	}
+	if got := (*seen)["app.org"]; len(got) != 0 {
+		t.Errorf("an unconstrained root was given %v", got)
+	}
+}
+
+// ⛔ AND --check HANDS IT OVER TOO, for a runnable lock.
+//
+// Checking re-resolves by the question the file answers; for a published lock
+// that is publishedVersionFor, so the root's constraint has to reach it there
+// as well. Without this, `--check` on a correctly pinned runnable lock would
+// re-resolve to the newest published version and report drift that is not
+// there — and a drift report nobody can reproduce is worse than none.
+func TestLockCheckHandsTheRootsConstraintToThePublishedResolver(t *testing.T) {
+	p, files := lockbed(t, map[string]string{"app.org": lockableRecipe})
+	lockPath := filepath.Join(t.TempDir(), "runnable.hcl")
+	fakeConstrainedPick(t, func(_ string, _ []string) (string, error) { return "1.2.3", nil })
+
+	var out, errb bytes.Buffer
+	if code := runLock([]string{"--pantry", p, "--platform", "linux/x86-64", "-runnable", "-o", lockPath, "app.org@1.2.3"}, &out, &errb); code != 0 {
+		t.Fatalf("writing: code=%d err=%q", code, errb.String())
+	}
+	if err := os.WriteFile(lockPath, (*files)[lockPath], 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A FRESH recorder for the check, so what it sees cannot be the write's.
+	seen := fakeConstrainedPick(t, func(_ string, _ []string) (string, error) { return "1.2.3", nil })
+	out.Reset()
+	errb.Reset()
+	if code := runLock([]string{"--pantry", p, "--check", lockPath}, &out, &errb); code != 0 {
+		t.Fatalf("check: code=%d\n%s%s", code, out.String(), errb.String())
+	}
+	got := (*seen)["app.org"]
+	if len(got) != 1 || got[0] != "1.2.3" {
+		t.Errorf("--check handed the published resolver %v, want [1.2.3]", got)
 	}
 }
