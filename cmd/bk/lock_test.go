@@ -497,3 +497,65 @@ func TestLockNamesAProjectWhoseRecipeCannotBeHashed(t *testing.T) {
 		t.Errorf("a project with no hash was written into the lock:\n%s", block)
 	}
 }
+
+// ⛔ A ROOT'S OWN CONSTRAINT IS APPLIED, and this is the arm a `-runnable`
+// test cannot reach: that one resolves through publishedVersionFor and the
+// demands list, this one through versions.Resolve. A mutation that replaced
+// the root's constraint with "" SURVIVED the suite until this existed.
+//
+// The reported case was `bk lock nodejs.org@22` writing a file whose `roots`
+// said 22 and whose pin said 26 (go-pkgx/bk#140).
+func TestLockAppliesARootsOwnConstraint(t *testing.T) {
+	p, _ := lockbed(t, map[string]string{"app.org": lockableRecipe})
+	var out, errb bytes.Buffer
+	if code := runLock([]string{"--pantry", p, "--platform", "linux/x86-64", "app.org@1.2.3"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, `"app.org" = { version = "1.2.3"`) {
+		t.Errorf("the root's constraint was not applied:\n%s", got)
+	}
+	// ⛔ AND THE FILE AGREES WITH ITSELF. roots and the pin are the two halves
+	// a reader compares, and the defect was that they contradicted.
+	if !strings.Contains(got, `roots            = ["app.org@1.2.3"]`) {
+		t.Errorf("roots does not record what was asked:\n%s", got)
+	}
+}
+
+// The control: with no constraint the newest still wins. Without this,
+// "always pick the oldest" would pass the test above.
+func TestLockWithoutAConstraintStillTakesTheNewest(t *testing.T) {
+	p, _ := lockbed(t, map[string]string{"app.org": lockableRecipe})
+	var out, errb bytes.Buffer
+	if code := runLock([]string{"--pantry", p, "--platform", "linux/x86-64", "app.org"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), `"app.org" = { version = "1.2.4"`) {
+		t.Errorf("an unconstrained root did not take the newest:\n%s", out.String())
+	}
+}
+
+// ⛔ AND IT IS NOT PROPAGATED. The constraint belongs to the root; a
+// dependency reached through the walk is still resolved by its own recipe,
+// which is go-pkgx/bk#140 and is NOT fixed here. Pinning that distinction so
+// a later change cannot widen it by accident without a test moving.
+func TestLockDoesNotPropagateARootsConstraintToItsDependencies(t *testing.T) {
+	p, _ := lockbed(t, map[string]string{
+		"app.org": "dependencies:\n  lib.org: '*'\n" + lockableRecipe,
+		"lib.org": lockableRecipe,
+	})
+	var out, errb bytes.Buffer
+	if code := runLock([]string{"--pantry", p, "--platform", "linux/x86-64", "app.org@1.2.3"}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d err=%q", code, errb.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, `"app.org" = { version = "1.2.3"`) {
+		t.Errorf("the root itself was not pinned:\n%s", got)
+	}
+	if !strings.Contains(got, `"lib.org" = { version = "1.2.4"`) {
+		t.Errorf("the dependency took the root's constraint; that is not what this fixes:\n%s", got)
+	}
+	if !strings.Contains(errb.String(), "NOT propagated through the walk") {
+		t.Errorf("the limit is not said out loud: %q", errb.String())
+	}
+}

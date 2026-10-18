@@ -348,9 +348,20 @@ func TestClosureFailsOnARootItCannotRead(t *testing.T) {
 // gate report it as a project nobody has.
 func TestClosureRootsAcceptTheOrdersPinnedForm(t *testing.T) {
 	var said []string
-	got := closureRoots([]string{"gnu.org/gawk@~5.3", "zlib.net", "perl.org@~5.44", "tcl-lang.org@=9.0.4"},
+	got, pins := closureRoots([]string{"gnu.org/gawk@~5.3", "zlib.net", "perl.org@~5.44", "tcl-lang.org@=9.0.4"},
 		func(s string) { said = append(said, s) })
 	want := []string{"gnu.org/gawk", "zlib.net", "perl.org", "tcl-lang.org"}
+	// The constraints come BACK, keyed by project: the walk cannot use them
+	// but whoever resolves a root can, and a root has no dependent to speak
+	// for it. Without this they were stripped and lost in the same line.
+	for proj, c := range map[string]string{"gnu.org/gawk": "~5.3", "perl.org": "~5.44", "tcl-lang.org": "=9.0.4"} {
+		if pins[proj] != c {
+			t.Errorf("pins[%q] = %q, want %q", proj, pins[proj], c)
+		}
+	}
+	if _, ok := pins["zlib.net"]; ok {
+		t.Errorf("an unconstrained root was given a constraint: %q", pins["zlib.net"])
+	}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
@@ -371,9 +382,12 @@ func TestClosureRootsAcceptTheOrdersPinnedForm(t *testing.T) {
 // string and then into every recipe in the pantry.
 func TestClosureRootsSayNothingWhenNothingIsPinned(t *testing.T) {
 	var said []string
-	got := closureRoots([]string{"zlib.net", "@odd"}, func(s string) { said = append(said, s) })
+	got, pins := closureRoots([]string{"zlib.net", "@odd"}, func(s string) { said = append(said, s) })
 	if len(got) != 2 || got[0] != "zlib.net" || got[1] != "@odd" {
 		t.Errorf("got %v", got)
+	}
+	if len(pins) != 0 {
+		t.Errorf("a leading '@' was read as a constraint: %v", pins)
 	}
 	if len(said) != 0 {
 		t.Errorf("said something about nothing: %v", said)
@@ -382,8 +396,12 @@ func TestClosureRootsSayNothingWhenNothingIsPinned(t *testing.T) {
 
 // warn may be nil.
 func TestClosureRootsToleratesNoWarner(t *testing.T) {
-	if got := closureRoots([]string{"a@1"}, nil); len(got) != 1 || got[0] != "a" {
+	got, pins := closureRoots([]string{"a@1"}, nil)
+	if len(got) != 1 || got[0] != "a" {
 		t.Errorf("got %v", got)
+	}
+	if pins["a"] != "1" {
+		t.Errorf("the constraint was lost when there was no warner: %v", pins)
 	}
 }
 
@@ -403,7 +421,12 @@ func TestRunClosureReadsAPinnedRoot(t *testing.T) {
 	if strings.Contains(errb.String(), "not read") {
 		t.Errorf("a pinned root was reported missing: %q", errb.String())
 	}
-	if !strings.Contains(errb.String(), "carry a version constraint the walk does not apply") {
+	// It names the pin AND says which half of the resolution honours it: the
+	// root itself does, the walk does not. The earlier wording said only the
+	// second, which became misleading the moment `bk lock` started applying
+	// a root's own constraint.
+	if !strings.Contains(errb.String(), "carry a version constraint") ||
+		!strings.Contains(errb.String(), "NOT propagated through the walk") {
 		t.Errorf("the dropped pin was not named: %q", errb.String())
 	}
 }

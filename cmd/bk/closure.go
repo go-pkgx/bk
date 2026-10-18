@@ -45,7 +45,7 @@ func runClosure(args []string, stdout, stderr io.Writer) int {
 	}
 	osn, arch, _ := strings.Cut(*platform, "/")
 	tgt := target.Target{Platform: osn, Arch: arch}
-	roots := closureRoots(fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
+	roots, _ := closureRoots(fs.Args(), func(s string) { fmt.Fprintln(stderr, s) })
 	// A root that is a SET becomes the packages it names. Done here, before
 	// anything else looks at the roots, so the walk below and everything it
 	// feeds keep working on discrete projects.
@@ -274,19 +274,38 @@ func envOr(k, def string) string {
 // silently ignored the pin would be answering a slightly different question
 // than the one asked. Naming them costs one line and stops the next reader
 // assuming the walk was version-aware.
-func closureRoots(args []string, warn func(string)) []string {
+// It returns the constraints it stripped as well, keyed by project.
+//
+// The WALK still cannot use them — that is go-pkgx/bk#140, where a closure
+// keyed on the project name collapses two majors into one — but the caller
+// that resolves a ROOT can: a root has no dependent, so nothing else will
+// ever speak for it. Handing them back is what lets `bk lock` honour
+// `nodejs.org@22` instead of writing a file whose `roots` says 22 and whose
+// pin says 26.
+//
+// Returned here rather than re-split by the caller so the `@` rule has one
+// definition. Two readings of a pkgspec are two chances to disagree.
+func closureRoots(args []string, warn func(string)) ([]string, map[string]string) {
 	out := make([]string, 0, len(args))
+	constrained := map[string]string{}
 	var pinned []string
 	for _, a := range args {
 		if i := strings.IndexByte(a, '@'); i > 0 {
 			pinned = append(pinned, a)
+			constrained[a[:i]] = a[i+1:]
 			a = a[:i]
 		}
 		out = append(out, a)
 	}
 	if len(pinned) > 0 && warn != nil {
-		warn(fmt.Sprintf("closure: %d root(s) carry a version constraint the walk does not apply: %s",
+		// ⛔ SAY WHICH HALF IS APPLIED. This used to read "a version
+		// constraint the walk does not apply", which was true of everything
+		// when nothing used the constraints. Now `bk lock` resolves a root
+		// by its own, so the same sentence would tell a reader their pin was
+		// ignored while the file in front of them honours it — the kind of
+		// stale sentence that costs more than silence.
+		warn(fmt.Sprintf("closure: %d root(s) carry a version constraint: %s — applied when resolving the root itself, NOT propagated through the walk (go-pkgx/bk#140)",
 			len(pinned), strings.Join(pinned, " ")))
 	}
-	return out
+	return out, constrained
 }
