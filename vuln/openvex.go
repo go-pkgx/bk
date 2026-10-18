@@ -51,6 +51,17 @@ type Product struct {
 	// ID is the IRI identifying the product. Optional in the spec; required
 	// here, because a statement whose subject cannot be named is not usable.
 	ID string
+	// Version is the version of OURS this product is, spelled as the bottle
+	// tag spells it — "3.5.8_1", rebuild counter included.
+	//
+	// ⛔ REQUIRED, although the spec asks for no such field, because without
+	// it this encoder cannot tell whether the record it is reading has
+	// anything to say about THIS artefact. A purl already carries the
+	// version, but only as text inside an identifier nobody here parses, and
+	// a check that depends on parsing a string the caller built is a check
+	// that stops working the day the caller spells it differently. See
+	// scopedTo and go-pkgx/bk#340.
+	Version string
 	// PURL goes into `identifiers`, whose label for a Package URL is "purl"
 	// (OpenVEX "favors the use of purl"). Optional.
 	PURL string
@@ -166,6 +177,76 @@ var statusFor = map[string]string{
 	EventPendingUpstreamFix: VEXAffected,
 }
 
+// silencing are the two statuses that tell a reader to STOP LOOKING, and they
+// are the two this encoder refuses to assert about a version nobody examined.
+//
+// `affected` is deliberately absent. Restating it for an unexamined version
+// over-warns, which costs noise; restating `not_affected` or `fixed`
+// under-warns, which costs the reader the habit of checking. Those are not the
+// same mistake, and a rule that treated them alike would turn a stale warning
+// into silence — exactly the direction nothing should ever move on its own.
+var silencing = map[string]bool{
+	VEXNotAffected: true,
+	VEXFixed:       true,
+}
+
+// versionsNamed is every version of OURS the record actually speaks about:
+// the versions detections were taken at, and the versions `fixed` events name
+// as carrying a fix.
+//
+// Both, not just detections, because `fixed-version: 3.5.8_1` is as explicit a
+// statement about 3.5.8_1 as a detection recorded against it.
+//
+// ⛔ EVERY event, which is only safe because Latest is the LAST one: no event
+// can be dated after the decision being emitted, so none of them can widen
+// its scope behind its back. Were Latest ever to mean "the last
+// determination" instead, a detection recorded afterwards would silently
+// extend an older `not_affected` onto the version it detected.
+func versionsNamed(a Advisory) map[string]bool {
+	seen := map[string]bool{}
+	for _, e := range a.Events {
+		if e.DetectedVersion != "" {
+			seen[e.DetectedVersion] = true
+		}
+		if e.FixedVersion != "" {
+			seen[e.FixedVersion] = true
+		}
+	}
+	return seen
+}
+
+// scopedTo reports whether this record has anything to say about version v,
+// and lists what it does name.
+//
+// An EMPTY list is "no", not "yes". A record written before versions were
+// recorded at all says nothing about any version, and reading that silence as
+// consent is precisely the defect: it is the state every record in the fleet
+// was in when #340 was filed.
+func scopedTo(a Advisory, v string) (bool, []string) {
+	named := versionsNamed(a)
+	versions := make([]string, 0, len(named))
+	for s := range named {
+		versions = append(versions, s)
+	}
+	sort.Strings(versions)
+	return named[v], versions
+}
+
+// unexaminedNote is the `status_notes` on a statement that was downgraded. It
+// says which versions WERE examined, because "under investigation" with no
+// reason reads as "we have not got to it yet" — and the truth is better than
+// that: somebody did the work, for a different artefact.
+func unexaminedNote(status, version string, examined []string) string {
+	if len(examined) == 0 {
+		return fmt.Sprintf("This record reaches %q, but no event in it names a version, so nothing here was examined at %s. "+
+			"A VEX statement names a version and this one is not restated for an artefact nobody looked at (go-pkgx/bk#340).",
+			status, version)
+	}
+	return fmt.Sprintf("This record reaches %q for %s, and %s was not examined. "+
+		"A VEX statement names a version and this one is not restated for an artefact nobody looked at (go-pkgx/bk#340).",
+		status, strings.Join(examined, ", "), version)
+}
+
 // actionFor is the action statement an `affected` status must carry. The spec
 // says a statement with affected status "MUST include a statement that SHOULD
 // describe actions to remediate or mitigate", and the three event types that
@@ -204,11 +285,11 @@ func EncodeVEX(o VEXOptions) ([]byte, error) {
 		copy(advisories, s.File.Advisories)
 		sort.SliceStable(advisories, func(i, j int) bool { return advisories[i].ID < advisories[j].ID })
 		for _, a := range advisories {
-			st, err := statementFor(a, s.Products)
+			sts, err := statementsFor(a, s.Products)
 			if err != nil {
 				return nil, fmt.Errorf("vuln: vex: %s: %s: %w", s.File.Project, a.ID, err)
 			}
-			doc.Statements = append(doc.Statements, st)
+			doc.Statements = append(doc.Statements, sts...)
 		}
 	}
 	return json.MarshalIndent(doc, "", "  ")
@@ -245,20 +326,72 @@ func (o VEXOptions) check() error {
 			if strings.TrimSpace(p.ID) == "" {
 				return fmt.Errorf("vuln: vex: %s: a product has no @id", s.File.Project)
 			}
+			// ⛔ REFUSED RATHER THAN ASSUMED. Without the version this
+			// encoder cannot tell whether a `not_affected` in the record is
+			// about this artefact, and the only two ways to carry on are to
+			// assert it anyway — the defect #340 is about — or to downgrade
+			// every statement, which would quietly empty the documents of
+			// every caller that simply had not been updated. A refusal names
+			// the one line that has to change.
+			if strings.TrimSpace(p.Version) == "" {
+				return fmt.Errorf("vuln: vex: %s: product %s has no version — a statement names a version, so one cannot be written for an artefact that has none", s.File.Project, p.ID)
+			}
 		}
 	}
 	return nil
 }
 
-func statementFor(a Advisory, products []Product) (vexStatement, error) {
+// statementsFor is the statements one advisory produces for one subject's
+// products — usually ONE, and two when the record's conclusion does not reach
+// every product it was handed.
+//
+// ⛔ A LIST, not a statement. Before #340 this returned exactly one statement
+// covering every product, which is only correct while every product is the
+// same version. The moment a determination made about 1.0.0 meets a bottle of
+// 2.0.0, one status cannot be right for both, and the shape of the function
+// was what made the wrong one unavoidable.
+func statementsFor(a Advisory, products []Product) ([]vexStatement, error) {
 	e := a.Latest()
 	status, ok := statusFor[e.Type]
 	if !ok {
 		// Reachable only if an event type is added to the parser's allowlist
 		// without being mapped here. That is exactly the silent half-change
 		// worth refusing: the alternative is a document missing statements.
-		return vexStatement{}, fmt.Errorf("event type %q maps to no VEX status", e.Type)
+		return nil, fmt.Errorf("event type %q maps to no VEX status", e.Type)
 	}
+	if !silencing[status] {
+		return []vexStatement{statement(a, e, status, products, "")}, nil
+	}
+	var covered, unexamined []Product
+	var examined []string
+	for _, p := range products {
+		in, versions := scopedTo(a, p.Version)
+		examined = versions
+		if in {
+			covered = append(covered, p)
+		} else {
+			unexamined = append(unexamined, p)
+		}
+	}
+	var out []vexStatement
+	if len(covered) > 0 {
+		out = append(out, statement(a, e, status, covered, ""))
+	}
+	if len(unexamined) > 0 {
+		// One statement for all of them even when their versions differ: the
+		// note names the version it is about, and products that share a
+		// statement here share the only thing that matters about them, which
+		// is that nothing in the record reaches them.
+		out = append(out, statement(a, e, VEXUnderInvestigation, unexamined,
+			unexaminedNote(status, unexamined[0].Version, examined)))
+	}
+	return out, nil
+}
+
+// statement renders one event as one VEX statement about the given products.
+// downgradeNote is empty for a statement that says what the record says, and
+// carries the explanation for one that does not.
+func statement(a Advisory, e Event, status string, products []Product, downgradeNote string) vexStatement {
 	st := vexStatement{
 		Vulnerability: vexVulnerability{Name: a.ID, Aliases: a.Aliases},
 		// The statement's own timestamp is "the time at which the information
@@ -278,6 +411,16 @@ func statementFor(a Advisory, products []Product) (vexStatement, error) {
 		}
 		st.Products = append(st.Products, vp)
 	}
+	if downgradeNote != "" {
+		// ⛔ NEITHER the justification NOR the impact statement travels onto a
+		// downgraded statement. A justification is only valid on
+		// `not_affected`, and the record's prose was written about a version
+		// this statement is not about — carrying it over would put the
+		// reassurance back in the document by the side door, in the one field
+		// a human actually reads.
+		st.StatusNotes = downgradeNote
+		return st
+	}
 	switch status {
 	case VEXNotAffected:
 		// Guaranteed non-empty and in the vocabulary by ParseAdvisories; set
@@ -291,5 +434,5 @@ func statementFor(a Advisory, products []Product) (vexStatement, error) {
 	default:
 		st.StatusNotes = e.Note
 	}
-	return st, nil
+	return st
 }

@@ -704,10 +704,49 @@ stale is worse than none at all: it stops the reader looking. Wolfi's
 `fixed-version` carries a version for the same reason; this is the field a
 *determination* was missing.
 
-What is **not** decided here, and is open in #340: whether the determination
-itself should carry a version range, and whether we should refuse to emit a
-statement about a version no event mentions. Both change what our VEX
-promises.
+### ⛔ The gate and the document read the same silence in opposite directions
+
+`detected-version` is now meaningful on **every** event, not only a detection:
+for a decision it says which version the decision was made for. And the two
+readers of that field disagree on purpose about what an *absent* one means.
+
+| | a record that names no version | why |
+|---|---|---|
+| the gate (`vulnfetch -fail-on-new`) | covers every version — stays green | it interrupts **us**, and 90 legacy records going red at once is a gate people learn to scroll past |
+| the document (`EncodeVEX`) | covers no version — downgrades | it reassures a **stranger**, and a stale "not affected" stops them looking |
+
+The harms are not symmetric, so the defaults are not either: *when in doubt do
+not interrupt ourselves; when in doubt do not reassure somebody else.*
+
+What the emitter does, for the two statuses that tell a reader to stop
+looking — `not_affected` and `fixed`:
+
+```
+record determines not_affected for 1.0.0, bottle is 1.0.0  → not_affected + justification
+record determines not_affected for 1.0.0, bottle is 2.0.0  → under_investigation, status_notes names 1.0.0
+record names no version at all,           bottle is 1.0.0  → under_investigation, status_notes says so
+```
+
+Neither the `justification` nor the `impact_statement` travels onto a
+downgraded statement: the prose was written about another artefact, and
+carrying it over would put the reassurance back in by the side door — in the
+one field a human actually reads.
+
+`affected` is deliberately **not** downgraded. Restating it for an unexamined
+version over-warns, which costs noise; downgrading it would turn a warning
+into "we are looking into it", and nothing should move that way by itself.
+
+A product therefore has to say which version it is, and `EncodeVEX` refuses
+one that does not rather than guessing from the purl:
+
+```
+vuln: vex: demo: product pkg:pkgx/demo@1.0.0 has no version — a statement
+names a version, so one cannot be written for an artefact that has none
+```
+
+One record can now produce **two** statements, when the versions it was handed
+are not all covered. That is what #340 could not express: a single statement
+for every product is only correct while every product is the same version.
 
 ### The path and the file must agree
 

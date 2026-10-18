@@ -108,8 +108,13 @@ type Event struct {
 	Type      string    `yaml:"type"`
 	// FixedVersion is required by, and only meaningful for, EventFixed.
 	FixedVersion string `yaml:"fixed-version,omitempty"`
-	// DetectedVersion is the version WE PUBLISH that the database was asked
-	// about, and it is only meaningful for EventDetection.
+	// DetectedVersion is the version OF OURS this event speaks about: for a
+	// detection, the version the database was asked about; for any other
+	// event, the version the decision was made for.
+	//
+	// It keeps the name it was given when only detections carried it, rather
+	// than gaining a second key meaning the same thing in a file that would
+	// then have two ways to say one fact.
 	//
 	// ⛔ WITHOUT IT A DECISION OUTLIVES ITS SUBJECT. A purl names a version,
 	// so the OpenVEX document we publish is a statement ABOUT a version —
@@ -122,9 +127,13 @@ type Event struct {
 	// stale one is worse than issuing nothing, because it stops the reader
 	// looking. See go-pkgx/bk#340.
 	//
-	// Recorded on the DETECTION, which is the event that has a question
-	// behind it. Scoping the determination itself would change what our VEX
-	// promises, and that is a decision #340 leaves open.
+	// ⛔ A RECORD THAT NAMES NO VERSION NOW REACHES NOTHING. The emitter
+	// refuses to restate `not_affected` or `fixed` — the two statuses that
+	// tell a reader to stop looking — about a version no event here names,
+	// and downgrades the statement to `under_investigation` instead. So
+	// leaving this empty is not neutral: it is the difference between a
+	// determination that travels with the bottle and one that does not. See
+	// scopedTo in openvex.go.
 	DetectedVersion string `yaml:"detected-version,omitempty"`
 	// Justification is required by, and only meaningful for,
 	// EventFalsePositive. One of vexJustifications.
