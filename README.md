@@ -859,8 +859,29 @@ $ bk vulnfetch -dir pantry -catalog catalog/darwin-aarch64.json
 ```
 
 **658 of the 748 do not affect anything we publish.** A list that large with
-no decision behind any line is read once and then never again. The five that
-remain are a list someone can work.
+no decision behind any line is read once and then never again.
+
+### ⛔ And read the remaining 90 carefully — it is not what it looks like
+
+Every one of those five projects — `coder.com/code-server`, `nx.dev`,
+`pi.dev`, `snyk.io`, `vercel.com/next` — answers **`no bottle here`** on
+darwin/aarch64. They have no published version, so `-catalog` had none to
+pin, and they fell back to being asked as **whole packages**. The 90 are the
+unfiltered question surviving for the projects the filter could not reach.
+
+Against what we actually ship on this platform the count is **zero**:
+`bitwarden.com` is published at 1.22.1 and OSV returns nothing for it, which
+is right — `MAL-2026-3020` affects 2026.4.0.
+
+Checked with `pkgx ls <project>` on each of the six, after reading the
+written records and finding **no `detected-version` in any of them** — the
+field only appears when a version was asked about, so its absence was the
+tell. The first version of this paragraph called the 90 "a list someone can
+work", which was wrong: they are about packages this platform does not carry.
+
+The honest next step is therefore not to triage them but to **skip a project
+with no bottle for the platform**, so the unfiltered question is not asked at
+all.
 
 The output says **which** question it asked, in both modes, because the same
 count means a different thing in each.
