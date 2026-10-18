@@ -666,6 +666,49 @@ Which is why a Debian-style `3.5.8-1` is **refused**: that is how Debian and
 Alpine spell the same thing, `bottle` splits a rebuild on `_`, and the record
 would otherwise claim that plain `3.5.8` carries a fix it does not have.
 
+### ⛔ `detected-version` is why a decision does not outlive its subject
+
+A purl names a version, so the OpenVEX document we publish is a statement
+**about a version**. A `false-positive-determination` carries none and reads
+as "not affected, full stop" — so a determination made about 1.0.0 would be
+re-emitted, unchanged, about every later version we publish.
+
+```yaml
+      - timestamp: 2026-10-10T12:00:00Z
+        type: detection
+        detected-version: 1.0.0        # what OSV was asked about
+      - timestamp: 2026-10-11T09:00:00Z
+        type: false-positive-determination
+        justification: component_not_present
+```
+
+A known id reported at a version no event covers is **detected again**, as a
+second event on the same record, and `vulnfetch -fail-on-new` then asks for a
+decision about *that* version. Measured with a stub OSV that answers the same
+id whatever version is asked:
+
+| the record names | the catalogue publishes | gate |
+|---|---|---|
+| 1.0.0 | 1.0.0 | exit 0 — that is what was examined |
+| 1.0.0 | **2.0.0** | exit **1** |
+| *nothing* | 2.0.0 | exit 0 — a record written before this field keeps the old behaviour |
+
+That last row is deliberate: reading "names no version" as "does not cover
+2.0.0" would re-detect every legacy record at once — 90 over the real pantry
+— and a gate that goes red for everything on its first run is one people
+learn to scroll past.
+
+Practitioner guidance on VEX is explicit that a "not affected" goes **stale**
+when the component changes, and that a consumer-facing statement which is
+stale is worse than none at all: it stops the reader looking. Wolfi's
+`fixed-version` carries a version for the same reason; this is the field a
+*determination* was missing.
+
+What is **not** decided here, and is open in #340: whether the determination
+itself should carry a version range, and whether we should refuse to emit a
+statement about a version no event mentions. Both change what our VEX
+promises.
+
 ### The path and the file must agree
 
 `bk advisories` refuses a file whose `project:` disagrees with its directory. A
