@@ -7,7 +7,7 @@ require (
 	github.com/go-attest/sbom v0.3.0
 	github.com/go-attest/sign v0.3.0
 	github.com/go-git/go-git/v5 v5.19.3
-	github.com/go-pkgx/bottle v0.47.0
+	github.com/go-pkgx/bottle v0.48.0
 	github.com/go-regexp/engine v0.3.0
 	github.com/go-versions/semver v0.3.0
 	github.com/klauspost/compress v1.20.3
@@ -50,5 +50,5 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
-	oras.land/oras-go/v2 v2.6.3 // indirect
+	oras.land/oras-go/v2 v2.6.4 // indirect
 )
