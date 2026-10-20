@@ -11,6 +11,26 @@ build target (platform/arch/triple) is a first-class value, so cross-compilation
 notably **Windows PE bottles built on a linux/darwin host** — is a supported path
 rather than a retrofit.
 
+## Verifying a downloaded `bk`
+
+⛔ **`SHA256SUMS` is a checksum of itself.** It says the binaries on a
+[release](https://github.com/go-pkgx/bk/releases) match a manifest published
+beside them, and whoever replaced the binaries would replace the manifest.
+The half that cannot be forged from the release page is GitHub's **provenance
+attestation** — signed through Sigstore, saying that this repository's release
+workflow built that file from that commit:
+
+```sh
+gh attestation verify -R go-pkgx/bk bk-linux-amd64
+```
+
+It matters more here than for the other binaries in this organisation:
+`bk factory` is what signs and publishes every bottle, and a `bk lock`
+records the version of the binary that wrote it. Every file of a release
+published after 2026-10-20 carries an attestation; earlier ones carry none,
+and `gh attestation verify` answers `HTTP 404` for those rather than failing
+closed, so a 404 on an older binary means *unattested*, not *tampered with*.
+
 ## Status
 
 In production: `bk factory` is what fills
