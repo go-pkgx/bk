@@ -26,7 +26,7 @@ var unresolvedOwnerRE = regexp.MustCompile(`^(.+?)/v[0-9][^/]*/`)
 
 // Seams: the two things here that need a network.
 var (
-	unresolvedInstall           = bottle.CompleteClosure
+	unresolvedInstall           = bottle.CompleteClosureFor
 	unresolvedTempDir           = os.MkdirTemp
 	unresolvedStdin   io.Reader = os.Stdin
 )
@@ -55,8 +55,30 @@ func runUnresolved(args []string, stdout, stderr io.Writer) int {
 	fset.SetOutput(stderr)
 	store := fset.String("store", "", "install into this directory (default: a temporary one, removed after)")
 	quiet := fset.Bool("quiet", false, "print only the projects that have unresolvable references")
+	// ⛔ ONE MACHINE, EVERY PLATFORM. Until bottle v0.55.0 this installed for
+	// the HOST, so the sweep that uses it (go-pkgx/packages sonames.yml)
+	// could only ask about linux/x86-64 — where it found 967 unresolvable
+	// references over 259 of 1407 bottled projects. The other five were not
+	// clean; they were unasked, which is the shape a CVE lane here spent two
+	// months in.
+	//
+	// The READER was already platform-blind: unresolvedByOwner walks ELF and
+	// Mach-O in one pass precisely because a store built on one platform is
+	// read on another. Only the install half was host-bound.
+	platform := fset.String("platform", "", "audit this os/arch (e.g. linux/aarch64) instead of the host's")
 	if err := fset.Parse(args); err != nil {
 		return 2
+	}
+	osn, arch := bottle.HostSlug()
+	if *platform != "" {
+		o, a, ok := strings.Cut(*platform, "/")
+		if !ok || o == "" || a == "" {
+			// A half-parsed platform would resolve against an empty arch and
+			// report every bottle as absent — a clean-looking catastrophe.
+			fmt.Fprintf(stderr, "unresolved: %q is not an os/arch\n", *platform)
+			return 2
+		}
+		osn, arch = o, a
 	}
 	projects, err := undeclaredProjects(fset.Args(), unresolvedStdin)
 	if err != nil {
@@ -80,7 +102,7 @@ func runUnresolved(args []string, stdout, stderr io.Writer) int {
 			dir = d
 			defer os.RemoveAll(dir)
 		}
-		if _, err := unresolvedInstall(map[string]string{p: "*"}, dir); err != nil {
+		if _, err := unresolvedInstall(map[string]string{p: "*"}, dir, osn, arch); err != nil {
 			fmt.Fprintf(stderr, "unresolved: %s: %v\n", p, err)
 			continue
 		}

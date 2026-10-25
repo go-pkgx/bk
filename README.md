@@ -503,6 +503,33 @@ can *verify* a digest but has no exported way to be *asked* for one, and a lock
 taken before anything is built has no output to name. The header of every lock
 says so, rather than letting a reader assume a guarantee that is not there.
 
+## `bk unresolved` — can what we published actually load?
+
+It installs a project's closure into a store of its own and reports every
+reference the store cannot answer: an ELF names a **soname** and the
+loader searches for it, so the question is whether anything in the closure
+provides that name; a Mach-O names a **path**, so the question is a stat.
+Each project gets its own store, because a shared one rescues a missing
+reference by accident — `gpgme`'s undeclared `libgpg-error` resolved for
+months because something else in the same closure happened to bring it.
+
+```console
+bk unresolved -platform linux/aarch64 gnu.org/bash curl.se
+```
+
+⛔ **`-platform` exists because an audit that can only ask about its own
+machine covers one platform of six.** Wired into CI (`sonames.yml` in
+go-pkgx/packages) this found **967 unresolvable references over 259 of
+1407 bottled projects** on linux/x86-64 — and said nothing about the other
+five, which were not clean but **unasked**. The reader was never the
+problem: it walks ELF and Mach-O in one pass precisely because a store
+built on one platform is read on another. Only the install half was
+host-bound, until `bottle.CompleteClosureFor` (bottle v0.55.0).
+
+A half-parsed platform is refused before anything is fetched: resolved
+against an empty arch, every bottle is absent, every closure is empty, and
+the audit would report a flawless platform it never installed.
+
 ## `bk vulnid` — under what name does a CVE database know this package?
 
 Rebuilding a bottle to fix a vulnerability needs a vulnerability to point at,
