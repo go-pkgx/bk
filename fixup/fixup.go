@@ -47,8 +47,11 @@ func has(skips []string, s string) bool {
 
 // FixUp runs the full relocation pipeline for opts.Platform.
 func FixUp(opts Options) error {
-	if opts.Platform == "windows" {
-		opts.log("windows target: skipping POSIX relocation for %s", opts.Prefix)
+	// wasip1 joins windows here: a .wasm module has no ELF/Mach-O headers, no
+	// rpath and no interpreter to rewrite, and a Go-only build leaves no .pc or
+	// cmake files either.
+	if opts.Platform == "windows" || opts.Platform == "wasip1" {
+		opts.log("%s target: skipping POSIX relocation for %s", opts.Platform, opts.Prefix)
 		return nil
 	}
 	if err := fixRpaths(opts); err != nil {

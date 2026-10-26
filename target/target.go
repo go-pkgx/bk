@@ -30,8 +30,8 @@ import (
 
 // Target is the resolved build target.
 type Target struct {
-	Platform string // darwin | linux | windows
-	Arch     string // x86-64 | aarch64 | s390x
+	Platform string // darwin | linux | windows | wasip1
+	Arch     string // x86-64 | aarch64 | s390x | wasm (wasip1 only)
 	// Triple is the compiler triple — and for every target but windows it is
 	// the triple of the machine bk RUNS ON, not the one named here.
 	//
@@ -68,20 +68,31 @@ func (t Target) Cross() bool {
 func (t Target) Slug() string { return t.Platform + "/" + t.Arch }
 
 var (
-	supportedPlatforms = map[string]bool{"darwin": true, "linux": true, "windows": true}
-	// s390x joined this list when a LinuxONE runner came online. An arch with
-	// no machine behind it is a guess, and this is the one place that should
-	// not hold one.
+	// platformArches is the table of what bk can build FOR: platform -> arches.
+	// Arch validity is per platform, because wasm is an architecture only of
+	// wasip1 and `linux/wasm` or `wasip1/x86-64` name no machine at all.
 	//
-	// Host() has never had a list -- it passes GOARCH through pkgxArch -- so
-	// until now the same architecture was legal natively and refused the
-	// moment a build NAMED it. That asymmetry is how `--platform linux/s390x`
-	// reached
-	//
-	//	factory: unsupported target arch: "s390x"
-	//
-	// on a runner that had already checked the repo out and installed bk.
-	supportedArches = map[string]bool{"x86-64": true, "aarch64": true, "s390x": true}
+	// wasip1 is GOOS=wasip1 GOARCH=wasm: pure-Go builds (CGO_ENABLED=0) that
+	// produce a .wasm module, published as OCI platform os=wasip1
+	// architecture=wasm. C toolchains (wasi-sdk) are not part of this target.
+	platformArches = map[string]map[string]bool{
+		// s390x joined the unix list when a LinuxONE runner came online. An arch
+		// with no machine behind it is a guess, and this is the one place that
+		// should not hold one.
+		//
+		// Host() has never had a list -- it passes GOARCH through pkgxArch -- so
+		// until now the same architecture was legal natively and refused the
+		// moment a build NAMED it. That asymmetry is how `--platform linux/s390x`
+		// reached
+		//
+		//	factory: unsupported target arch: "s390x"
+		//
+		// on a runner that had already checked the repo out and installed bk.
+		"darwin":  {"x86-64": true, "aarch64": true, "s390x": true},
+		"linux":   {"x86-64": true, "aarch64": true, "s390x": true},
+		"windows": {"x86-64": true, "aarch64": true, "s390x": true},
+		"wasip1":  {"wasm": true},
+	}
 	// llvm.org/mingw-w64 cross triples (see the go-pkgx/packages Windows
 	// factories: x86_64-w64-mingw32-clang / aarch64-w64-mingw32-clang).
 	windowsTriples = map[string]string{
@@ -90,6 +101,10 @@ var (
 	}
 	overrideRE = regexp.MustCompile(`^([a-z0-9_]+)[/+]([a-z0-9-]+)$`)
 )
+
+// wasip1Triple is the LLVM name of the Go wasip1/wasm target (Go's GOOS=wasip1
+// GOARCH=wasm; WASI preview 1 on a 32-bit wasm machine).
+const wasip1Triple = "wasm32-wasip1"
 
 // pkgxArch maps a Go GOARCH to pkgx's arch naming.
 func pkgxArch(goarch string) string {
@@ -116,6 +131,8 @@ func nativeTripleFor(goos, goarch string) string {
 		arch = "aarch64"
 	}
 	switch goos {
+	case "wasip1":
+		return wasip1Triple
 	case "darwin":
 		return arch + "-apple-darwin"
 	case "windows":
@@ -138,11 +155,51 @@ func nativeTripleFor(goos, goarch string) string {
 //
 // Predicates rather than the maps, so a caller cannot hold a reference and
 // drift again.
-func IsPlatform(s string) bool { return supportedPlatforms[s] }
+func IsPlatform(s string) bool { _, ok := platformArches[s]; return ok }
 
-// IsArch reports whether s is an architecture this factory builds for, in
-// pkgx's spelling (`x86-64`, not `amd64` — see pkgxArch).
-func IsArch(s string) bool { return supportedArches[s] }
+// IsArch reports whether s is an architecture this factory builds for on SOME
+// platform, in pkgx's spelling (`x86-64`, not `amd64` — see pkgxArch). It is
+// the recipe vocabulary (`env: {wasm: …}`); whether a given platform/arch PAIR
+// is buildable is IsPair.
+func IsArch(s string) bool {
+	for _, arches := range platformArches {
+		if arches[s] {
+			return true
+		}
+	}
+	return false
+}
+
+// IsPair reports whether platform/arch names a machine bk can build for:
+// `wasip1/wasm` and `linux/x86-64` do, `linux/wasm` and `wasip1/x86-64` do not.
+func IsPair(platform, arch string) bool { return platformArches[platform][arch] }
+
+// Platforms and Arches list the vocabulary, sorted, for callers that need a
+// set (a recipe-key regexp) and must not restate it.
+func Platforms() []string {
+	out := make([]string, 0, len(platformArches))
+	for p := range platformArches {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Arches is the sorted union of every platform's arches.
+func Arches() []string {
+	seen := map[string]bool{}
+	for _, arches := range platformArches {
+		for a := range arches {
+			seen[a] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for a := range seen {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func Host() Target {
 	p := runtime.GOOS
@@ -161,18 +218,18 @@ func Override() (platform, arch string, ok bool, err error) {
 		return "", "", false, fmt.Errorf("invalid BREWKIT_TARGET: %q (expected eg. 'windows/x86-64')", raw)
 	}
 	platform, arch = m[1], m[2]
-	if !supportedPlatforms[platform] {
+	if !IsPlatform(platform) {
 		return "", "", false, fmt.Errorf("unsupported target platform: %q", platform)
 	}
-	if !supportedArches[arch] {
+	if !IsPair(platform, arch) {
 		// amd64 and arm64 are Go's spellings for two of these machines and the
 		// mistake actually made, since every other arch name here is shared.
 		// Refusing without saying so sends the reader looking for a missing
 		// port rather than at the two characters that differ.
-		if pkgx := pkgxArch(arch); pkgx != arch && supportedArches[pkgx] {
+		if pkgx := pkgxArch(arch); pkgx != arch && IsPair(platform, pkgx) {
 			return "", "", false, fmt.Errorf("unsupported target arch: %q (pkgx spells it %q)", arch, pkgx)
 		}
-		return "", "", false, fmt.Errorf("unsupported target arch: %q", arch)
+		return "", "", false, fmt.Errorf("unsupported target arch %q for platform %q", arch, platform)
 	}
 	return platform, arch, true, nil
 }
@@ -193,6 +250,11 @@ func Resolve() (Target, error) {
 		return Host(), nil
 	}
 	triple := nativeTriple()
+	if platform == "wasip1" {
+		// Like windows, a real cross triple: the module is never the machine
+		// bk runs on.
+		triple = wasip1Triple
+	}
 	if platform == "windows" {
 		// This used to read `triple = windowsTriples[arch]` under a comment
 		// saying every supported arch had an entry, so the lookup was total.

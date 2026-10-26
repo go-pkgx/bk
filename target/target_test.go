@@ -182,8 +182,8 @@ func TestWindowsArchWithoutTripleRefuses(t *testing.T) {
 // that reads as support.
 func TestEveryWindowsTripleIsASupportedArch(t *testing.T) {
 	for arch := range windowsTriples {
-		if !supportedArches[arch] {
-			t.Errorf("windowsTriples has %q, which supportedArches refuses", arch)
+		if !IsPair("windows", arch) {
+			t.Errorf("windowsTriples has %q, which windows refuses", arch)
 		}
 	}
 }
