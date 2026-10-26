@@ -94,7 +94,7 @@ func runDepsplit(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "depsplit: %d pair(s) named in both lists with differing text; resolving\n", len(cand))
 
-	c, err := bottle.NewOCIClient(bottle.DistBase)
+	c, err := newDepsplitRegistry(bottle.DistBase)
 	if err != nil {
 		fmt.Fprintln(stderr, "depsplit:", err)
 		return 1
@@ -248,8 +248,20 @@ func quoteConstraint(c string) string {
 // and the per-version platform check: the candidate list repeats projects
 // (abseil.io appears under protobuf, re2 and grpc) and neither answer changes
 // during a run.
+// depsplitRegistry is the half of the registry this needs, as an interface so
+// the resolution pass can be driven without a network — the seam below is how
+// every branch of it is reachable from a test.
+type depsplitRegistry interface {
+	ListTags(project string) ([]string, error)
+	HasPlatform(project, version, osn, arch string) (bool, error)
+}
+
+var newDepsplitRegistry = func(dist string) (depsplitRegistry, error) {
+	return bottle.NewOCIClient(dist)
+}
+
 type registryPicker struct {
-	c    *bottle.OCIClient
+	c    depsplitRegistry
 	osn  string
 	arch string
 	tags map[string][]string
