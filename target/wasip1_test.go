@@ -45,6 +45,21 @@ func TestWasmIsAnArchOfWasip1Only(t *testing.T) {
 	}
 }
 
+// TestVocabularyListsAreSortedAndComplete: build derives its recipe-key regexp
+// from these lists, so they must name every platform and arch exactly once.
+func TestVocabularyListsAreSortedAndComplete(t *testing.T) {
+	wantP := []string{"darwin", "linux", "wasip1", "windows"}
+	wantA := []string{"aarch64", "s390x", "wasm", "x86-64"}
+	for _, c := range []struct {
+		name      string
+		got, want []string
+	}{{"Platforms", Platforms(), wantP}, {"Arches", Arches(), wantA}} {
+		if strings.Join(c.got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("%s() = %v, want %v", c.name, c.got, c.want)
+		}
+	}
+}
+
 func TestWasip1Vocabulary(t *testing.T) {
 	if !IsPlatform("wasip1") || !IsArch("wasm") {
 		t.Error("recipe vocabulary must know wasip1 and wasm")
