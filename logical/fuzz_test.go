@@ -56,6 +56,43 @@ func FuzzParsePathRoundTrip(f *testing.F) {
 	})
 }
 
+// The three reasons a step cannot be spelled, named rather than left to the
+// fuzzer's corpus — a rule with a stated reason deserves a test that says the
+// reason, and the corpus happens to cover two of these through one entry.
+func TestAStepThatCannotBeSpelledIsRefused(t *testing.T) {
+	for _, c := range []struct{ what, path string }{
+		{"a quote, which String would escape as \\\"", `"`},
+		{"a backslash, which round-trips to two characters", `\`},
+		{"a lone continuation byte, which is not UTF-8", "[\".\x83\"]"},
+		{"a control character, which String would escape as \\x01", "\x01"},
+		{"a control character inside brackets", "[\"a\x01b\"]"},
+	} {
+		if _, err := ParsePath(c.path); err == nil {
+			t.Errorf("ParsePath(%q) was accepted; it holds %s", c.path, c.what)
+		}
+	}
+	// The control: every shape a real override uses must still parse, or a
+	// rule that refused everything would pass the cases above too.
+	for _, ok := range []string{
+		"versions",
+		"build.env.ARGS",
+		`dependencies["openssl.org"]`,
+		`build.dependencies["crates.io/semverator"]`,
+		`dependencies.linux["gnu.org/gcc/libstdcxx"]`,
+	} {
+		p, err := ParsePath(ok)
+		if err != nil {
+			t.Errorf("ParsePath(%q) was refused: %v", ok, err)
+			continue
+		}
+		if again, err := ParsePath(p.String()); err != nil {
+			t.Errorf("ParsePath(%q).String() = %q does not parse: %v", ok, p.String(), err)
+		} else if !slices.Equal(p, again) {
+			t.Errorf("%q does not round trip: %v -> %q -> %v", ok, p, p.String(), again)
+		}
+	}
+}
+
 // The override document itself. If it parses, every operation must name a
 // place that can be read back — an Op with an unreadable Path is one that
 // cannot be reported when it fails to apply, which is the silent
