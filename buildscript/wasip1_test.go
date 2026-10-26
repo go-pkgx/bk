@@ -34,7 +34,7 @@ func TestWrapWasip1C(t *testing.T) {
 			`the wasip1 toolchain is not installed`,
 			// C++: libc++ is its own bottle, named only when installed
 			`$PKGX_DIR/libcxx.llvm.org/wasi/v[0-9]*`,
-			`${BK_WASI_CXX:+ -stdlib=libc++ -nostdinc++ -isystem $BK_WASI_CXX/include/wasm32-wasip1/c++/v1 -L$BK_WASI_CXX/lib/wasm32-wasip1}`,
+			`${BK_WASI_CXX:+ -fno-exceptions -stdlib=libc++ -nostdinc++ -isystem $BK_WASI_CXX/include/wasm32-wasip1/c++/v1 -L$BK_WASI_CXX/lib/wasm32-wasip1}`,
 		} {
 			if !strings.Contains(s, want) {
 				t.Errorf("host %s: missing %q:\n%s", host.Platform, want, s)

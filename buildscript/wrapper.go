@@ -764,8 +764,12 @@ var wasiResolve = []string{
 	// so the C++ stencil names its headers and its libraries itself. -nostdinc++
 	// keeps the driver from also looking for c++/v1 under the wasi-libc sysroot;
 	// the -L is a link flag, which the shim drops for compile-only steps.
+	// -fno-exceptions because that is how libc++ is built here: clang does not
+	// default to it for wasm32-wasip1, and a TU that throws needs __cxa_throw,
+	// which this libc++abi (exceptions off, no unwinder) does not provide
+	// ("undefined symbol: __cxa_allocate_exception", simdjson, run 40389842826).
 	`export BK_WASI_CXX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/wasi/v[0-9]*")"`,
-	`export BK_CXX="clang++ ` + wasiFlags + `${BK_WASI_CXX:+ -stdlib=libc++ -nostdinc++ -isystem $BK_WASI_CXX/include/wasm32-wasip1/c++/v1 -L$BK_WASI_CXX/lib/wasm32-wasip1}"`,
+	`export BK_CXX="clang++ ` + wasiFlags + `${BK_WASI_CXX:+ -fno-exceptions -stdlib=libc++ -nostdinc++ -isystem $BK_WASI_CXX/include/wasm32-wasip1/c++/v1 -L$BK_WASI_CXX/lib/wasm32-wasip1}"`,
 	`export CC="${CC:-$BK_CC}" CXX="${CXX:-$BK_CXX}"`,
 	`export AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip`,
 }
