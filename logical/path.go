@@ -3,6 +3,8 @@ package logical
 import (
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Path is a route to one place in a recipe document.
@@ -33,6 +35,9 @@ func ParsePath(s string) (Path, error) {
 			if err != nil {
 				return nil, err
 			}
+			if err := representable(s, step); err != nil {
+				return nil, err
+			}
 			out = append(out, step)
 			i = end
 		default:
@@ -42,6 +47,9 @@ func ParsePath(s string) (Path, error) {
 			}
 			if j == i {
 				return nil, fmt.Errorf("empty step in %q at %d", s, i)
+			}
+			if err := representable(s, s[i:j]); err != nil {
+				return nil, err
 			}
 			out = append(out, s[i:j])
 			i = j
@@ -54,6 +62,47 @@ func ParsePath(s string) (Path, error) {
 		}
 	}
 	return out, nil
+}
+
+// representable refuses a step that String could not render back.
+//
+// ⛔ THE WRITER AND THE READER HAVE TO AGREE, and they did not. String
+// brackets a step that needs it with %q — Go's escaping — while bracketed
+// finds the closing quote with strings.IndexByte and understands no escape at
+// all. So a step holding a quote or a backslash printed in a spelling this
+// parser cannot read:
+//
+//	ParsePath(`"`)   -> Path{`"`}, String() -> `["\""]` -> unterminated bracket
+//	ParsePath(`\`)   -> Path{`\`}, String() -> `["\\"]` -> step `\\`, SILENTLY
+//	                                                       two characters
+//
+// The second is the dangerous one: no error, a different path, and the
+// diagnostic that names the place a person must fix names a different place.
+//
+// Found by FuzzParsePathRoundTrip in 0.03s. Teaching bracketed to decode
+// escapes would be the other fix and the wrong one: a Path step is a recipe
+// key, no recipe key contains a quote or a backslash, and that would be
+// escape machinery written for input that cannot arrive. Refusing instead
+// makes the unrepresentable step unparseable, so String ∘ ParsePath is a
+// round trip by construction rather than by agreement.
+// ⛔ AND THE RULE IS WIDER THAN QUOTES, which the fuzzer said next: a step
+// holding a non-printable byte also round-trips badly, because %q spells it
+// \x83 and so introduces the backslash this cannot read. The rule is
+// therefore "what %q leaves alone" — printable, and valid UTF-8, which is
+// every recipe key there has ever been.
+func representable(s, step string) error {
+	if !utf8.ValidString(step) {
+		return fmt.Errorf("step %q in path %q is not valid UTF-8, and a path cannot spell those bytes", step, s)
+	}
+	for _, r := range step {
+		switch {
+		case r == '"' || r == '\\':
+			return fmt.Errorf("step %q in path %q contains %q, which a path cannot spell", step, s, r)
+		case !unicode.IsPrint(r):
+			return fmt.Errorf("step %q in path %q contains %q, which a path cannot spell", step, s, r)
+		}
+	}
+	return nil
 }
 
 // bracketed reads `["…"]` starting at s[i] == '[' and returns the index just
