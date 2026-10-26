@@ -134,7 +134,10 @@ func WriteLibexecFor(dir string, libcPkgx bool, triple, platform, arch string) e
 			return err
 		}
 	}
-	if !libcPkgx {
+	// A wasip1 target gets the compiler shims too: there $BK_CC is the stencil
+	// that carries --target/--sysroot/-resource-dir, and a recipe calling `cc`
+	// or `clang` by name must get it (wrapper.go, case "wasip1").
+	if !libcPkgx && platform != "wasip1" {
 		return nil
 	}
 	self, err := osExecutable()

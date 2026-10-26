@@ -188,8 +188,15 @@ func (o WrapOptions) depPlus() string {
 	for _, d := range o.Deps {
 		parts = append(parts, `"+`+d+`"`)
 	}
-	if !o.HasCompiler && !o.Bootstrap && o.Target.Platform != "windows" && o.Target.Platform != "wasip1" && o.Host.Platform != "darwin" {
+	wasi := o.Target.Platform == "wasip1"
+	// A wasip1 target ALWAYS wants the llvm.org bottle, whatever the host: the
+	// system toolchain of a darwin host has no wasm backend, and a recipe's
+	// own compiler dependency is not one that can target wasm32-wasip1.
+	if wasi || (!o.HasCompiler && !o.Bootstrap && o.Target.Platform != "windows" && o.Host.Platform != "darwin") {
 		parts = append(parts, `"+llvm.org"`)
+	}
+	if wasi {
+		parts = append(parts, `"+github.com/WebAssembly/wasi-libc"`, `"+compiler-rt.llvm.org/wasi"`)
 	}
 	// pkgx-libc mode needs the gnu.org/glibc bottle present in the eval so its
 	// headers/crt/libc/loader are on disk under $PKGX_DIR for wrapFlags to point
@@ -418,6 +425,25 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 		// either order relative to -Werror, because -Werror promotes warnings
 		// that are ENABLED and -Wno- disables this one outright.
 		ld = append(ld, "-Wl,-headerpad_max_install_names", "-Wno-unused-command-line-argument")
+	case "wasip1":
+		// C/C++ for wasm32-wasip1, with OUR toolchain: the llvm.org bottle's clang
+		// and wasm-ld, the wasi-libc sysroot and the compiler-rt builtins, each a
+		// bottle built from source (wasi-sdk's recipe, taken apart; see
+		// compiler-rt.llvm.org/wasi and github.com/WebAssembly/wasi-libc in the
+		// pantry overlay). Nothing comes from the host distribution.
+		//
+		// The setting that must hold for EVERY recipe is in $BK_CC/$BK_CXX, the
+		// stencil the cc/gcc/clang shims re-exec (cmd/bk/ccshim.go), and not in
+		// CFLAGS/LDFLAGS, which a recipe's env replaces whole. $CC/$CXX default to
+		// it for the recipes that do read them, as the sovereign linux mode does.
+		//
+		// -resource-dir points at the compiler-rt bottle, which carries clang's own
+		// headers next to libclang_rt.builtins.a (wasi-sdk's wasi-resource-dir);
+		// -mcpu=lime1 is wasi-sdk's WASI_SDK_CPU_CFLAGS default.
+		//
+		// AR/RANLIB are the LLVM ones, as darwin's are fixed to /usr/bin/ar below:
+		// the host binutils cannot write a wasm object index.
+		out = append(out, wasiResolve...)
 	case "linux":
 		// Both arches get an absolute -Wl,-rpath,$PKGX_DIR so the linker emits a
 		// DT_RUNPATH *slot* fixup/rpath.go later rewrites $ORIGIN-relative. A
@@ -710,6 +736,26 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 		}
 	}
 	return out
+}
+
+// wasiFlags is the driver stencil of a wasip1/wasm build: target, sysroot,
+// resource dir (compiler-rt builtins + clang headers) and the wasm CPU
+// baseline. Quoted paths: a $PKGX_DIR with a space must not split them.
+const wasiFlags = `--target=wasm32-wasip1 --sysroot="$BK_WASI_SYSROOT" -resource-dir="$BK_WASI_RT" -mcpu=lime1 -Wno-unused-command-line-argument`
+
+// wasiResolve locates the two wasip1 toolchain bottles and exports the stencil.
+// It fails the build when either is absent: a missing sysroot would not stop
+// clang, which would fall back to compiling for wasm32 with NO libc, and the
+// failure would surface as an undeclared stdio.h a thousand lines later.
+var wasiResolve = []string{
+	sysrootResolve[0],
+	`export BK_WASI_SYSROOT="$(bkresolve "$PKGX_DIR/github.com/WebAssembly/wasi-libc/v[0-9]*")"`,
+	`export BK_WASI_RT="$(bkresolve "$PKGX_DIR/compiler-rt.llvm.org/wasi/v[0-9]*")"`,
+	`[ -n "$BK_WASI_SYSROOT" ] && [ -n "$BK_WASI_RT" ] || { echo "bk: the wasip1 toolchain is not installed (github.com/WebAssembly/wasi-libc, compiler-rt.llvm.org/wasi)" >&2; exit 1; }`,
+	`export BK_CC="clang ` + wasiFlags + `"`,
+	`export BK_CXX="clang++ ` + wasiFlags + `"`,
+	`export CC="${CC:-$BK_CC}" CXX="${CXX:-$BK_CXX}"`,
+	`export AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip`,
 }
 
 const baseSysrootFlags = `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB"${BK_LIBGCC:+ -L"$BK_LIBGCC"} --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument`
