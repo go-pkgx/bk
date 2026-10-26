@@ -759,7 +759,13 @@ var wasiResolve = []string{
 	`export BK_WASI_RT="$(bkresolve "$PKGX_DIR/compiler-rt.llvm.org/wasi/v[0-9]*")"`,
 	`[ -n "$BK_WASI_SYSROOT" ] && [ -n "$BK_WASI_RT" ] || { echo "bk: the wasip1 toolchain is not installed (github.com/WebAssembly/wasi-libc, compiler-rt.llvm.org/wasi)" >&2; exit 1; }`,
 	`export BK_CC="clang ` + wasiFlags + `"`,
-	`export BK_CXX="clang++ ` + wasiFlags + `"`,
+	// libc++/libc++abi are a separate bottle (libcxx.llvm.org/wasi), present only
+	// when the recipe asked for it. A sysroot cannot carry it — it is wasi-libc's —
+	// so the C++ stencil names its headers and its libraries itself. -nostdinc++
+	// keeps the driver from also looking for c++/v1 under the wasi-libc sysroot;
+	// the -L is a link flag, which the shim drops for compile-only steps.
+	`export BK_WASI_CXX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/wasi/v[0-9]*")"`,
+	`export BK_CXX="clang++ ` + wasiFlags + `${BK_WASI_CXX:+ -stdlib=libc++ -nostdinc++ -isystem $BK_WASI_CXX/include/wasm32-wasip1/c++/v1 -L$BK_WASI_CXX/lib/wasm32-wasip1}"`,
 	`export CC="${CC:-$BK_CC}" CXX="${CXX:-$BK_CXX}"`,
 	`export AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip`,
 }
