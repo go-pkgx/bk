@@ -70,7 +70,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `httpretry` | which failed HTTP attempts are worth repeating. Measured on one 23-failure batch, **eleven** were transient HTTP and nothing else — a factory that gives a flaky host exactly one chance reports its own bad luck as a broken recipe |
 | `useragent` | the one User-Agent every HTTP path in bk sends. It exists because they differed: `versions` set one and `fetch` did not, so bk could LIST a project's versions and then get 403 downloading the tarball it had just found |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | thirty subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `vulnid`, `advisories`, `vulnfetch`, `attest`. What it gets WRONG: `depgaps`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
+| `cmd/bk` | thirty-one subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `vulnid`, `advisories`, `vulnfetch`, `attest`. What it gets WRONG: `depgaps`, `depsplit`, `undeclared`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -86,6 +86,31 @@ that does not work, so a gate would stop a run over a missing host config file.
 `--test-only` builds nothing and tests what the registry already holds — the
 factory tests what it publishes once, and that is how a bottle which stopped
 working gets noticed afterwards.
+
+`bk depsplit` finds the recipes that name ONE project in BOTH dependency
+lists with constraints that select DIFFERENT versions. The two lists are kept
+apart on purpose — the runtime list is the set a build LINKS against, the
+build list is the set it RUNS — and that is what lets qt build with
+`unicode.org ^71` to link and `^73` for nodejs. The case the separation does
+not cover is the same project in both: two versions of one library then land
+in one build environment, and which supplies headers and which supplies
+libraries is decided by search order. `protobuf.dev` declared
+`abseil.io: "*"` to link and `^20260526` to build, and on darwin/aarch64 the
+link died on `absl::lts_20260817::Mutex::AssertHeld()` after 34 minutes.
+When the same disagreement happens to link instead of failing it is worse —
+the bottle ships an `@rpath` reference to the version its headers came from
+while declaring the constraint a consumer will resolve differently.
+
+Two things decide whether its answer is worth anything. The verdict is
+**different VERSION, not different text**: `*` and `>=1` differ as strings
+and almost never as answers, so both constraints are resolved against what
+the registry actually carries **for that platform** — without the platform
+check it reported `github.com/awslabs/dynein` as linking openssl 1.1.1w on
+linux/x86-64, a version published for darwin/aarch64 alone. And it reads the
+OVERRIDDEN recipe, because the fix for the one confirmed instance is an
+override, and an operator who finds a repaired defect in a defect list stops
+reading the list. A pair it prints is a **candidate**: harmful when the
+doubly-named project is linked, normal when it is a tool.
 
 `bk test` runs a recipe's own `test:` block against the INSTALLED package, in an
 emptied sandbox holding that package, its `test.dependencies` and the recipe's

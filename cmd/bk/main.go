@@ -227,6 +227,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runLock(rest[1:], stdout, stderr)
 	case "depgaps":
 		return runDepgaps(rest[1:], stdout, stderr)
+	case "depsplit":
+		return runDepsplit(rest[1:], stdout, stderr)
 	case "undeclared":
 		return runUndeclared(rest[1:], stdout, stderr)
 	case "unresolved":
