@@ -188,7 +188,7 @@ func (o WrapOptions) depPlus() string {
 	for _, d := range o.Deps {
 		parts = append(parts, `"+`+d+`"`)
 	}
-	if !o.HasCompiler && !o.Bootstrap && o.Target.Platform != "windows" && o.Host.Platform != "darwin" {
+	if !o.HasCompiler && !o.Bootstrap && o.Target.Platform != "windows" && o.Target.Platform != "wasip1" && o.Host.Platform != "darwin" {
 		parts = append(parts, `"+llvm.org"`)
 	}
 	// pkgx-libc mode needs the gnu.org/glibc bottle present in the eval so its

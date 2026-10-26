@@ -22,8 +22,9 @@ import (
 )
 
 var (
-	platforms = map[string]bool{"darwin": true, "linux": true, "windows": true}
-	arches    = map[string]bool{"x86-64": true, "aarch64": true, "s390x": true}
+	// Derived from target, which is the one table of platforms and arches.
+	platforms = setOf(target.Platforms())
+	arches    = setOf(target.Arches())
 	// Derived from the two maps rather than restated beside them. A recipe key
 	// is read through BOTH -- the regex for `linux/s390x`, the map for a bare
 	// `s390x` -- so a literal here that fell behind would make one spelling of
@@ -32,6 +33,14 @@ var (
 	// name, and the recipe acquires a dependency on a project called "s390x".
 	osArchDepRE = regexp.MustCompile(`^(` + alternation(platforms) + `)/(` + alternation(arches) + `)$`)
 )
+
+func setOf(names []string) map[string]bool {
+	m := make(map[string]bool, len(names))
+	for _, n := range names {
+		m[n] = true
+	}
+	return m
+}
 
 // alternation renders a set as a regex alternation. Sorted for a stable
 // pattern; the expression it goes into is anchored and separated by a slash,

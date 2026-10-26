@@ -53,7 +53,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 
 | package  | what it does |
 |----------|--------------|
-| `target` | the single source of truth for the build **target** vs the **host** (`BREWKIT_TARGET` / `--platform`), incl. the llvm-mingw Windows cross triples |
+| `target` | the single source of truth for the build **target** vs the **host** (`BREWKIT_TARGET` / `--platform`), incl. the llvm-mingw Windows cross triples and the `wasip1/wasm` target (`wasm32-wasip1`; Go-only builds, no llvm.org dependency, no POSIX relocation; `wasm` is an arch of `wasip1` only) |
 | `config` | the build workspace layout, keyed on the target so a cross build never collides with a native one |
 | `schema` | an authoritative **JSON Schema** for `package.yml` — there is no official one; this is derived from libpkgx's parser and validated against the entire pkgxdev/pantry corpus (0 rejections over 1890 recipes) |
 | `pantry` | parses + schema-validates a `package.yml` into a shared `Recipe` |
