@@ -741,7 +741,13 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 // wasiFlags is the driver stencil of a wasip1/wasm build: target, sysroot,
 // resource dir (compiler-rt builtins + clang headers) and the wasm CPU
 // baseline. Quoted paths: a $PKGX_DIR with a space must not split them.
-const wasiFlags = `--target=wasm32-wasip1 --sysroot="$BK_WASI_SYSROOT" -resource-dir="$BK_WASI_RT" -mcpu=lime1 -Wno-unused-command-line-argument`
+//
+// --rtlib=compiler-rt: the llvm.org bottle's clang defaults to libgcc, so a wasm
+// LINK asked wasm-ld for -lgcc ("wasm-ld: error: unable to find library -lgcc",
+// sqlite3, wasip1-c run 40369903497). wasi-sdk builds its clang with
+// CLANG_DEFAULT_RTLIB=compiler-rt; we state it in the stencil instead, as the
+// linux sovereign mode does.
+const wasiFlags = `--target=wasm32-wasip1 --sysroot="$BK_WASI_SYSROOT" -resource-dir="$BK_WASI_RT" -mcpu=lime1 --rtlib=compiler-rt -Wno-unused-command-line-argument`
 
 // wasiResolve locates the two wasip1 toolchain bottles and exports the stencil.
 // It fails the build when either is absent: a missing sysroot would not stop

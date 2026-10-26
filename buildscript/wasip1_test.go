@@ -25,7 +25,7 @@ func TestWrapWasip1C(t *testing.T) {
 		})
 		for _, want := range []string{
 			`"+llvm.org"`, `"+github.com/WebAssembly/wasi-libc"`, `"+compiler-rt.llvm.org/wasi"`,
-			`export BK_CC="clang --target=wasm32-wasip1 --sysroot="$BK_WASI_SYSROOT" -resource-dir="$BK_WASI_RT" -mcpu=lime1`,
+			`export BK_CC="clang --target=wasm32-wasip1 --sysroot="$BK_WASI_SYSROOT" -resource-dir="$BK_WASI_RT" -mcpu=lime1 --rtlib=compiler-rt`,
 			`export BK_CXX="clang++ --target=wasm32-wasip1`,
 			`export CC="${CC:-$BK_CC}" CXX="${CXX:-$BK_CXX}"`,
 			`export AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip`,
