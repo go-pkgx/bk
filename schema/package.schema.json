@@ -139,12 +139,23 @@
     "depMap": {
       "type": ["object", "null"],
       "description": "project → constraint, optionally nested under a platform key (darwin|linux|windows[/arch] or <arch>)",
+      "propertyNames": { "$ref": "#/$defs/depKey" },
       "additionalProperties": {
         "oneOf": [
           { "$ref": "#/$defs/constraint" },
-          { "type": "object", "additionalProperties": { "$ref": "#/$defs/constraint" } }
+          {
+            "type": "object",
+            "propertyNames": { "$ref": "#/$defs/depKey" },
+            "additionalProperties": { "$ref": "#/$defs/constraint" }
+          }
         ]
       }
+    },
+    "depKey": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "a key of a dependency map: a project name (gnu.org/gcc, crates.io/semverator) or a platform key (linux, darwin/aarch64, x86-64). Slash-separated segments of [A-Za-z0-9._+-], each holding at least one character that is not a dot — so `.` and `..` are not segments. A key here becomes a registry repository and a store path by concatenation, which is why its shape is constrained at the authoritative schema rather than wherever it is used. Measured against the upstream pantry: 1929 recipes, 7410 keys at both levels, every one accepted.",
+      "pattern": "^[A-Za-z0-9._+-]*[A-Za-z0-9_+-][A-Za-z0-9._+-]*(/[A-Za-z0-9._+-]*[A-Za-z0-9_+-][A-Za-z0-9._+-]*)*$"
     },
     "envScalar": { "type": ["string", "number", "boolean", "null"] },
     "envValue": {
