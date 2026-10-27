@@ -134,6 +134,25 @@ binaries plus toolchain bottles from the signed registry, nothing else.
 [`docs/from-scratch-toolchain.md`](docs/from-scratch-toolchain.md) is the design
 note behind it, kept because its hazard list is still the one that bites.
 
+⛔ **A tool that does not go through the compiler driver sees none of this.**
+The sysroot, the `-isystem` dirs and the runtime choice reach a build through
+`cc` — the shim that re-execs `$BK_CC` — or through `$CC`. **bindgen** drives
+libclang in-process instead, so a Rust crate that generates bindings got the
+container's idea of a libc, or none:
+
+```
+/pkgx/openssl.org/v3.6.4/include/openssl/asn1.h:27:10:
+  fatal error: 'stdio.h' file not found
+```
+
+openssl 3.6.4 had been found and configured correctly in that build; the
+first `#include` of a C library was simply unreachable. Sovereign mode
+therefore also exports `BINDGEN_EXTRA_CLANG_ARGS` — the variable bindgen's
+own documentation names for exactly this — with the header-finding flags
+only, appended to whatever the recipe set. It is **not** exported outside
+sovereign mode, where an empty `--sysroot` would hide the host headers a
+build is entitled to use.
+
 A scratch tree has nothing underneath it, so `bk builder` answers three
 questions a build would otherwise answer hours later and attributed to the
 wrong thing:
