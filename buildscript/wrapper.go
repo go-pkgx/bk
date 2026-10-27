@@ -572,6 +572,11 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 			// sovereign driver.
 			`export BK_CC="clang `+glibcCC+`"`,
 			`export BK_CXX="clang++ `+glibcCXX+`"`,
+			// What bindgen reads, because it never asks the driver. APPENDED
+			// to whatever a recipe set, not substituted for it: a recipe
+			// naming an extra -I has a reason, and the sysroot is not ours to
+			// drop on its behalf.
+			`export BINDGEN_EXTRA_CLANG_ARGS="`+bindgenSysrootFlags+` ${BINDGEN_EXTRA_CLANG_ARGS:-}"`,
 			// The driver for a build that is FREESTANDING by construction: the
 			// pinned pkgx clang and nothing else. A kernel supplies its own
 			// headers and its own runtime, and glibc's headers are not merely
@@ -775,6 +780,30 @@ var wasiResolve = []string{
 }
 
 const baseSysrootFlags = `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB"${BK_LIBGCC:+ -L"$BK_LIBGCC"} --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument`
+
+// bindgenSysrootFlags is the HEADER-FINDING half of the flags above, for a
+// tool that never links.
+//
+// ⛔ BINDGEN DOES NOT GO THROUGH THE COMPILER DRIVER. Everything sovereign
+// about this environment reaches a build through `cc` — the shim that
+// re-execs $BK_CC — or through $CC. bindgen drives **libclang** in-process
+// instead, so it sees none of it, and parsing openssl's headers died on
+//
+//	/pkgx/openssl.org/v3.6.4/include/openssl/asn1.h:27:10:
+//	  fatal error: 'stdio.h' file not found
+//
+// on rpm.org/rpm-sequoia (go-pkgx/packages run 40498046156) — openssl 3 was
+// found and configured correctly, and then a C library's first #include was
+// unreachable because libclang had no sysroot.
+//
+// bindgen's own documentation names this case and this variable:
+// "End-users of the crate may need to set the BINDGEN_EXTRA_CLANG_ARGS
+// environment variable to … --sysroot=/path/to/sysroot" (bindgen/lib.rs:260).
+//
+// Only the flags that find headers. --rtlib, -fuse-ld and -L are link-time
+// options for a tool that produces no binary, and handing them to libclang
+// is noise at best.
+const bindgenSysrootFlags = `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include"`
 
 // sysrootResolve locates the bottles a pkgx-supplied libc toolchain needs and
 // exports their prefixes. Shared with the TEST wrapper, which needs the same
