@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
@@ -229,7 +230,7 @@ func sonameOwners(dir string) map[string][]string {
 	out := map[string][]string{}
 	seen := map[string]bool{}
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !isSharedLibrary(d.Name()) {
+		if err != nil || d.IsDir() || !isSharedLibrary(p, d.Name()) {
 			return nil
 		}
 		rel := strings.TrimPrefix(strings.TrimPrefix(p, dir), string(filepath.Separator))
@@ -257,7 +258,7 @@ func sharedLibrariesOf(project, dir string) []string {
 	seen := map[string]bool{}
 	root := filepath.Join(dir, filepath.FromSlash(project))
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !isSharedLibrary(d.Name()) || seen[d.Name()] {
+		if err != nil || d.IsDir() || seen[d.Name()] || !isSharedLibrary(p, d.Name()) {
 			return nil
 		}
 		seen[d.Name()] = true
@@ -268,49 +269,68 @@ func sharedLibrariesOf(project, dir string) []string {
 	return out
 }
 
-// isSharedLibrary recognises a shared library by name, on either platform.
-// A `.so` with a version suffix (libssl.so.3) and a dylib with one
-// (libiconv.2.dylib) both count; a static archive deliberately does not,
-// because a bottle that links one is the very case this command reports.
+// isSharedLibrary says whether a file in the store is a shared library, by
+// its NAME and then by its BYTES.
 //
-// ⛔ WHAT FOLLOWS `.so` MUST BE A VERSION, not merely begin with a dot. The
-// first run of this command against the real registry reported that
-// `gnu.org/gcc/libstdcxx` ships `libstdc++.so.6.0.33-gdb.py` — a GDB
-// pretty-printer, a PYTHON SCRIPT, counted as a shared library because the
-// test was `HasPrefix(rest, ".")` and `.6.0.33-gdb.py` does start with a dot.
-// It mattered beyond a wrong word in the output: a dependency shipping only
-// such a file would be reported as a declared-and-unlinked edge, when what it
-// ships cannot be linked by anyone and the silence in that case is most of
-// what keeps this list readable.
-func isSharedLibrary(name string) bool {
-	if strings.HasSuffix(name, ".dylib") {
-		return true
-	}
-	i := strings.Index(name, ".so")
-	if i < 0 {
-		return false
-	}
-	return isSOVersion(name[i+len(".so"):])
+// ⛔ THE NAME ALONE CANNOT DECIDE, and two releases proved it in opposite
+// directions over one day.
+//
+// v0.43 asked whether what follows `.so` begins with a dot, and counted
+// `libstdc++.so.6.0.33-gdb.py` — a GDB pretty-printer, a PYTHON SCRIPT.
+// v0.44.0 tightened it to require dot-separated NUMBERS, and stopped counting
+// `libfolly.so.0.58.0-dev`, which `file(1)` calls an "ELF 64-bit LSB shared
+// object" and which every library facebook.com/fbthrift ships names in its own
+// DT_NEEDED. The first mistake invented libraries, the second hid them, and
+// both were a guess about a filename standing in for a fact about a file.
+//
+// Each error cost findings in bulk. A dependency whose libraries are all
+// unrecognised looks like one that ships NONE, which this command deliberately
+// stays silent about; and a reference to an unrecognised soname cannot be
+// attributed to its owner, so a project that does link it reads as one that
+// does not. Five of facebook.com/folly's dependents were reported as not
+// linking folly.
+//
+// So the name is a cheap prefilter and the magic number is the answer. A
+// static archive is excluded by both: it is not `.dylib`, and `!<arch>` is
+// neither ELF nor Mach-O.
+func isSharedLibrary(path, name string) bool {
+	return looksLikeSharedLibrary(name) && hasObjectMagic(path)
 }
 
-// isSOVersion accepts what may follow `.so` in a shared library's name:
-// nothing, or dot-separated numbers (`.3`, `.1.1`, `.6.0.33`).
-func isSOVersion(rest string) bool {
-	if rest == "" {
-		return true
-	}
-	if rest[0] != '.' {
+// looksLikeSharedLibrary is the prefilter: broad enough to admit any spelling
+// a linker produces, so that the magic number is what actually decides.
+func looksLikeSharedLibrary(name string) bool {
+	if strings.HasSuffix(name, ".a") {
 		return false
 	}
-	for _, part := range strings.Split(rest[1:], ".") {
-		if part == "" {
-			return false
-		}
-		for _, r := range part {
-			if r < '0' || r > '9' {
-				return false
-			}
+	return strings.HasSuffix(name, ".dylib") || strings.Contains(name, ".so")
+}
+
+// machoMagics are the Mach-O and universal-binary magic numbers. Both byte
+// orders are compared, which covers the CIGAM spellings without listing them.
+var machoMagics = []uint32{0xfeedface, 0xfeedfacf, 0xcafebabe}
+
+// hasObjectMagic reports whether the file begins with an ELF or Mach-O magic
+// number. A file it cannot read is not a library: this walks a store, where an
+// unreadable entry is a reason to say nothing, never to guess.
+func hasObjectMagic(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var b [4]byte
+	if _, err := io.ReadFull(f, b[:]); err != nil {
+		return false
+	}
+	if b == [4]byte{0x7f, 'E', 'L', 'F'} {
+		return true
+	}
+	le, be := binary.LittleEndian.Uint32(b[:]), binary.BigEndian.Uint32(b[:])
+	for _, m := range machoMagics {
+		if le == m || be == m {
+			return true
 		}
 	}
-	return true
+	return false
 }
