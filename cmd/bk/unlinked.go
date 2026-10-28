@@ -182,13 +182,15 @@ func referencedProjects(project, dir string) map[string]bool {
 				if m := rpathRefRE.FindStringSubmatch(s); m != nil {
 					out[m[1]] = true
 				}
-				out[owners[filepath.Base(s)]] = true
+				for _, o := range owners[filepath.Base(s)] {
+					out[o] = true
+				}
 			}
 			return nil
 		}
 		if strs, serr := bottle.ELFNeeded(p); serr == nil {
 			for _, s := range strs {
-				if o, ok := owners[s]; ok {
+				for _, o := range owners[s] {
 					out[o] = true
 				}
 			}
@@ -199,17 +201,48 @@ func referencedProjects(project, dir string) map[string]bool {
 	return out
 }
 
-// sonameOwners maps a shared library's FILE NAME to the project that ships
-// it, so an ELF `NEEDED libssl.so.3` can be attributed.
-func sonameOwners(dir string) map[string]string {
-	out := map[string]string{}
+// sonameOwners maps a shared library's FILE NAME to EVERY project that ships
+// a file of that name, so an ELF `NEEDED libssl.so.3` can be attributed.
+//
+// ⛔ A SONAME CAN HAVE MORE THAN ONE OWNER, and assuming otherwise fabricated
+// findings in bulk. This returned map[string]string and wrote `out[name] =
+// owner`, so the last project walked won. With one project staged there is no
+// collision and it looked right; over a shared store of 189 it was wrong
+// everywhere. Measured 2026-10-28:
+//
+//	ovstore/gnu.org/gcc/v16.2.0/lib/libstdc++.so.6
+//	ovstore/gnu.org/gcc/libstdcxx/v14.4.0/lib/libstdc++.so.6
+//
+// `facebook.com/folly` NEEDs `libstdc++.so.6` in every one of its libraries.
+// Attributed to whichever of those two was walked last, its declaration of
+// gnu.org/gcc/libstdcxx read as unlinked — and so did nine other C++ projects,
+// each of which obviously links a C++ runtime.
+//
+// ⛔ AND WHY ALL OWNERS, NOT A CLEVERER CHOICE. Resolving a soname properly
+// means replaying the dynamic loader's search order, which this command has no
+// business doing. Naming every candidate can only ever SUPPRESS a finding, and
+// the two directions are not equally expensive: a missed candidate costs a
+// defect we were not going to notice anyway, while a fabricated one costs
+// somebody reading a correct recipe looking for a fault that is not there. A
+// list of candidates is worth nothing once a reader has to doubt it.
+func sonameOwners(dir string) map[string][]string {
+	out := map[string][]string{}
+	seen := map[string]bool{}
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !isSharedLibrary(d.Name()) {
 			return nil
 		}
 		rel := strings.TrimPrefix(strings.TrimPrefix(p, dir), string(filepath.Separator))
-		if owner, ok := ownerOf(rel); ok {
-			out[d.Name()] = owner
+		owner, ok := ownerOf(rel)
+		if !ok {
+			return nil
+		}
+		// One project shipping the same soname at several versions is one
+		// owner, not several: openssl.org alone staged 39 copies of
+		// libssl.so.3 in that same sweep.
+		if key := d.Name() + "\x00" + owner; !seen[key] {
+			seen[key] = true
+			out[d.Name()] = append(out[d.Name()], owner)
 		}
 		return nil
 	})
