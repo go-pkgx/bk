@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -228,11 +229,67 @@ func TestSonameOwnersAttributesALibraryToItsProject(t *testing.T) {
 	writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.so.3"), []byte("x"))
 	writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.6.4/include/ssl.h"), []byte("x"))
 	got := sonameOwners(dir)
-	if got["libssl.so.3"] != "openssl.org" {
-		t.Errorf("libssl.so.3 -> %q, want openssl.org", got["libssl.so.3"])
+	if len(got["libssl.so.3"]) != 1 || got["libssl.so.3"][0] != "openssl.org" {
+		t.Errorf("libssl.so.3 -> %v, want [openssl.org]", got["libssl.so.3"])
 	}
 	if _, ok := got["ssl.h"]; ok {
 		t.Errorf("a header is not a shared library")
+	}
+	// ⛔ AND A LIBRARY NOBODY OWNS IS DROPPED, not attributed to "". A store
+	// holds more than bottles — a staging directory, a stray file — and a
+	// path with no `v<version>` segment names no project. Recording it under
+	// the empty project would make the empty project "referenced", which
+	// satisfies nothing and silently suppresses real findings.
+	writeStoreFile(t, filepath.Join(dir, "loose/libstray.so.1"), []byte("x"))
+	if owners := sonameOwners(dir)["libstray.so.1"]; len(owners) != 0 {
+		t.Errorf("a library outside any bottle was attributed to %v", owners)
+	}
+}
+
+// ⛔ THE TEST THAT WAS MISSING, AND THE SHAPE IT COULD NOT HAVE. Every other
+// fixture here stages ONE project, and a one-project store has no collision —
+// so `out[name] = owner` looked right in all of them and was wrong in bulk the
+// first time a real store was swept. A soname with two owners is the case, and
+// it is the ordinary case: in a 189-project store, `libstdc++.so.6` is shipped
+// by gnu.org/gcc AND gnu.org/gcc/libstdcxx.
+func TestSonameOwnersKeepsEveryOwnerOfAColliding(t *testing.T) {
+	dir := t.TempDir()
+	writeStoreFile(t, filepath.Join(dir, "gnu.org/gcc/v16.2.0/lib/libstdc++.so.6"), []byte("x"))
+	writeStoreFile(t, filepath.Join(dir, "gnu.org/gcc/libstdcxx/v14.4.0/lib/libstdc++.so.6"), []byte("x"))
+	// The same project at several versions is ONE owner, not several:
+	// openssl.org alone staged 39 copies of libssl.so.3 in that sweep.
+	writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.so.3"), []byte("x"))
+	writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.5.8/lib/libssl.so.3"), []byte("x"))
+
+	got := sonameOwners(dir)
+	owners := append([]string(nil), got["libstdc++.so.6"]...)
+	sort.Strings(owners)
+	want := []string{"gnu.org/gcc", "gnu.org/gcc/libstdcxx"}
+	if len(owners) != 2 || owners[0] != want[0] || owners[1] != want[1] {
+		t.Errorf("libstdc++.so.6 -> %v, want %v", owners, want)
+	}
+	if len(got["libssl.so.3"]) != 1 {
+		t.Errorf("one project at two versions is one owner, got %v", got["libssl.so.3"])
+	}
+}
+
+// ⛔ AND THE CONSEQUENCE, which is the part that mattered: a C++ library that
+// NEEDs libstdc++.so.6 must not be reported as linking none of libstdcxx just
+// because another project ships a file of the same name. This is
+// facebook.com/folly, reduced: it was reported, and its own DT_NEEDED names
+// libstdc++.so.6 in every library it ships.
+func TestACollidingSonameDoesNotFabricateAFinding(t *testing.T) {
+	dir := t.TempDir()
+	writeELFNeeded(t, filepath.Join(dir, "gnu.org/gcc/v16.2.0/lib/libstdc++.so.6"))
+	writeELFNeeded(t, filepath.Join(dir, "gnu.org/gcc/libstdcxx/v14.4.0/lib/libstdc++.so.6"))
+	writeELFNeeded(t, filepath.Join(dir, "facebook.com/folly/v2026.8.24.0/lib/libfolly.so"),
+		"libstdc++.so.6", "libc.so.6")
+
+	g := &bottle.Graph{Deps: map[string][]bottle.Edge{
+		"facebook.com/folly": {{On: "gnu.org/gcc/libstdcxx"}},
+	}}
+	if got := unlinkedOf("facebook.com/folly", dir, g); len(got) != 0 {
+		t.Fatalf("a C++ library that NEEDs libstdc++.so.6 was reported as linking none: %+v", got)
 	}
 }
 
