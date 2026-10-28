@@ -239,13 +239,45 @@ func sharedLibrariesOf(project, dir string) []string {
 // A `.so` with a version suffix (libssl.so.3) and a dylib with one
 // (libiconv.2.dylib) both count; a static archive deliberately does not,
 // because a bottle that links one is the very case this command reports.
+//
+// ⛔ WHAT FOLLOWS `.so` MUST BE A VERSION, not merely begin with a dot. The
+// first run of this command against the real registry reported that
+// `gnu.org/gcc/libstdcxx` ships `libstdc++.so.6.0.33-gdb.py` — a GDB
+// pretty-printer, a PYTHON SCRIPT, counted as a shared library because the
+// test was `HasPrefix(rest, ".")` and `.6.0.33-gdb.py` does start with a dot.
+// It mattered beyond a wrong word in the output: a dependency shipping only
+// such a file would be reported as a declared-and-unlinked edge, when what it
+// ships cannot be linked by anyone and the silence in that case is most of
+// what keeps this list readable.
 func isSharedLibrary(name string) bool {
 	if strings.HasSuffix(name, ".dylib") {
 		return true
 	}
-	if i := strings.Index(name, ".so"); i >= 0 {
-		rest := name[i+len(".so"):]
-		return rest == "" || strings.HasPrefix(rest, ".")
+	i := strings.Index(name, ".so")
+	if i < 0 {
+		return false
 	}
-	return false
+	return isSOVersion(name[i+len(".so"):])
+}
+
+// isSOVersion accepts what may follow `.so` in a shared library's name:
+// nothing, or dot-separated numbers (`.3`, `.1.1`, `.6.0.33`).
+func isSOVersion(rest string) bool {
+	if rest == "" {
+		return true
+	}
+	if rest[0] != '.' {
+		return false
+	}
+	for _, part := range strings.Split(rest[1:], ".") {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }

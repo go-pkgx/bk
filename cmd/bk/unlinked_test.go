@@ -408,6 +408,10 @@ func TestIsSharedLibraryKnowsBothPlatforms(t *testing.T) {
 	for _, yes := range []string{
 		"libiconv.2.dylib", "libintl.dylib",
 		"libssl.so", "libssl.so.3", "libssl.so.1.1",
+		// The real GCC ones, beside the script that is not a library: a
+		// stricter rule must not take these with it.
+		"libstdc++.so.6", "libstdc++.so.6.0.33", "libgcc_s.so.1",
+		"libgcc_s_asneeded.so",
 	} {
 		if !isSharedLibrary(yes) {
 			t.Errorf("%q is a shared library", yes)
@@ -417,8 +421,17 @@ func TestIsSharedLibraryKnowsBothPlatforms(t *testing.T) {
 	// links `.a` instead of `.so` is the very case this command reports.
 	// Counting archives as libraries would make the vendoring case look
 	// satisfied.
+	// ⛔ AND A GDB PRETTY-PRINTER IS NOT ONE EITHER. The first run of this
+	// command against the real registry reported `gnu.org/gcc/libstdcxx` as
+	// shipping `libstdc++.so.6.0.33-gdb.py` — a PYTHON SCRIPT, accepted
+	// because the old test only asked whether what follows `.so` begins with
+	// a dot. A dependency shipping nothing but files like these would be
+	// reported as a finding when nothing it ships can be linked at all.
 	for _, no := range []string{
 		"libiconv.a", "libcharset.a", "iconv.h", "libiconv.mo", "README.sofar",
+		"libstdc++.so.6.0.33-gdb.py", "libstdc++.so.6.0.36-gdb.py",
+		"libfoo.so.1.2.3-dbg", "libfoo.so-not-a-library",
+		"libfoo.so..1", // an empty version component is not a version
 	} {
 		if isSharedLibrary(no) {
 			t.Errorf("%q is not a shared library", no)
