@@ -231,6 +231,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDepsplit(rest[1:], stdout, stderr)
 	case "undeclared":
 		return runUndeclared(rest[1:], stdout, stderr)
+	case "unlinked":
+		return runUnlinked(rest[1:], stdout, stderr)
 	case "unresolved":
 		return runUnresolved(rest[1:], stdout, stderr)
 	case "overrides":
