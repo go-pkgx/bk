@@ -12,9 +12,8 @@ import (
 	"github.com/go-pkgx/bottle"
 )
 
-// machoWithRefs writes a file whose Mach-O load commands name refs, using the
-// same helper the fixup tests use, so what this reads is what the real
-// command reads.
+// writeStoreFile stages an ordinary file: data, a header, something that is
+// NOT a library. Use writeLib for a library.
 func writeStoreFile(t *testing.T, path string, body []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -23,6 +22,24 @@ func writeStoreFile(t *testing.T, path string, body []byte) {
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeLib stages a REAL shared library — a Mach-O for a `.dylib`, an ELF for
+// a `.so` — through the same builders the rest of this package uses.
+//
+// ⛔ EVERY LIBRARY IN THESE TESTS USED TO CONTAIN THE BYTE "x", and that
+// fiction is precisely what let a name-only rule look correct here while it
+// got two real filenames wrong in the registry: it counted
+// `libstdc++.so.6.0.33-gdb.py`, a Python script, and then refused
+// `libfolly.so.0.58.0-dev`, an ELF shared object. A fixture that cannot tell
+// a library from a text file cannot witness a check that has to.
+func writeLib(t *testing.T, path string, refs ...string) {
+	t.Helper()
+	if strings.HasSuffix(path, ".dylib") {
+		writeMachOAt(t, path, refs...)
+		return
+	}
+	writeELFNeeded(t, path, refs...)
 }
 
 // ⛔ THE PLANTED POSITIVE IS THE REAL ONE: gnu.org/libiconv declares
@@ -36,10 +53,10 @@ func writeStoreFile(t *testing.T, path string, body []byte) {
 func TestUnlinkedFindsADeclaredDependencyNothingLinks(t *testing.T) {
 	dir := t.TempDir()
 	// The dependency ships shared libraries…
-	writeStoreFile(t, filepath.Join(dir, "gnu.org/gettext/v1.0.0/lib/libintl.dylib"), []byte("x"))
-	writeStoreFile(t, filepath.Join(dir, "gnu.org/gettext/v1.0.0/lib/libgettextlib.dylib"), []byte("x"))
+	writeLib(t, filepath.Join(dir, "gnu.org/gettext/v1.0.0/lib/libintl.dylib"))
+	writeLib(t, filepath.Join(dir, "gnu.org/gettext/v1.0.0/lib/libgettextlib.dylib"))
 	// …and the dependent ships one that references only itself.
-	writeStoreFile(t, filepath.Join(dir, "gnu.org/libiconv/v1.19/lib/libiconv.2.dylib"), []byte("x"))
+	writeLib(t, filepath.Join(dir, "gnu.org/libiconv/v1.19/lib/libiconv.2.dylib"))
 
 	g := &bottle.Graph{Deps: map[string][]bottle.Edge{
 		"gnu.org/libiconv": {{On: "gnu.org/gettext"}},
@@ -63,7 +80,7 @@ func TestUnlinkedFindsADeclaredDependencyNothingLinks(t *testing.T) {
 func TestUnlinkedIsQuietAboutADependencyWithNoLibraries(t *testing.T) {
 	dir := t.TempDir()
 	writeStoreFile(t, filepath.Join(dir, "curl.se/ca-certs/v2026.10.20/ssl/cert.pem"), []byte("x"))
-	writeStoreFile(t, filepath.Join(dir, "acme.org/tool/v1.0.0/lib/libtool.dylib"), []byte("x"))
+	writeLib(t, filepath.Join(dir, "acme.org/tool/v1.0.0/lib/libtool.dylib"))
 
 	g := &bottle.Graph{Deps: map[string][]bottle.Edge{
 		"acme.org/tool": {{On: "curl.se/ca-certs"}},
@@ -79,8 +96,8 @@ func TestUnlinkedIsQuietAboutADependencyWithNoLibraries(t *testing.T) {
 // curl.se and linking no openssl has done nothing wrong.
 func TestUnlinkedDoesNotReportATransitiveDependency(t *testing.T) {
 	dir := t.TempDir()
-	writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.dylib"), []byte("x"))
-	writeStoreFile(t, filepath.Join(dir, "curl.se/v8.17.0/lib/libcurl.dylib"), []byte("x"))
+	writeLib(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.dylib"))
+	writeLib(t, filepath.Join(dir, "curl.se/v8.17.0/lib/libcurl.dylib"))
 	writeStoreFile(t, filepath.Join(dir, "acme.org/app/v1.0.0/bin/app"), []byte("x"))
 
 	g := &bottle.Graph{Deps: map[string][]bottle.Edge{
@@ -119,8 +136,8 @@ func TestUnlinkedRunReportsAVendoredDependency(t *testing.T) {
 		"rpm.org/rpm-sequoia": {{On: "openssl.org"}},
 	}}
 	withUnlinkedSeams(t, g, nil, nil, func(dir string) {
-		writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.so.3"), []byte("x"))
-		writeStoreFile(t, filepath.Join(dir, "rpm.org/rpm-sequoia/v1.10.3/lib/librpm_sequoia.so"), []byte("x"))
+		writeLib(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.so.3"))
+		writeLib(t, filepath.Join(dir, "rpm.org/rpm-sequoia/v1.10.3/lib/librpm_sequoia.so"))
 	})
 	code, out, _ := run2(t, "unlinked", "--store", t.TempDir(), "rpm.org/rpm-sequoia")
 	if code != 0 {
@@ -226,7 +243,7 @@ func TestReferencedProjectsHandlesAStoreWithNoReadableBinaries(t *testing.T) {
 
 func TestSonameOwnersAttributesALibraryToItsProject(t *testing.T) {
 	dir := t.TempDir()
-	writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.so.3"), []byte("x"))
+	writeLib(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.so.3"))
 	writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.6.4/include/ssl.h"), []byte("x"))
 	got := sonameOwners(dir)
 	if len(got["libssl.so.3"]) != 1 || got["libssl.so.3"][0] != "openssl.org" {
@@ -240,7 +257,7 @@ func TestSonameOwnersAttributesALibraryToItsProject(t *testing.T) {
 	// path with no `v<version>` segment names no project. Recording it under
 	// the empty project would make the empty project "referenced", which
 	// satisfies nothing and silently suppresses real findings.
-	writeStoreFile(t, filepath.Join(dir, "loose/libstray.so.1"), []byte("x"))
+	writeLib(t, filepath.Join(dir, "loose/libstray.so.1"))
 	if owners := sonameOwners(dir)["libstray.so.1"]; len(owners) != 0 {
 		t.Errorf("a library outside any bottle was attributed to %v", owners)
 	}
@@ -254,12 +271,12 @@ func TestSonameOwnersAttributesALibraryToItsProject(t *testing.T) {
 // by gnu.org/gcc AND gnu.org/gcc/libstdcxx.
 func TestSonameOwnersKeepsEveryOwnerOfAColliding(t *testing.T) {
 	dir := t.TempDir()
-	writeStoreFile(t, filepath.Join(dir, "gnu.org/gcc/v16.2.0/lib/libstdc++.so.6"), []byte("x"))
-	writeStoreFile(t, filepath.Join(dir, "gnu.org/gcc/libstdcxx/v14.4.0/lib/libstdc++.so.6"), []byte("x"))
+	writeLib(t, filepath.Join(dir, "gnu.org/gcc/v16.2.0/lib/libstdc++.so.6"))
+	writeLib(t, filepath.Join(dir, "gnu.org/gcc/libstdcxx/v14.4.0/lib/libstdc++.so.6"))
 	// The same project at several versions is ONE owner, not several:
 	// openssl.org alone staged 39 copies of libssl.so.3 in that sweep.
-	writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.so.3"), []byte("x"))
-	writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.5.8/lib/libssl.so.3"), []byte("x"))
+	writeLib(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.so.3"))
+	writeLib(t, filepath.Join(dir, "openssl.org/v3.5.8/lib/libssl.so.3"))
 
 	got := sonameOwners(dir)
 	owners := append([]string(nil), got["libstdc++.so.6"]...)
@@ -319,7 +336,7 @@ func TestReferencedProjectsReadsRealMachOLoadCommands(t *testing.T) {
 		{"the v1.19.0 I misread", noGettext, false},
 	} {
 		dir := t.TempDir()
-		writeStoreFile(t, filepath.Join(dir, "gnu.org/gettext/v1/lib/libintl.8.dylib"), []byte("x"))
+		writeLib(t, filepath.Join(dir, "gnu.org/gettext/v1/lib/libintl.8.dylib"))
 		writeMachOAt(t, filepath.Join(dir, "gnu.org/libiconv/v1.19/bin/iconv"), c.loads...)
 
 		got := referencedProjects("gnu.org/libiconv", dir)
@@ -372,7 +389,7 @@ func TestReferencedProjectsReadsTheProjectInsideAnRpathWithNothingStaged(t *test
 // nothing and every one of its declarations reads as a finding.
 func TestReferencedProjectsAttributesANonRpathDylibByName(t *testing.T) {
 	dir := t.TempDir()
-	writeStoreFile(t, filepath.Join(dir, "gnu.org/gettext/v1/lib/libintl.8.dylib"), []byte("x"))
+	writeLib(t, filepath.Join(dir, "gnu.org/gettext/v1/lib/libintl.8.dylib"))
 	writeMachOAt(t, filepath.Join(dir, "acme.org/app/v1.0.0/bin/app"),
 		"/opt/homebrew/lib/libintl.8.dylib")
 
@@ -408,8 +425,8 @@ func TestReferencedProjectsRecoversAProjectFromAnELFSoname(t *testing.T) {
 // Two findings, so the ordering the report promises is actually exercised.
 func TestUnlinkedSortsItsFindingsByDependency(t *testing.T) {
 	dir := t.TempDir()
-	writeStoreFile(t, filepath.Join(dir, "zlib.net/v1.3.2/lib/libz.1.dylib"), []byte("x"))
-	writeStoreFile(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.3.dylib"), []byte("x"))
+	writeLib(t, filepath.Join(dir, "zlib.net/v1.3.2/lib/libz.1.dylib"))
+	writeLib(t, filepath.Join(dir, "openssl.org/v3.6.4/lib/libssl.3.dylib"))
 	writeMachOAt(t, filepath.Join(dir, "acme.org/app/v1.0.0/bin/app"), "/usr/lib/libSystem.B.dylib")
 
 	g := &bottle.Graph{Deps: map[string][]bottle.Edge{
@@ -461,37 +478,86 @@ func TestUnlinkedRunReportsAProjectListItCannotRead(t *testing.T) {
 	}
 }
 
-func TestIsSharedLibraryKnowsBothPlatforms(t *testing.T) {
+// ⛔ THE CONSEQUENCE OF THE v0.44.0 REGRESSION, end to end. A soname the
+// check does not recognise cannot be attributed to its owner, so a project
+// that DOES link it reads as one that does not. Reduced from the second
+// sweep, where facebook.com/fbthrift, wangle, fizz, edencommon and fb303 —
+// five libraries built ON folly — were each reported as linking none of it.
+func TestASonameWithANonNumericVersionIsStillAttributed(t *testing.T) {
+	dir := t.TempDir()
+	writeELFNeeded(t, filepath.Join(dir, "facebook.com/folly/v2026.8.24.0/lib/libfolly.so.0.58.0-dev"))
+	writeELFNeeded(t, filepath.Join(dir, "facebook.com/fbthrift/v2026.8.24.0/lib/libthriftcpp2.so"),
+		"libfolly.so.0.58.0-dev", "libc.so.6")
+
+	g := &bottle.Graph{Deps: map[string][]bottle.Edge{
+		"facebook.com/fbthrift": {{On: "facebook.com/folly"}},
+	}}
+	if got := unlinkedOf("facebook.com/fbthrift", dir, g); len(got) != 0 {
+		t.Fatalf("a library that NEEDs libfolly.so.0.58.0-dev was reported as linking none of folly: %+v", got)
+	}
+}
+
+// ⛔ THE NAME IS A PREFILTER, THE BYTES DECIDE — and the two filenames that
+// made that necessary are both here, as real files.
+//
+// `libstdc++.so.6.0.33-gdb.py` is a GDB pretty-printer: `file(1)` calls it
+// "Python script text executable". v0.43 counted it as a library, because
+// what follows `.so` begins with a dot.
+//
+// `libfolly.so.0.58.0-dev` is an "ELF 64-bit LSB shared object", named in the
+// DT_NEEDED of every library facebook.com/fbthrift ships. v0.44.0 REFUSED it,
+// because what follows `.so` is not dot-separated numbers — and five of
+// folly's dependents were then reported as not linking folly.
+//
+// One rule invented libraries and the next hid them. Both were a guess about
+// a filename standing in for a fact about a file.
+func TestIsSharedLibraryAsksTheBytesNotTheName(t *testing.T) {
+	dir := t.TempDir()
+	lib := func(name string) string { return filepath.Join(dir, name) }
+
 	for _, yes := range []string{
 		"libiconv.2.dylib", "libintl.dylib",
 		"libssl.so", "libssl.so.3", "libssl.so.1.1",
-		// The real GCC ones, beside the script that is not a library: a
-		// stricter rule must not take these with it.
 		"libstdc++.so.6", "libstdc++.so.6.0.33", "libgcc_s.so.1",
-		"libgcc_s_asneeded.so",
+		// ⛔ THE REGRESSION v0.44.0 SHIPPED: a real ELF with a non-numeric
+		// version suffix.
+		"libfolly.so.0.58.0-dev",
 	} {
-		if !isSharedLibrary(yes) {
+		writeLib(t, lib(yes))
+		if !isSharedLibrary(lib(yes), yes) {
 			t.Errorf("%q is a shared library", yes)
 		}
 	}
-	// ⛔ A STATIC ARCHIVE IS NOT ONE, and that is not a detail: a bottle that
-	// links `.a` instead of `.so` is the very case this command reports.
-	// Counting archives as libraries would make the vendoring case look
-	// satisfied.
-	// ⛔ AND A GDB PRETTY-PRINTER IS NOT ONE EITHER. The first run of this
-	// command against the real registry reported `gnu.org/gcc/libstdcxx` as
-	// shipping `libstdc++.so.6.0.33-gdb.py` — a PYTHON SCRIPT, accepted
-	// because the old test only asked whether what follows `.so` begins with
-	// a dot. A dependency shipping nothing but files like these would be
-	// reported as a finding when nothing it ships can be linked at all.
-	for _, no := range []string{
-		"libiconv.a", "libcharset.a", "iconv.h", "libiconv.mo", "README.sofar",
-		"libstdc++.so.6.0.33-gdb.py", "libstdc++.so.6.0.36-gdb.py",
-		"libfoo.so.1.2.3-dbg", "libfoo.so-not-a-library",
-		"libfoo.so..1", // an empty version component is not a version
+
+	// A file whose NAME could pass but whose bytes are not an object: the GDB
+	// script, a linker script spelled `.so`, an archive, ordinary data.
+	for _, no := range []struct{ name, body string }{
+		{"libstdc++.so.6.0.33-gdb.py", "# -*- python -*-\nimport gdb\n"},
+		{"libgcc_s_asneeded.so", "/* GNU ld script */\nOUTPUT_FORMAT(elf64-x86-64)\n"},
+		{"libiconv.a", "!<arch>\n"},
+		{"iconv.h", "#define ICONV_H\n"},
+		{"libiconv.mo", "\xde\x12\x04\x95"},
+		{"README.sofar", "notes\n"},
+		// Shorter than a magic number — an interrupted write, a truncated
+		// unpack. Too short to read is not "assume it is a library".
+		{"libtruncated.so.1", "\x7fE"},
+		{"libempty.so", ""},
 	} {
-		if isSharedLibrary(no) {
-			t.Errorf("%q is not a shared library", no)
+		writeStoreFile(t, lib(no.name), []byte(no.body))
+		if isSharedLibrary(lib(no.name), no.name) {
+			t.Errorf("%q is not a shared library", no.name)
 		}
+	}
+
+	// A name the prefilter rejects outright never reaches the disk, and must
+	// not be admitted by a file that happens to exist beside it.
+	writeLib(t, lib("libreal.so"))
+	if isSharedLibrary(lib("libreal.so"), "libreal.a") {
+		t.Errorf("a .a name was admitted because an unrelated file is an ELF")
+	}
+	// And a name that passes the prefilter with nothing behind it is not a
+	// library either: an unreadable entry is a reason to say nothing.
+	if isSharedLibrary(lib("libabsent.so"), "libabsent.so") {
+		t.Errorf("a file that is not there was called a shared library")
 	}
 }
