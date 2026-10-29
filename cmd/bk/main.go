@@ -24,6 +24,9 @@
 //	                     what state each one is in
 //	bk vulnfetch         ask OSV what it knows about a pantry, in one request,
 //	                     and (with -write) record it as dated detections
+//	bk eol               whether a version is on an upstream release line that
+//	                     is still supported — the question OSV cannot answer,
+//	                     because an abandoned line has no advisories YET
 //	bk attest            say what a PUBLISHED bottle carries — SBOM, provenance,
 //	                     signature, OpenVEX — and --require it
 package main
@@ -245,6 +248,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runAdvisories(rest[1:], stdout, stderr)
 	case "vulnfetch":
 		return runVulnFetch(rest[1:], stdout, stderr)
+	case "eol":
+		return runEOL(rest[1:], stdout, stderr)
 	case "attest":
 		return runAttest(rest[1:], stdout, stderr)
 	case "tohcl":
