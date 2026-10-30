@@ -5,52 +5,13 @@ on:
 permissions: { contents: read }
 
 jobs:
-  # ⛔ NOTHING HERE HAD EVER ASKED. Scanned by hand on 2026-10-18, with the
-  # toolchain the `go` directive then permitted — go1.27.1 — this module had
-  # 22 findings, EIGHT of them reachable:
-  #
-  #   GO-2026-6605 stdlib.Get           GO-2026-6617 stdlib.RoundTrip
-  #   GO-2026-6611 stdlib.Read          GO-2026-6610 stdlib.NewClientConn
-  #   GO-2026-6613 stdlib.Read          GO-2026-6608 stdlib.ReadMIMEHeader
-  #   GO-2026-6603 stdlib.Close         GO-2026-6607 stdlib.DialContext
-  #
-  # Reachable, not merely present: bk fetches tarballs and talks to a
-  # registry, so those are its own HTTP paths.
-  #
-  # ⛔ AND THE `go` DIRECTIVE IS THE TOOLCHAIN. This lane always pinned
-  # go-version 1.27.2, so what CI built was never vulnerable — but `go install
-  # github.com/go-pkgx/bk/cmd/bk@main` builds with the user's toolchain, and a
-  # directive of 1.27.1 let 1.27.1 do it. Raising the directive is what forces
-  # every builder, here and on a laptop, onto the fixed standard library.
-  # Measured on a copy before the change was made: 22 findings at 1.27.1, 6 at
-  # 1.27.2, 1 once golang.org/x/net went to v0.60.0 — and that last one is a
-  # notice with no released fix.
-  vuln:
-    name: govulncheck, judged by vulngate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with: { go-version: '1.27.3' }
-      # ⛔ NO `set -o pipefail` and no bare exit status: govulncheck exits
-      # non-zero over findings it has decided are NOT called, and zero over
-      # some it has, which is the whole reason vulngate exists. The emptiness
-      # check is the other half — a scan that wrote nothing must not read as
-      # nothing found.
-      #
-      # The scanner is @latest and the judge is pinned, on purpose: the
-      # scanner should know about an advisory published this morning, while
-      # the verdict should not change under the repository without a commit.
-      - name: govulncheck, judged by vulngate
-        run: |
-          set -eu
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          go install github.com/go-fleettools/fleettools/cmd/vulngate@v0.23.0
-          BIN="$(go env GOPATH)/bin"
-          "$BIN/govulncheck" -format json ./... > "$RUNNER_TEMP/vuln.json" || true
-          test -s "$RUNNER_TEMP/vuln.json" || { echo "::error::govulncheck wrote nothing at all"; exit 1; }
-          "$BIN/vulngate" -go "$(go env GOVERSION)" "$RUNNER_TEMP/vuln.json"
-
+  # ⛔ THE VULNERABILITY LANE MOVED TO `vuln.yml`, and the move is the point:
+  # here it ran only when somebody pushed, and an advisory does not wait for a
+  # push. GO-2026-6860 and GO-2026-6866 were published on 2026-10-27 and found
+  # on the 28th by a pull request that added a subcommand and touched no
+  # dependency; go-pkgx/packages found the same pair on the 30th the same
+  # accidental way. The job name is unchanged, so any rule naming
+  # "govulncheck, judged by vulngate" still matches.
   test:
     runs-on: ubuntu-latest
     steps:

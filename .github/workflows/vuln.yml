@@ -1,0 +1,87 @@
+# The vulnerability lane, on its own file so it can run on its own clock.
+#
+# ⛔ IT USED TO RUN ONLY WHEN SOMEBODY PUSHED, AND AN ADVISORY DOES NOT WAIT
+# FOR A PUSH. Measured this week, twice:
+#
+#   2026-10-27  GO-2026-6860 and GO-2026-6866 published against
+#               golang.org/x/net/html (both fixed in v0.62.0)
+#   2026-10-28  found here, by a pull request that added a subcommand and
+#               touched no dependency at all (#368)
+#   2026-10-30  found in go-pkgx/packages the same way, by a pull request
+#               that edited one workflow file (#385)
+#
+# Both repositories required x/net v0.60.0 and had been green for days. The
+# scan was correct every time it ran; the defect is that it only ran when
+# somebody happened to arrive. A dependency-keyed check that fires on push is
+# a check whose coverage is a function of how busy the repository is, and the
+# quietest repository is the one that most needs it.
+#
+# ⛔ MOVED, NOT COPIED. The obvious fix — a second workflow carrying its own
+# copy of the step — is the two-halves defect this fleet keeps paying for: one
+# of them gets a fix and the other does not. There is one definition here and
+# `ci.yml` no longer has a `vuln` job. The job NAME is unchanged, so a branch
+# protection rule naming "govulncheck, judged by vulngate" still matches.
+#
+# ⛔ GITHUB DISABLES A SCHEDULED WORKFLOW AFTER 60 DAYS WITHOUT ACTIVITY, and
+# a disabled cron reports nothing rather than failing. `workflow_dispatch` is
+# here so the lane can be proven alive by hand, and this comment is where the
+# next person learns that silence is not the same as green.
+name: vuln
+
+on:
+  push: { branches: [main] }
+  pull_request:
+  schedule:
+    # Daily. The database is updated on business days and an advisory can land
+    # any morning; a weekly cadence would have let these two sit for six days.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions: { contents: read }
+
+jobs:
+  # ⛔ NOTHING HERE HAD EVER ASKED. Scanned by hand on 2026-10-18, with the
+  # toolchain the `go` directive then permitted — go1.27.1 — this module had
+  # 22 findings, EIGHT of them reachable:
+  #
+  #   GO-2026-6605 stdlib.Get           GO-2026-6617 stdlib.RoundTrip
+  #   GO-2026-6611 stdlib.Read          GO-2026-6610 stdlib.NewClientConn
+  #   GO-2026-6613 stdlib.Read          GO-2026-6608 stdlib.ReadMIMEHeader
+  #   GO-2026-6603 stdlib.Close         GO-2026-6607 stdlib.DialContext
+  #
+  # Reachable, not merely present: bk fetches tarballs and talks to a
+  # registry, so those are its own HTTP paths.
+  #
+  # ⛔ AND THE `go` DIRECTIVE IS THE TOOLCHAIN. This lane always pinned
+  # go-version 1.27.2, so what CI built was never vulnerable — but `go install
+  # github.com/go-pkgx/bk/cmd/bk@main` builds with the user's toolchain, and a
+  # directive of 1.27.1 let 1.27.1 do it. Raising the directive is what forces
+  # every builder, here and on a laptop, onto the fixed standard library.
+  # Measured on a copy before the change was made: 22 findings at 1.27.1, 6 at
+  # 1.27.2, 1 once golang.org/x/net went to v0.60.0 — and that last one is a
+  # notice with no released fix.
+  vuln:
+    name: govulncheck, judged by vulngate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.27.3' }
+      # ⛔ NO `set -o pipefail` and no bare exit status: govulncheck exits
+      # non-zero over findings it has decided are NOT called, and zero over
+      # some it has, which is the whole reason vulngate exists. The emptiness
+      # check is the other half — a scan that wrote nothing must not read as
+      # nothing found.
+      #
+      # The scanner is @latest and the judge is pinned, on purpose: the
+      # scanner should know about an advisory published this morning, while
+      # the verdict should not change under the repository without a commit.
+      - name: govulncheck, judged by vulngate
+        run: |
+          set -eu
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/go-fleettools/fleettools/cmd/vulngate@v0.23.0
+          BIN="$(go env GOPATH)/bin"
+          "$BIN/govulncheck" -format json ./... > "$RUNNER_TEMP/vuln.json" || true
+          test -s "$RUNNER_TEMP/vuln.json" || { echo "::error::govulncheck wrote nothing at all"; exit 1; }
+          "$BIN/vulngate" -go "$(go env GOVERSION)" "$RUNNER_TEMP/vuln.json"
