@@ -70,7 +70,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `httpretry` | which failed HTTP attempts are worth repeating. Measured on one 23-failure batch, **eleven** were transient HTTP and nothing else — a factory that gives a flaky host exactly one chance reports its own bad luck as a broken recipe |
 | `useragent` | the one User-Agent every HTTP path in bk sends. It exists because they differed: `versions` set one and `fetch` did not, so bk could LIST a project's versions and then get 403 downloading the tarball it had just found |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | thirty-three subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `vulnid`, `advisories`, `vulnfetch`, `attest`, `eol`. What it gets WRONG: `depgaps`, `depsplit`, `undeclared`, `unlinked`, `unresolved`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
+| `cmd/bk` | thirty-four subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `vulnid`, `advisories`, `vulnfetch`, `attest`, `eol`. What it gets WRONG: `depgaps`, `depsplit`, `undeclared`, `unlinked`, `unresolved`, `provides`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -1176,8 +1176,46 @@ by the pantry and the overlay, with its runtime dependencies, and — with
 whose projects are listed too. A platform lane can build a project that neither
 the pantry nor the overlay carries — `github.com/simdjson/simdjson` for
 `wasip1/wasm` — and without this flag its published bottle was missing from
-that platform's catalogue (go-pkgx/packages#387). The pantry's recipe still
-wins for a project both have; the lane's recipe is only the fallback.
+that platform's catalogue (go-pkgx/packages#387).
+
+**The lane's recipe wins** for a project both trees have (since go-pkgx/bk#376;
+v0.45.0 had the pantry winning). A recipe in a platform lane's tree is the
+recipe *for that lane*: its `provides` and `dependencies` describe the bottle
+that was actually built, whereas the pantry's describe the host build. With the
+pantry winning, the published `wasip1/wasm` catalogue gave `zlib.net` no command
+although its bottle ships `bin/minigzip.wasm`, listed `age-keygen` for
+`filippo.io/age` although the lane builds `./cmd/age` only, and made `lua.org`
+depend on `gnu.org/readline`, which the lane does not build against and which
+is not published for that platform. The recipe is read whole, never merged key
+by key, so a catalogue entry never mixes two builds. The rule for a caller:
+pass `--recipes` **only** for a platform whose tree is its authoritative recipe
+set (the packages workflow does so for `wasip1/` alone). A tree that is not
+would now override the pantry for every project it shares; there is no merge
+mode, by design.
+
+## `bk provides` — does the bottle say what the catalogue says?
+
+```
+bk provides --catalog catalog.json --platform wasip1/wasm [--fail] [project...]
+```
+
+Installs each project for `--platform` (every published project of the
+catalogue when none is named), lists the commands in the bottle's `bin/`
+(`.wasm` stripped on `wasip1`, `.exe` on `windows`) and compares them with the
+`provides` the catalogue states. The two differences are reported **apart**,
+because they are different failures:
+
+- **LISTED, NO FILE**: `pkgx -Q age-keygen` names a package that cannot supply
+  the command.
+- **FILE, NOT LISTED**: the command exists and is invisible to `pkgx -Q`,
+  `pkgs search` and the `<TAB>` index (`minigzip` in the zlib.net bottle).
+
+`--catalog` takes `catalog.json` or the catalogue bottle's `.tar.gz`. `--fail`
+exits 1 on any finding or on a project that could not be checked. It lives in
+`bk` because it needs the catalogue types, the platform-explicit closure
+install and the same `provides` reduction `bk catalog` applies; a workflow runs
+it right after `bk catalog`. Found by running every published wasm module, not
+by comparing the two (go-pkgx/bk#376).
 
 ## License
 
