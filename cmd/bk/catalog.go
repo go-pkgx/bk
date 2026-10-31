@@ -14,6 +14,7 @@ import (
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/logical"
 	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bottle"
 )
@@ -61,6 +62,8 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 	publish := fs.Bool("publish", false, "push it to $PKGX_DIST as a bottle, for this platform")
 	withVersions := fs.Bool("versions", false, "ask the registry what each project has published (one request per project)")
 	signKey := fs.String("sign", "", "sign the published catalogue with this go-attest/sign secret key file (else $SIGNING_KEY)")
+	var extra stringList
+	fs.Var(&extra, "recipes", "a FLAT recipe tree (<dir>/<project>/package.yml, e.g. wasip1/recipes) whose projects are named too; repeatable")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -70,7 +73,7 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	projects, err := catalogProjects(*pantryDir, *overlayDir)
+	projects, err := catalogProjects(*pantryDir, *overlayDir, extra...)
 	if err != nil {
 		fmt.Fprintln(stderr, "catalog:", err)
 		return 1
@@ -96,7 +99,15 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 		// The RUNTIME dependencies, reduced for this platform, so a reader
 		// can walk the tree with no pantry and no network (bottle#117).
 		// Still no requests: these come off the recipe already on disk.
-		if r, _, err := recipeLoader(lset, *overlayDir, *pantryDir, p); err == nil && r != nil {
+		r, _, err := recipeLoader(lset, *overlayDir, *pantryDir, p)
+		if err != nil || r == nil {
+			// The pantry and the overlay do not carry it: a lane's own
+			// recipe is then the only description there is.
+			if xr, found := extraRecipe(extra, p); found {
+				r, err = xr, nil
+			}
+		}
+		if err == nil && r != nil {
 			for _, spec := range build.DepSpecs(r.Dependencies, tgt) {
 				if n := depName(spec); n != "" {
 					e.Deps = append(e.Deps, n)
@@ -357,13 +368,66 @@ func newestHere(project string, vs []bottle.Ver, osn, arch string) (string, bool
 // only one of them is still a project somebody can ask for, and a catalogue
 // that read one half would complete onto a name the other half cannot build
 // — or hide one it can.
-func catalogProjects(pantryDir, overlayDir string) ([]string, error) {
+//
+// extraDirs are FLAT recipe trees — <dir>/<project>/package.yml, the layout
+// `bk build --recipe` is given, with no `projects/` level — whose projects
+// are named too. A platform lane may build a project that neither the pantry
+// nor the overlay carries (wasip1/recipes/github.com/simdjson/simdjson in
+// go-pkgx/packages): without this the catalogue for that platform could not
+// name a bottle that is published and installable (go-pkgx/packages#387).
+func catalogProjects(pantryDir, overlayDir string, extraDirs ...string) ([]string, error) {
 	seen := map[string]bool{}
-	for _, root := range []string{pantryDir, overlayDir} {
+	roots := []string{pantryDir, overlayDir}
+	for _, root := range roots {
 		if root == "" {
 			continue
 		}
 		base := filepath.Join(root, "projects")
+		err := walkRecipes(base, seen)
+		// A pantry that cannot be walked at all is reported; an overlay that
+		// is simply absent is not. The first is a mistyped path, the second
+		// is the ordinary case.
+		if err != nil && root == pantryDir {
+			return nil, err
+		}
+	}
+	for _, base := range extraDirs {
+		// Named explicitly on the command line, so a tree that cannot be
+		// walked is an error, not the ordinary absent-overlay case.
+		if err := walkRecipes(base, seen); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// extraRecipe reads a project's recipe from the first flat tree that has one.
+func extraRecipe(extraDirs []string, project string) (*pantry.Recipe, bool) {
+	for _, dir := range extraDirs {
+		for _, n := range recipefile.Names {
+			if r, err := recipefile.LoadFile(filepath.Join(dir, filepath.FromSlash(project), n)); err == nil {
+				return r, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// stringList is a repeatable string flag.
+type stringList []string
+
+func (s *stringList) String() string     { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
+
+// walkRecipes adds to seen every project directory under base that holds a
+// recipe file.
+func walkRecipes(base string, seen map[string]bool) error {
+	{
 		err := filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
 			// An error AT THE ROOT is the whole walk failing and is returned;
 			// one further down is a single unreadable directory and is
@@ -392,17 +456,6 @@ func catalogProjects(pantryDir, overlayDir string) ([]string, error) {
 			seen[filepath.ToSlash(rel)] = true
 			return nil
 		})
-		// A pantry that cannot be walked at all is reported; an overlay that
-		// is simply absent is not. The first is a mistyped path, the second
-		// is the ordinary case.
-		if err != nil && root == pantryDir {
-			return nil, err
-		}
+		return err
 	}
-	out := make([]string, 0, len(seen))
-	for p := range seen {
-		out = append(out, p)
-	}
-	sort.Strings(out)
-	return out, nil
 }
