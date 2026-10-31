@@ -274,6 +274,13 @@ func TestReadCatalogFileTarball(t *testing.T) {
 	}
 }
 
+// `bk provides` is reachable through the dispatch.
+func TestProvidesIsDispatched(t *testing.T) {
+	if code, _, _ := run2(t, "provides"); code != 2 {
+		t.Errorf("code=%d, want 2 (--catalog is required)", code)
+	}
+}
+
 func TestExeSuffix(t *testing.T) {
 	for osn, want := range map[string]string{"wasip1": ".wasm", "windows": ".exe", "linux": "", "darwin": ""} {
 		if got := exeSuffix(osn); got != want {
