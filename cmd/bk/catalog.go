@@ -63,7 +63,7 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 	withVersions := fs.Bool("versions", false, "ask the registry what each project has published (one request per project)")
 	signKey := fs.String("sign", "", "sign the published catalogue with this go-attest/sign secret key file (else $SIGNING_KEY)")
 	var extra stringList
-	fs.Var(&extra, "recipes", "a FLAT recipe tree (<dir>/<project>/package.yml, e.g. wasip1/recipes) whose projects are named too; repeatable")
+	fs.Var(&extra, "recipes", "a FLAT recipe tree (<dir>/<project>/package.yml, e.g. wasip1/recipes) whose projects are named too, and whose recipe WINS over the pantry's for a project in both (it is the recipe for this platform); repeatable")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -99,13 +99,26 @@ func runCatalog(args []string, stdout, stderr io.Writer) int {
 		// The RUNTIME dependencies, reduced for this platform, so a reader
 		// can walk the tree with no pantry and no network (bottle#117).
 		// Still no requests: these come off the recipe already on disk.
-		r, _, err := recipeLoader(lset, *overlayDir, *pantryDir, p)
-		if err != nil || r == nil {
-			// The pantry and the overlay do not carry it: a lane's own
-			// recipe is then the only description there is.
-			if xr, found := extraRecipe(extra, p); found {
-				r, err = xr, nil
-			}
+		//
+		// ⛔ A --recipes TREE IS THE AUTHORITY FOR ITS PLATFORM, NOT A
+		// FALLBACK (go-pkgx/bk#376). #375 read it only when the pantry and
+		// overlay had nothing, so for a project in BOTH the HOST recipe
+		// described the lane's bottle: zlib.net published minigzip with no
+		// `provides` (the host recipe is a library), filippo.io/age listed
+		// age-keygen (the lane builds ./cmd/age only), lua.org depended on
+		// readline (the lane builds Lua's generic `ansi` platform). Where the
+		// tree has the project, its recipe is read whole -- provides and
+		// dependencies together, never a mix of two builds. The rule for the
+		// caller: pass --recipes only for a platform whose tree IS its recipe
+		// set; a tree that is not would now override the pantry.
+		var (
+			r   *pantry.Recipe
+			err error
+		)
+		if xr, found := extraRecipe(extra, p); found {
+			r = xr
+		} else {
+			r, _, err = recipeLoader(lset, *overlayDir, *pantryDir, p)
 		}
 		if err == nil && r != nil {
 			for _, spec := range build.DepSpecs(r.Dependencies, tgt) {

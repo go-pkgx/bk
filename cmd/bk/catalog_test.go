@@ -82,16 +82,22 @@ func TestCatalogIsTheUnionOfPantryAndOverlay(t *testing.T) {
 // overlay carries it — so a catalogue read from those two could never name a
 // bottle that is published and installable. The fixture has the real shape: a
 // `github.com/<org>/<repo>` slug in a FLAT tree (no `projects/` level), beside
-// a project the pantry also has (lua.org), whose pantry recipe must keep
-// winning.
+// projects BOTH trees have (lua.org, zlib.net, filippo.io/age), whose LANE
+// recipe wins since go-pkgx/bk#376 (#375 had the pantry winning).
 func TestCatalogNamesAProjectOnlyAPlatformLaneBuilds(t *testing.T) {
 	p, _, _ := catbed(t, map[string]string{
 		"lua.org": "versions:\n  - 5.4.9\ndependencies:\n  gnu.org/readline: '*'\nbuild: make\n",
+		// The HOST recipe of a library: no command at all (go-pkgx/bk#376).
+		"zlib.net": "versions:\n  - 1.3.2\nbuild: make\n",
+		// The HOST recipe builds both commands; the lane builds one.
+		"filippo.io/age": "versions:\n  - 1.2.1\nprovides:\n  - bin/age\n  - bin/age-keygen\nbuild: make\n",
 	}, nil)
 	flat := t.TempDir()
 	for slug, body := range map[string]string{
 		"github.com/simdjson/simdjson": "versions:\n  - 5.0.5\ndependencies:\n  zlib.net: '*'\nbuild: make\n",
 		"lua.org":                      "versions:\n  - 5.4.9\nbuild: make\n",
+		"zlib.net":                     "versions:\n  - 1.3.2\nbuild: make\nprovides:\n  - bin/minigzip\n",
+		"filippo.io/age":               "versions:\n  - 1.2.1\nprovides:\n  - bin/age\nbuild: make\n",
 	} {
 		d := filepath.Join(flat, filepath.FromSlash(slug))
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -126,11 +132,19 @@ func TestCatalogNamesAProjectOnlyAPlatformLaneBuilds(t *testing.T) {
 	if strings.Join(sj.Versions, " ") != "5.0.5" || strings.Join(sj.Deps, " ") != "zlib.net" {
 		t.Errorf("simdjson = versions %v deps %v; want [5.0.5] [zlib.net]", sj.Versions, sj.Deps)
 	}
-	if lua, _ := cat.Lookup("lua.org"); strings.Join(lua.Deps, " ") != "gnu.org/readline" {
-		t.Errorf("lua.org deps = %v; the pantry recipe must keep winning over the lane's", lua.Deps)
+	// go-pkgx/bk#376: a project in BOTH trees is described by the LANE's
+	// recipe, in both directions.
+	if lua, _ := cat.Lookup("lua.org"); len(lua.Deps) != 0 {
+		t.Errorf("lua.org deps = %v; the lane declares none and its recipe is the one for this platform", lua.Deps)
 	}
-	if len(cat.Projects) != 2 {
-		t.Errorf("projects = %d, want 2 (deduplicated)", len(cat.Projects))
+	if z, _ := cat.Lookup("zlib.net"); strings.Join(z.Provides, " ") != "minigzip" {
+		t.Errorf("zlib.net provides = %v; the lane's minigzip was hidden by a host recipe that provides nothing", z.Provides)
+	}
+	if a, _ := cat.Lookup("filippo.io/age"); strings.Join(a.Provides, " ") != "age" {
+		t.Errorf("filippo.io/age provides = %v; age-keygen is the host recipe's, not the lane's", a.Provides)
+	}
+	if len(cat.Projects) != 4 {
+		t.Errorf("projects = %d, want 4 (deduplicated)", len(cat.Projects))
 	}
 }
 

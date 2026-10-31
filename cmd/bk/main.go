@@ -236,6 +236,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUndeclared(rest[1:], stdout, stderr)
 	case "unlinked":
 		return runUnlinked(rest[1:], stdout, stderr)
+	case "provides":
+		return runProvides(rest[1:], stdout, stderr)
 	case "unresolved":
 		return runUnresolved(rest[1:], stdout, stderr)
 	case "overrides":
