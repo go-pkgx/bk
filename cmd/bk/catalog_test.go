@@ -76,6 +76,74 @@ func TestCatalogIsTheUnionOfPantryAndOverlay(t *testing.T) {
 	}
 }
 
+// go-pkgx/packages#387: the first wasip1/wasm catalogue listed 6 of the 7
+// projects the wasm lanes build. The seventh, github.com/simdjson/simdjson,
+// has its recipe ONLY in packages/wasip1/recipes — neither the pantry nor the
+// overlay carries it — so a catalogue read from those two could never name a
+// bottle that is published and installable. The fixture has the real shape: a
+// `github.com/<org>/<repo>` slug in a FLAT tree (no `projects/` level), beside
+// a project the pantry also has (lua.org), whose pantry recipe must keep
+// winning.
+func TestCatalogNamesAProjectOnlyAPlatformLaneBuilds(t *testing.T) {
+	p, _, _ := catbed(t, map[string]string{
+		"lua.org": "versions:\n  - 5.4.9\ndependencies:\n  gnu.org/readline: '*'\nbuild: make\n",
+	}, nil)
+	flat := t.TempDir()
+	for slug, body := range map[string]string{
+		"github.com/simdjson/simdjson": "versions:\n  - 5.0.5\ndependencies:\n  zlib.net: '*'\nbuild: make\n",
+		"lua.org":                      "versions:\n  - 5.4.9\nbuild: make\n",
+	} {
+		d := filepath.Join(flat, filepath.FromSlash(slug))
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "package.yml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prevV, prevP := versionsFor, publishedTagFor
+	versionsFor = func(project, osn, arch string) ([]bottle.Ver, bool, error) {
+		return []bottle.Ver{bottle.ParseVer("5.0.5")}, true, nil
+	}
+	publishedTagFor = func(project string, v bottle.Ver, osn, arch string) (string, bool, error) {
+		return "v" + v.Raw, true, nil
+	}
+	t.Cleanup(func() { versionsFor, publishedTagFor = prevV, prevP })
+
+	var out, errb bytes.Buffer
+	args := []string{"--pantry", p, "--platform", "wasip1/wasm", "--versions", "--recipes", flat}
+	if code := runCatalog(args, &out, &errb); code != 0 {
+		t.Fatalf("code=%d %s", code, errb.String())
+	}
+	cat, err := bottle.UnmarshalCatalog(out.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sj, ok := cat.Lookup("github.com/simdjson/simdjson")
+	if !ok {
+		t.Fatalf("github.com/simdjson/simdjson missing from the catalogue; got %d project(s)", len(cat.Projects))
+	}
+	if strings.Join(sj.Versions, " ") != "5.0.5" || strings.Join(sj.Deps, " ") != "zlib.net" {
+		t.Errorf("simdjson = versions %v deps %v; want [5.0.5] [zlib.net]", sj.Versions, sj.Deps)
+	}
+	if lua, _ := cat.Lookup("lua.org"); strings.Join(lua.Deps, " ") != "gnu.org/readline" {
+		t.Errorf("lua.org deps = %v; the pantry recipe must keep winning over the lane's", lua.Deps)
+	}
+	if len(cat.Projects) != 2 {
+		t.Errorf("projects = %d, want 2 (deduplicated)", len(cat.Projects))
+	}
+}
+
+// A flat tree named on the command line that cannot be walked is an error:
+// unlike an absent overlay, somebody asked for it.
+func TestCatalogRefusesAnUnreadableRecipesTree(t *testing.T) {
+	p, _, _ := catbed(t, map[string]string{"a.org": catRecipe}, nil)
+	var out, errb bytes.Buffer
+	if code := runCatalog([]string{"--pantry", p, "--recipes", filepath.Join(t.TempDir(), "nope")}, &out, &errb); code != 1 {
+		t.Fatalf("code=%d, want 1", code)
+	}
+}
+
 // An empty catalogue would be published and believed. A pantry that reads as
 // empty is a mistyped path far more often than an empty pantry.
 func TestCatalogRefusesToBuildNothing(t *testing.T) {

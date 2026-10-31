@@ -1164,6 +1164,21 @@ architecture cannot stand in for a run that never happened. The same job holds
 the 100% statement-coverage gate: below it, CI prints the uncovered blocks and
 fails.
 
+## `bk catalog`
+
+Builds the catalogue a browser (`pkgx ls`, `<TAB>`) reads: every project named
+by the pantry and the overlay, with its runtime dependencies, and — with
+`--versions` — the newest version the registry really carries for
+`--platform`. `--publish` pushes it signed.
+
+`--recipes DIR` (repeatable) names a **flat** recipe tree
+(`<DIR>/<project>/package.yml`, the layout of `go-pkgx/packages/wasip1/recipes`)
+whose projects are listed too. A platform lane can build a project that neither
+the pantry nor the overlay carries — `github.com/simdjson/simdjson` for
+`wasip1/wasm` — and without this flag its published bottle was missing from
+that platform's catalogue (go-pkgx/packages#387). The pantry's recipe still
+wins for a project both have; the lane's recipe is only the fallback.
+
 ## License
 
 BSD-3-Clause. Copyright the bk authors.
