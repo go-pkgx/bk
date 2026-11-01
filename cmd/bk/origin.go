@@ -150,3 +150,27 @@ func originAttestedBy(refs []bottle.Referrer) (provOrigin, error) {
 // errNoOrigin is the state of every bottle published before `bk origin`
 // existed: a provenance that is present, valid, and silent on this question.
 var errNoOrigin = fmt.Errorf("the provenance records no build origin (published before bk recorded one)")
+
+// promotableOrigin is the gate `--require-origin` applies, as a method so the
+// factory's mirror path and `bk origin --promotable` cannot drift apart: one
+// reading of the provenance, one rule about what it has to say.
+//
+// ⛔ IT RETURNS AN ERROR AND NOT A BOOL. A bool would have let the caller
+// write `if ok { … }` and carry on when the registry was simply unreachable —
+// and "I could not ask" must not land in the same branch as "the answer was
+// no". The caller fails the project with the reason, so the run's own log
+// says which of the two happened.
+func (f *factory) promotableOrigin(proj, tag string) (provOrigin, error) {
+	refs, err := sourceAttestations(f.mirror, proj, tag, f.osn, f.arch)
+	if err != nil {
+		return provOrigin{}, fmt.Errorf("cannot read the source provenance from %s: %w", f.mirror, err)
+	}
+	o, err := originAttestedBy(refs)
+	if err != nil {
+		return provOrigin{}, err
+	}
+	if o.Bootstrap != "0" {
+		return provOrigin{}, fmt.Errorf("not promotable: %s", o.why())
+	}
+	return o, nil
+}

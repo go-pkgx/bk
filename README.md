@@ -591,6 +591,41 @@ A mirrored bottle records where it was **put** and nothing about who compiled
 it, so it fails the gate on purpose: recording a field is not the same as
 answering the question.
 
+#### `--require-origin` — promoting, as opposed to copying
+
+`bk factory --mirror-from` already copies a bottle from one dist and
+republishes it signed and attested. Adding `--require-origin` turns that into
+a **promotion**: every bottle is refused unless its *source* provenance proves
+the host toolchain was unused.
+
+```console
+$ bk factory --platform linux/s390x --mirror-from oci://127.0.0.1:5000/seed \
+    --to oci://ghcr.io/go-pkgx/packages --require-origin --recipes "lz4.org"
+❌ FAIL lz4.org 1.10.0: origin: not promotable: it was built with --bootstrap,
+   so its compiler and shell came from the host distribution rather than from
+   bottles
+```
+
+Three properties worth stating, because each one is a way this could have been
+written wrong:
+
+- **The check runs before the download.** Nothing about having the tarball in
+  hand makes a bottle more promotable.
+- **The verdict is carried, not restated.** The facts belong to the *build*,
+  and copying an artefact between registries does not change what built it.
+  Re-stating them as this run's own would launder a verdict it did not make,
+  and would overwrite `inputs-from` — the only record that the bottle was
+  built against the seed rather than against the production registry.
+- **"I could not ask" is not "the answer was no."** An unreachable source
+  registry is reported as a read failure naming the registry, never as a
+  judgement about the bottle. A gate that folds the two together turns every
+  network blip into a permanent verdict.
+
+`--require-origin` without `--mirror-from` is refused at argument-parsing
+time, beside the other argument checks rather than further into the run: there
+is no source provenance to read, and a gate the operator believes ran is worse
+than no gate.
+
 ### What is still missing, named rather than left out
 
 The spec hash covers the **inputs**, as Nix's derivation hash and Spack's spec
