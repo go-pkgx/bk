@@ -1134,6 +1134,21 @@ Still open (go-pkgx/bk#282): nothing reads `sig:`. Verifying a detached
 signature needs a key policy — *whose* key — and that is a decision, not a
 patch.
 
+## What bounds an `.xz` source archive
+
+`.tar.xz` sources are decoded with
+[`go-compressions/xz`](https://github.com/go-compressions/xz), not
+`ulikunitz/xz`. The latter allocates the LZMA2 dictionary whole from the block
+header (`DictCap` is a minimum, not a ceiling): a 44-byte `.xz` declaring a
+1.5 GiB dictionary allocated 1,610,663,976 bytes. Here the decoder's window
+grows with the decoded data: the same kind of input — a stream declaring 1.5 GiB
+over a few bytes — allocates about 22 KB (`fetch/xzbomb_test.go`, run in CI as a
+compiled binary under `ulimit -v` and `GOMEMLIMIT`). The dictionary a stream may
+make the decoder keep is capped at 256 MiB (`fetch.maxXzDictionary`, above the
+64 MiB of `xz -9`); data that needs more is refused with `xz.ErrTooLarge`.
+`ulikunitz/xz` remains in `go.mod` only for the tests that build `.xz` fixtures
+(encode side).
+
 ## The ELF RUNPATH rewriter
 
 `fixup.SetRunpath` overwrites an ELF's `DT_RUNPATH`/`DT_RPATH` string **in place**
