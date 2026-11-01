@@ -116,6 +116,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	maxVersions := fs.Int("max-versions", envInt("MAX_VERSIONS"), "cap versions built per requested project, newest first (0 = all)")
 	versionSpec := fs.String("versions", envOr("VERSIONS", ""), `only consider versions of the REQUESTED projects that match this pkgx constraint. A BARE version is a RANGE, not an exact match: "2.28.0" means >=2.28.0 within major 2, so an exact version needs "=2.28.0". Also "^3", ">=2.4". Applied before --max-versions. A closure-only dependency is NOT governed by this: it resolves to the newest version every one of its dependents can use`)
 	mirrorFrom := fs.String("mirror-from", "", "instead of building, copy each bottle from this upstream pkgx dist (e.g. https://dist.pkgx.dev) and republish it signed + attested — for versions we cannot or need not rebuild, such as ancient glibc")
+	requireOrigin := fs.Bool("require-origin", false, "with --mirror-from, PROMOTE instead of mirror: refuse any bottle whose source provenance does not prove the host toolchain was unused, and carry that verdict forward instead of restating it as ours. This is how a sovereign seed reaches the production registry — generations 0 and 1 publish only to a throwaway registry, and `bk origin` is the only thing that can tell one of their bottles from a host-built one")
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
 	bootstrap := fs.Bool("bootstrap", false, "FIRST FILL ONLY on an architecture no registry has: build without the base toolchain in the environment, taking those tools from the host. The base toolchain is a cycle with no entry point (see build.BootstrapToolDeps), so without this nothing can be built first. Bottles made this way were driven by unpinned host tools: publish them to a throwaway registry, use them to stage the sovereign rootfs, and rebuild everything inside it")
@@ -140,6 +141,19 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	}
 	if *platform == "" {
 		fmt.Fprintln(stderr, "usage: bk factory --platform os/arch [--recipes \"p1 p2\"] [--pantry dir] [--to oci://…]")
+		return 2
+	}
+	// ⛔ A GATE THAT GUARDS NOTHING IS WORSE THAN NO GATE, because the operator
+	// believes it ran. --require-origin reads the SOURCE bottle's provenance,
+	// and without --mirror-from there is no source to read.
+	//
+	// Refused HERE, beside the other argument checks, and not further down
+	// where the run is already under way: an earlier failure for an unrelated
+	// reason — a missing pantry, say — would otherwise mask it, and the
+	// operator would read the exit code as being about that instead.
+	if *requireOrigin && *mirrorFrom == "" {
+		fmt.Fprintln(stderr, "factory: --require-origin reads the provenance of the bottle being copied, "+
+			"so it needs --mirror-from. On a BUILD the origin is recorded from this run's own inputs and there is nothing to check.")
 		return 2
 	}
 	// Before any work: an operator who asked for a source mirror and cannot have
@@ -314,6 +328,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		dist: *to, bottles: *bottles, glibc: *glibc,
 		force: *force, key: kp, when: factoryTime(),
 		mirror:           strings.TrimRight(*mirrorFrom, "/"),
+		requireOrigin:    *requireOrigin,
 		want:             strings.TrimSpace(*versionSpec),
 		wantPer:          pins,
 		demands:          demands,
@@ -431,7 +446,12 @@ type factory struct {
 	key      *sign.Keypair
 	when     time.Time
 	mirror   string // upstream dist to copy from, "" = build
-	want     string // pkgx constraint the requested projects' versions must satisfy, "" = any
+	// requireOrigin turns `--mirror-from` into a PROMOTION: refuse any bottle
+	// whose source provenance does not prove the host toolchain was unused,
+	// and carry that verdict into the republished attestation rather than
+	// re-stating it as our own.
+	requireOrigin bool
+	want          string // pkgx constraint the requested projects' versions must satisfy, "" = any
 	// demands is what the DEPENDENTS of a project asked for, collected by the
 	// closure walk. A closure-only dependency is resolved against it instead of
 	// against "*", so the factory stops building a version nobody can use.
@@ -898,6 +918,22 @@ func (f *factory) mirrorOne(proj, ver string) {
 			return
 		}
 	}
+	// ⛔ BEFORE THE DOWNLOAD, so a bottle that may not be promoted is not even
+	// fetched. The check is about the SOURCE's provenance, and nothing about
+	// having the tarball in hand makes it more promotable.
+	srcOrigin := provOrigin{Dist: f.dist}
+	if f.requireOrigin {
+		o, oerr := f.promotableOrigin(proj, tag)
+		if oerr != nil {
+			f.fail(proj, ver, "origin", oerr)
+			return
+		}
+		// Carried, not restated. The facts belong to the BUILD, and copying
+		// an artefact between registries does not change what built it —
+		// whereas re-stating them as ours would launder a verdict we did not
+		// make.
+		srcOrigin = o
+	}
 	data, ext, err := factoryDownload(proj, ver, f.osn, f.arch)
 	if err != nil {
 		f.fail(proj, ver, "fetch", err)
@@ -943,10 +979,11 @@ func (f *factory) mirrorOne(proj, ver string) {
 		OS: f.osn, Arch: f.arch, Path: path,
 		Glibc: f.glibc, Key: f.key, Time: f.when,
 		Advisories: f.advisories,
-		// A mirrored bottle states only where it was PUT, never a bootstrap
+		// A plain mirror states only where it was PUT, never a bootstrap
 		// verdict: somebody else compiled it and we have no idea with what.
 		// Leaving Bootstrap empty is what keeps it out of a promotion gate.
-		Origin: provOrigin{Dist: f.dist},
+		// Under --require-origin this carries the SOURCE's verdict instead.
+		Origin: srcOrigin,
 	})
 	if err != nil {
 		f.fail(proj, ver, "publish", err)
