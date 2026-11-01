@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -97,6 +98,27 @@ const ABIProvidesAnnotation = "org.go-pkgx.abi.provides"
 // From the tarball rather than the build tree so it also describes a bottle we
 // did not build — a mirrored one carries whatever upstream linked, and that is
 // exactly the case where nobody knows what is inside (go-pkgx/packages#147).
+//
+// ⛔ ONLY FILES A CONSUMER COULD EVER LOAD. It used to read EVERY regular file
+// in the tarball, and the published go.dev 1.27.3 bottle therefore announced
+//
+//	org.go-pkgx.abi.provides = libtiffxx.so.6
+//
+// on darwin/aarch64 AND linux/x86-64 — because the Go distribution ships
+// `src/debug/elf/testdata/libtiffxx.so_`, a TEST FIXTURE of the standard
+// library's ELF reader. Go ships no shared libraries at all. Reported as the
+// second observation on go-pkgx/pkgm#73, where the stray `abi-libtiffxx.so.6
+// -> v1.27.3` symlink turned up inside the go.dev store directory.
+//
+// That is not cosmetic: the whole point of the annotation is that the resolver
+// keys ABI compatibility on sonames (go-pkgx/bottle#83) and a consumer binds
+// through `abi-<soname>`. A claim to provide libtiffxx.so.6 is an offer to
+// satisfy a libtiff consumer with the Go toolchain.
+//
+// So the publisher now describes exactly what the consumer can search:
+// bottle.LibDirs puts `<prefix>/lib`, `<prefix>/lib64` and `lib/glibc-*` on
+// LD_LIBRARY_PATH and nothing else, so a soname found anywhere else is a claim
+// nothing could honour. Judge and subject count alike.
 func sonamesFromTarball(tarball []byte, ext string) ([]string, error) {
 	r, closeFn, err := bottle.Decompressor(ext, bytes.NewReader(tarball))
 	if err != nil {
@@ -118,6 +140,11 @@ func sonamesFromTarball(tarball []byte, ext string) ([]string, error) {
 		if h.Typeflag != tar.TypeReg {
 			continue
 		}
+		// And only where a consumer would look for it. Reading the rest is
+		// what published libtiffxx.so.6 as an ABI of the Go toolchain.
+		if !inLibDir(h.Name) {
+			continue
+		}
 		b, err := io.ReadAll(tr)
 		if err != nil {
 			return nil, err
@@ -127,6 +154,27 @@ func sonamesFromTarball(tarball []byte, ext string) ([]string, error) {
 		}
 	}
 	return fixup.SortedUnique(out), nil
+}
+
+// inLibDir reports whether a tarball path is inside a directory the consumer
+// puts on LD_LIBRARY_PATH. The list is bottle.LibDirs' own: `lib`, `lib64`,
+// and lib's `glibc-*` sub-libdir.
+//
+// By path COMPONENT, not by prefix: `libexec/` starts with "lib" and holds
+// helper programs nobody links against, and `src/.../testdata/` is where the
+// defect came from. The components are checked all the way down rather than
+// only at the top, because glibc's real libraries live in `lib/glibc-2.41/`
+// and a bottle built with a `--libdir` of its own can nest one deeper.
+func inLibDir(name string) bool {
+	parts := strings.Split(path.Clean(name), "/")
+	// The last element is the file itself, so a bare `lib` file is not "in"
+	// a lib dir — there has to be a directory component above it.
+	for _, p := range parts[:max(len(parts)-1, 0)] {
+		if p == "lib" || p == "lib64" {
+			return true
+		}
+	}
+	return false
 }
 
 // bottle.Decompressor, for the reason sonamesFromTarball gives directly above
