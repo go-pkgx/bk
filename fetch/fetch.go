@@ -26,9 +26,21 @@ import (
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-compressions/xz"
 	"github.com/go-pkgx/bottle"
-	"github.com/ulikunitz/xz"
 )
+
+// maxXzDictionary bounds the window an .xz source archive may make the decoder
+// keep: 256 MiB, go-compressions/xz's own default, stated here so the bound is
+// readable at the call site (xz -9 uses 64 MiB). The window grows with the
+// decoded data, never from the dictionary size a header declares, so this is
+// a ceiling on what real data can ask for, not an allocation.
+const maxXzDictionary = 256 << 20
+
+// newXzReader is the one place an .xz source archive is opened.
+func newXzReader(r io.Reader) (*xz.Reader, error) {
+	return xz.ReaderConfig{MaxDictionary: maxXzDictionary}.NewReader(r)
+}
 
 // Archive kinds detected from a URL's file extension.
 const (
@@ -106,7 +118,7 @@ func Fetch(url, destDir string, stripComponents int) (string, error) {
 		defer gz.Close()
 		return digest, extractTar(tar.NewReader(gz), destDir, stripComponents)
 	case kindTarXz:
-		xr, err := xz.NewReader(body)
+		xr, err := newXzReader(body)
 		if err != nil {
 			return digest, fmt.Errorf("fetch: read xz from %s: %w — %s", url, err, describeBody(head))
 		}
