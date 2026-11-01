@@ -328,6 +328,11 @@ type publishOptions struct {
 	// no VEX document is attached, which is the honest state for a project
 	// nobody has triaged.
 	Advisories string
+	// Origin is what the factory knows about HOW this was built — see
+	// provOrigin. Zero means nothing is stated, which is the honest value for
+	// `bk publish` on a bottle this process did not build, and which a
+	// promotion gate must treat as "not promotable" rather than as "fine".
+	Origin provOrigin
 }
 
 // publishBottle pushes a built bottle with its SBOM, SLSA provenance and (given
@@ -361,7 +366,7 @@ func publishBottle(o publishOptions) (string, ocispec.Descriptor, error) {
 	if when.IsZero() {
 		when = buildTime()
 	}
-	refs, err := buildReferrers(o.Project, o.Version, o.OS, o.Arch, tarball, o.Source, o.BuildEnv, when, o.Key)
+	refs, err := buildReferrers(o.Project, o.Version, o.OS, o.Arch, tarball, o.Source, o.BuildEnv, when, o.Key, o.Origin)
 	if err != nil {
 		return "", ocispec.Descriptor{}, err
 	}
@@ -468,18 +473,72 @@ func builderWithVersion() string { return builderID + "@" + bkVersion() }
 // hash are the two that matter most and are not in hand at this call; they
 // arrive with the plumbing, not with a placeholder, because a field that is
 // always empty teaches readers to ignore the block.
-func buildParams(project, version, osn, arch string) map[string]string {
-	return map[string]string{
+func buildParams(project, version, osn, arch string, o provOrigin) map[string]string {
+	p := map[string]string{
 		"project":  project,
 		"version":  version,
 		"platform": osn + "/" + arch,
 	}
+	// Emitted only when STATED,, for the reason the note above gives: a key
+	// that is always there and always empty teaches a reader to skip it.
+	if o.Bootstrap != "" {
+		p["bootstrap"] = o.Bootstrap
+	}
+	if o.Dist != "" {
+		p["inputs-from"] = o.Dist
+	}
+	return p
+}
+
+// provOrigin is what the FACTORY knows about a build and the bottle cannot
+// show: whether host tools drove it, and which registry its inputs came from.
+//
+// ⛔ IT EXISTS BECAUSE "WAS THIS BUILT SOVEREIGNLY" HAD NO ANSWER IN THE
+// ARTEFACT. Measured 2026-11-01 on a published bottle:
+//
+//	$ bk buildenv -platform linux/s390x lz4.org 1.10.0
+//	buildenv: lz4.org 1.10.0 (linux/s390x): the provenance records no build
+//	environment
+//
+// An empty build environment is what a `--bootstrap` build produces, because
+// it resolves no bottles — so the absence is a HINT and not a statement. It is
+// also what an older bk produced, and what `bk publish` produces for a bottle
+// this process did not build. Three different situations, one silence.
+//
+// That silence matters now: go-pkgx/packages#316 needs the s390x toolchain to
+// reach ghcr, generations 0 and 1 both publish only to a throwaway loopback
+// registry on the VM, and the gate on promoting anything out of it is exactly
+// "prove this was not built with the host's compiler". A gate cannot read a
+// hint.
+//
+// ⛔ THREE STATES, NOT A BOOL, AND THE EMPTY ONE MUST NOT BE SAFE. A `bool`
+// zero value is false, which would read as "not a bootstrap" — so every
+// bottle published before this existed, and every one published by a path
+// that does not set it, would claim to be promotable. Unknown has to fail
+// closed, so it is a distinct state and the promotion check requires an
+// explicit "0".
+type provOrigin struct {
+	// Bootstrap is "1" when the build took its compiler and shell from the
+	// host distribution, "0" when it did not, and "" when nothing was stated.
+	Bootstrap string
+	// Dist is the registry the build RESOLVED ITS INPUTS FROM — the fact that
+	// distinguishes a bottle built against the seed's loopback registry from
+	// one built against ghcr, which no digest or signature can show.
+	Dist string
+}
+
+// boolParam renders a known boolean the way buildParams records it.
+func boolParam(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
 }
 
 // buildReferrers builds the CycloneDX SBOM and in-toto SLSA provenance
 // attestations for a bottle (subject = the bottle itself; the tarball digest
 // binds them).
-func buildReferrers(project, version, osn, arch string, tarball []byte, src build.SourceRef, env []moustache.Dep, now time.Time, kp *sign.Keypair) ([]bottle.Referrer, error) {
+func buildReferrers(project, version, osn, arch string, tarball []byte, src build.SourceRef, env []moustache.Dep, now time.Time, kp *sign.Keypair, origin provOrigin) ([]bottle.Referrer, error) {
 	sum := sha256.Sum256(tarball)
 	dg := hex.EncodeToString(sum[:])
 	purl := fmt.Sprintf("pkg:pkgx/%s@%s", project, version)
@@ -505,7 +564,7 @@ func buildReferrers(project, version, osn, arch string, tarball []byte, src buil
 		BuilderID:  builderWithVersion(),
 		StartedOn:  now,
 		FinishedOn: now,
-		Params:     buildParams(project, version, osn, arch),
+		Params:     buildParams(project, version, osn, arch, origin),
 		Materials:  append(materialsOf(src), environmentMaterials(env)...),
 	}
 	pr, err := provJSON(stmt)

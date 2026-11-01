@@ -709,6 +709,12 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 		Glibc: f.glibc, Key: f.key, Time: f.when,
 		Source: res.Source, BuildEnv: res.BuildEnv,
 		Advisories: f.advisories,
+		// ⛔ STATED, not inferred from an empty BuildEnv. A bootstrap build
+		// resolves no bottles, so its BuildEnv is empty — but so is one for a
+		// bottle we only mirrored, and so was every bottle published before
+		// the field existed. A promotion gate needs the difference said out
+		// loud (go-pkgx/packages#316).
+		Origin: provOrigin{Bootstrap: boolParam(f.runner.Bootstrap), Dist: f.dist},
 	})
 	if err != nil {
 		f.fail(proj, res.Version, "publish", err)
@@ -937,6 +943,10 @@ func (f *factory) mirrorOne(proj, ver string) {
 		OS: f.osn, Arch: f.arch, Path: path,
 		Glibc: f.glibc, Key: f.key, Time: f.when,
 		Advisories: f.advisories,
+		// A mirrored bottle states only where it was PUT, never a bootstrap
+		// verdict: somebody else compiled it and we have no idea with what.
+		// Leaving Bootstrap empty is what keeps it out of a promotion gate.
+		Origin: provOrigin{Dist: f.dist},
 	})
 	if err != nil {
 		f.fail(proj, ver, "publish", err)
