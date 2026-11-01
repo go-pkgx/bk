@@ -70,7 +70,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `httpretry` | which failed HTTP attempts are worth repeating. Measured on one 23-failure batch, **eleven** were transient HTTP and nothing else — a factory that gives a flaky host exactly one chance reports its own bad luck as a broken recipe |
 | `useragent` | the one User-Agent every HTTP path in bk sends. It exists because they differed: `versions` set one and `fetch` did not, so bk could LIST a project's versions and then get 403 downloading the tarball it had just found |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/bk` | thirty-four subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `vulnid`, `advisories`, `vulnfetch`, `attest`, `eol`. What it gets WRONG: `depgaps`, `depsplit`, `undeclared`, `unlinked`, `unresolved`, `provides`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
+| `cmd/bk` | thirty-five subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `origin`, `vulnid`, `advisories`, `vulnfetch`, `attest`, `eol`. What it gets WRONG: `depgaps`, `depsplit`, `undeclared`, `unlinked`, `unresolved`, `provides`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -538,6 +538,58 @@ and 8 record nothing, so this says nothing about them
 
 `0 need rebuilding` would read as an all-clear on its own. The last line is
 what stops it being one.
+
+### `bk origin` — may this bottle be promoted?
+
+Bringing up an architecture from nothing needs two registries. The first
+generation takes its compiler and shell from the host distribution, because on
+an architecture with no bottles there is nothing else to take them from, so it
+publishes to a **throwaway** registry on the runner and never leaves it. The
+question that gets anything out of there is one fact per bottle: *was the
+host's toolchain involved?*
+
+Measured 2026-11-01, the registry could not answer it:
+
+```console
+$ bk buildenv --platform linux/s390x lz4.org 1.10.0
+buildenv: lz4.org 1.10.0 (linux/s390x): the provenance records no build environment
+```
+
+⛔ **An empty build environment is a hint, not a statement.** A `--bootstrap`
+build resolves no bottles, so its environment is empty — but so is a mirrored
+bottle's, and so is every bottle published before bk recorded one. Three
+situations, one silence, and a gate cannot read a silence.
+
+So the factory now states it, and this reads it back:
+
+```console
+$ bk origin --platform linux/s390x lz4.org 1.10.0
+lz4.org 1.10.0 linux/s390x
+  host toolchain used: no — built from bottles
+  inputs resolved from: oci://ghcr.io/go-pkgx/packages
+```
+
+`--promotable` turns it into a gate: silent and exit 0 only when the
+provenance **proves** the host toolchain was not used.
+
+```console
+$ bk origin --platform linux/s390x --promotable lz4.org 1.10.0
+origin: lz4.org 1.10.0 (linux/s390x) is NOT promotable: its provenance does
+not say whether the host toolchain was used, and an unstated answer is not a "no"
+```
+
+⛔ **It requires an explicit `0`, and treats every other answer as no** —
+including silence. Not because unrecorded bottles are suspect, but because the
+two failures do not cost the same: refusing a good bottle costs a rebuild,
+while promoting a host-built one puts an unpinned distribution compiler's
+output into the production registry under our signature. That is also why the
+recorded value is a tri-state and not a boolean: a `bool` zero is `false`,
+which would read as "not a bootstrap", and every bottle published before this
+existed would have claimed to be promotable.
+
+A mirrored bottle records where it was **put** and nothing about who compiled
+it, so it fails the gate on purpose: recording a field is not the same as
+answering the question.
 
 ### What is still missing, named rather than left out
 

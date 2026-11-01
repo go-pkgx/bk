@@ -164,7 +164,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
-		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|buildenv|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|vulnid|advisories|vulnfetch|attest|overrides|depgaps|builder|factory|source> [args]")
+		fmt.Fprintln(stderr, "usage: bk [--platform p] <version|buildenv|origin|target|fixup|versions|build|test|publish|closure|lock|tools|tohcl|lint|vulnid|advisories|vulnfetch|attest|overrides|depgaps|builder|factory|source> [args]")
 		return 2
 	}
 
@@ -183,6 +183,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "buildenv":
 		return runBuildEnv(rest[1:], stdout, stderr)
+	case "origin":
+		return runOrigin(rest[1:], stdout, stderr)
 	case "target":
 		tgt, err := target.Resolve()
 		if err != nil {

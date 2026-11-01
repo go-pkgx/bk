@@ -43,7 +43,7 @@ func decodeProv(t *testing.T, refs []bottle.Referrer) map[string]any {
 // a toolchain security fix was indistinguishable from the build before it.
 func TestTheProvenanceSaysWhichBkAndWhatItWasAsked(t *testing.T) {
 	refs, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
-		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil)
+		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil, provOrigin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,13 +98,13 @@ func TestTwoBuildersProduceDifferentProvenance(t *testing.T) {
 
 	buildInfo = at("v0.16.0")
 	a, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
-		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil)
+		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil, provOrigin{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	buildInfo = at("v0.17.0")
 	b, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
-		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil)
+		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil, provOrigin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestTheProvenanceRecordsTheBuildEnvironment(t *testing.T) {
 		{Project: "gnu.org/glibc", Version: "2.44.0", Path: "/pkgx/gnu.org/glibc/v2.44.0"},
 	}
 	refs, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
-		[]byte("tarball"), build.SourceRef{}, env, time.Unix(0, 0).UTC(), nil)
+		[]byte("tarball"), build.SourceRef{}, env, time.Unix(0, 0).UTC(), nil, provOrigin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestADifferentToolchainProducesDifferentProvenance(t *testing.T) {
 	mk := func(goVer string) string {
 		refs, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
 			[]byte("tarball"), build.SourceRef{},
-			[]moustache.Dep{{Project: "go.dev", Version: goVer}}, time.Unix(0, 0).UTC(), nil)
+			[]moustache.Dep{{Project: "go.dev", Version: goVer}}, time.Unix(0, 0).UTC(), nil, provOrigin{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,7 +189,7 @@ func TestADifferentToolchainProducesDifferentProvenance(t *testing.T) {
 // nothing.
 func TestNoEnvironmentProducesNoMaterials(t *testing.T) {
 	refs, err := buildReferrers("acme.org/tool", "1.2.3", "linux", "aarch64",
-		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil)
+		[]byte("tarball"), build.SourceRef{}, nil, time.Unix(0, 0).UTC(), nil, provOrigin{})
 	if err != nil {
 		t.Fatal(err)
 	}
