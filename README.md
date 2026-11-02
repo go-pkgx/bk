@@ -539,6 +539,49 @@ and 8 record nothing, so this says nothing about them
 `0 need rebuilding` would read as an all-clear on its own. The last line is
 what stops it being one.
 
+### `--rebuild` — a new build of a version that is already published
+
+A recipe fix can change the binary without changing the upstream version.
+Measured on 2026-11-02: go-pkgx/packages#399 gave `fftw.org` its SIMD
+codelets, the darwin lane rebuilt it, and the result went out as **`3.3.11`**
+— the same tag the scalar build had. `nm` on the two shows 0 → **207**
+`_neon` symbols, so they are plainly different bottles; nothing in the
+registry said so, and anyone holding the old one kept it.
+
+`--rebuild` publishes such a build as the next **`_N`** instead:
+
+```console
+$ bk factory --platform darwin/aarch64 --recipes fftw.org --force --rebuild
+rebuild: fftw.org 3.3.11 is already published for darwin/aarch64 — publishing as 3.3.11_1
+```
+
+`_N` is Homebrew's `rebuild` and Debian's `+bN`. bottle already understood it
+— it parses, it sorts **after** the build it supersedes, and an exact pin
+tells the two apart — and nothing produced it. This is the half that mints
+it.
+
+⛔ **The number comes from the REGISTRY, per platform.** A tag listing spans
+every platform, so counting tags rather than publications would let a darwin
+rebuild take its number from a linux one — a gap on one and a collision on
+the other. And a read that fails **refuses**: a guessed number is a
+collision, and falling through to "no counter" would quietly replace the tag
+`--rebuild` exists to preserve.
+
+⛔ **Opt-in, and deliberately not folded into `--force`.** Every manual
+dispatch of the darwin lane already sets `FORCE=1` unconditionally. A counter
+minted on every forced run would bump `N` each time a lane was retried after
+failing at the publish step, littering the registry with tags nobody asked
+for. A rebuild that *supersedes* is a decision about meaning, so it is stated.
+
+⛔ **Upstream pkgx cannot read a `_N` tag.** libpkgx's `SemVer` constructor
+(`src/utils/semver.ts:26-41`, read 2026-11-02) splits on `.` and accepts a
+part only on `/^(\d+)([a-z])$/` — last part only — or `/^\d+$/`, else throws
+`invalid version`. `3.3.11_1` has the part `11_1`, which matches neither. So
+**pointing an upstream pkgx client at this registry is unsupported** once a
+project carries a rebuild. That was weighed and accepted: it throws rather
+than resolving the wrong bottle, which is the better of the two failures. The
+alternatives are in bottle's README, with why each was rejected.
+
 ### `bk origin` — may this bottle be promoted?
 
 Bringing up an architecture from nothing needs two registries. The first

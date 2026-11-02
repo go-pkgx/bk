@@ -116,6 +116,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	maxVersions := fs.Int("max-versions", envInt("MAX_VERSIONS"), "cap versions built per requested project, newest first (0 = all)")
 	versionSpec := fs.String("versions", envOr("VERSIONS", ""), `only consider versions of the REQUESTED projects that match this pkgx constraint. A BARE version is a RANGE, not an exact match: "2.28.0" means >=2.28.0 within major 2, so an exact version needs "=2.28.0". Also "^3", ">=2.4". Applied before --max-versions. A closure-only dependency is NOT governed by this: it resolves to the newest version every one of its dependents can use`)
 	mirrorFrom := fs.String("mirror-from", "", "instead of building, copy each bottle from this upstream pkgx dist (e.g. https://dist.pkgx.dev) and republish it signed + attested — for versions we cannot or need not rebuild, such as ancient glibc")
+	rebuild := fs.Bool("rebuild", envBool("REBUILD"), "publish a build of an ALREADY-PUBLISHED version as the next `_N` rebuild instead of replacing its tag — Homebrew's `rebuild`, Debian's `+bN`. For a recipe fix that changes the binary without changing the upstream version: fftw gained SIMD codelets and went out as the same 3.3.11, so nothing could tell the two apart. NOT folded into --force, which every manual darwin dispatch already sets: a counter minted on every forced run would bump N each time a lane was retried. ⛔ upstream pkgx/libpkgx cannot parse `_N` at all, so a project carrying one is unreadable to an upstream client")
 	requireOrigin := fs.Bool("require-origin", false, "with --mirror-from, PROMOTE instead of mirror: refuse any bottle whose source provenance does not prove the host toolchain was unused, and carry that verdict forward instead of restating it as ours. This is how a sovereign seed reaches the production registry — generations 0 and 1 publish only to a throwaway registry, and `bk origin` is the only thing that can tell one of their bottles from a host-built one")
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
 	glibc := fs.String("glibc", "", "build and publish the whole closure against this exact glibc, e.g. 2.27.0 (implies --libc=pkgx)")
@@ -329,6 +330,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		force: *force, key: kp, when: factoryTime(),
 		mirror:           strings.TrimRight(*mirrorFrom, "/"),
 		requireOrigin:    *requireOrigin,
+		rebuild:          *rebuild,
 		want:             strings.TrimSpace(*versionSpec),
 		wantPer:          pins,
 		demands:          demands,
@@ -451,7 +453,10 @@ type factory struct {
 	// and carry that verdict into the republished attestation rather than
 	// re-stating it as our own.
 	requireOrigin bool
-	want          string // pkgx constraint the requested projects' versions must satisfy, "" = any
+	// rebuild mints a `_N` counter when the version being built is already
+	// published here, instead of replacing its tag. See rebuild.go.
+	rebuild bool
+	want    string // pkgx constraint the requested projects' versions must satisfy, "" = any
 	// demands is what the DEPENDENTS of a project asked for, collected by the
 	// closure walk. A closure-only dependency is resolved against it instead of
 	// against "*", so the factory stops building a version nobody can use.
@@ -723,8 +728,27 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 
 	// res.Version is what actually got built (the recipe's resolver may
 	// normalise the requested version), and is what the attestations record.
+	//
+	// ⛔ With --rebuild, a version already published here becomes `_N` rather
+	// than replacing the tag it would otherwise overwrite. Computed from the
+	// REGISTRY and not from a counter we keep, so two lanes cannot both think
+	// they are _1 — and a read failure refuses rather than guesses, because a
+	// guessed number is a collision.
+	publishVersion := res.Version
+	if f.rebuild {
+		n, rerr := nextRebuild(proj, res.Version, f.osn, f.arch)
+		if rerr != nil {
+			f.fail(proj, res.Version, "rebuild", rerr)
+			return
+		}
+		if n > 0 {
+			publishVersion = rebuiltVersion(res.Version, n)
+			fmt.Fprintf(f.stdout, "rebuild: %s %s is already published for %s — publishing as %s\n",
+				proj, res.Version, f.platform, publishVersion)
+		}
+	}
 	tag, desc, err := factoryPublish(publishOptions{
-		Dist: f.dist, Project: proj, Version: res.Version,
+		Dist: f.dist, Project: proj, Version: publishVersion,
 		OS: f.osn, Arch: f.arch, Path: res.BottlePath,
 		Glibc: f.glibc, Key: f.key, Time: f.when,
 		Source: res.Source, BuildEnv: res.BuildEnv,
