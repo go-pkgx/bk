@@ -1435,3 +1435,33 @@ func TestAFailureToDropTheReplacedPrefixIsReported(t *testing.T) {
 		t.Fatalf("Build: %v; want the drop named", err)
 	}
 }
+
+// TestBuildExportsThePrefixMapOfTheRealRoot: the script carries a map derived
+// from the root the build actually uses (go-pkgx/bk#387).
+func TestBuildExportsThePrefixMapOfTheRealRoot(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	r := okRunner("acme.org/tool", tgt)
+	res, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(res.ScriptPath)
+	want := "export BK_FILE_PREFIX_MAP=\"" + config.Compute("acme.org/tool", "1.2.3", tgt).Root + "=/build\"\n"
+	if !strings.Contains(string(b), want) {
+		t.Errorf("script lacks %q:\n%s", want, b)
+	}
+}
+
+// TestBuildRefusesAMapThatCouldNotMatch: a cache root that is not absolute
+// would make -ffile-prefix-map a silent no-op, so the build fails instead.
+func TestBuildRefusesAMapThatCouldNotMatch(t *testing.T) {
+	tenv(t)
+	t.Chdir(t.TempDir())
+	t.Setenv("XDG_DATA_HOME", "relative-data")
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	r := okRunner("acme.org/tool", tgt)
+	if _, err := r.Build(okRecipe(), "acme.org/tool", "*", tgt, tgt, ""); err == nil || !strings.Contains(err.Error(), "prefix map") {
+		t.Fatalf("err = %v, want a prefix map refusal", err)
+	}
+}

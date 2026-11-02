@@ -18,6 +18,10 @@ var userHomeDir = os.UserHomeDir
 
 // Paths is the set of directories a build uses.
 type Paths struct {
+	// Root is the directory every other build directory lives under (the brewkit
+	// cache dir, or the pantry checkout). It is what -ffile-prefix-map maps to
+	// /build, so no builder path leaks into a bottle (go-pkgx/bk#387).
+	Root         string
 	Home         string // a fresh HOME for the build (== bkroot for the default layout)
 	Src          string // extracted sources
 	Build        string // where the build runs
@@ -77,6 +81,7 @@ func Compute(project, version string, tgt target.Target) Paths {
 	}
 
 	if checkout := pantryCheckout(); checkout != "" {
+		p.Root = checkout
 		slug := strings.ReplaceAll(project, "/", "__")
 		spec := slug + "-" + version
 		p.Home = filepath.Join(checkout, "homes", spec)
@@ -89,6 +94,7 @@ func Compute(project, version string, tgt target.Target) Paths {
 
 	dh := filepath.Join(dataHome(), "brewkit")
 	root := filepath.Join(dh, tgt.Platform+"+"+tgt.Arch, filepath.FromSlash(project), "v"+version)
+	p.Root = dh
 	p.Home = root
 	p.Src = filepath.Join(root, "src")
 	p.Build = filepath.Join(root, "build")

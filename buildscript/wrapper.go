@@ -72,6 +72,31 @@ type WrapOptions struct {
 	// Empty = newest available. wrapFlags then resolves that sole installed
 	// version dir, so no change is needed there.
 	Glibc string
+	// PrefixMap is the OLD=NEW of -ffile-prefix-map, from PrefixMapFor. Empty
+	// means no map (tests of other things); the runner always sets it.
+	PrefixMap string
+}
+
+// BottleBuildDir is what the cache root is rewritten to in compiled output.
+const BottleBuildDir = "/build"
+
+// PrefixMapFor derives the -ffile-prefix-map value from the cache root the
+// build ACTUALLY uses, and refuses to produce one that could not match: a map
+// whose OLD is not a prefix of every build directory is a silent no-op, which
+// is the failure this exists to rule out (go-pkgx/bk#387).
+func PrefixMapFor(root string, dirs ...string) (string, error) {
+	if root == "" || !filepath.IsAbs(root) || filepath.Dir(root) == root {
+		return "", fmt.Errorf("prefix map: cache root %q is not a usable absolute directory", root)
+	}
+	if strings.ContainsAny(root, "=:") {
+		return "", fmt.Errorf("prefix map: cache root %q contains '=' or ':', which -ffile-prefix-map cannot express", root)
+	}
+	for _, d := range dirs {
+		if rel, err := filepath.Rel(root, d); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("prefix map: build directory %q is outside the cache root %q, so the map would not cover it", d, root)
+		}
+	}
+	return root + "=" + BottleBuildDir, nil
 }
 
 // Wrap assembles the complete, runnable build script: a sanitized env, the
@@ -120,6 +145,12 @@ func Wrap(o WrapOptions) string {
 	fmt.Fprintf(&b, "export SRCROOT=%q\n", o.SrcRoot)
 	b.WriteString(tmpdirLine(o.Host) + "\n")
 	b.WriteString("if [ -n \"$CI\" ]; then export FORCE_UNSAFE_CONFIGURE=1; fi\n")
+	if o.PrefixMap != "" {
+		// Read by bk's compiler shims, which append -ffile-prefix-map=$value to
+		// every compiler call. Not put in CFLAGS: a recipe's env replaces those
+		// whole.
+		fmt.Fprintf(&b, "export BK_FILE_PREFIX_MAP=%q\n", o.PrefixMap)
+	}
 	b.WriteString(toolVars(o.Project))
 	b.WriteString("mkdir -p $HOME\n")
 	for _, f := range wrapFlags(o.Target, o.PkgxDir, o.Install, o.HasBinutils, o.LibcPkgx) {

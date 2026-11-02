@@ -350,7 +350,15 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	if err := writeLibexec(libexecDir, r.LibcMode == "pkgx", tgt.Triple, tgt.Platform, tgt.Arch); err != nil {
 		return res, fmt.Errorf("write libexec: %w", err)
 	}
+	// The map is derived from the root the build really uses and refused when it
+	// would not cover the build directories: a no-op map ships the builder's
+	// path silently (go-pkgx/bk#387).
+	prefixMap, err := buildscript.PrefixMapFor(paths.Root, paths.Home, paths.Src, paths.Build, paths.Test)
+	if err != nil {
+		return res, err
+	}
 	script := buildscript.Wrap(buildscript.WrapOptions{
+		PrefixMap:  prefixMap,
 		UserScript: user, Deps: deps, ToolDeps: toolDeps, Target: tgt, Host: host,
 		Home: paths.Home, SrcRoot: paths.Build, PkgxDir: config.PkgxDir(), Install: paths.Install, Project: project,
 		PkgxBin: r.PkgxBin, BashPath: r.BashPath, BrewkitPath: libexecDir,

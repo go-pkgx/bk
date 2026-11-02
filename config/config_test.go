@@ -127,3 +127,28 @@ func mustHome(t *testing.T) string {
 	}
 	return h
 }
+
+// TestComputeRootCoversEveryBuildDir: Root is what -ffile-prefix-map maps, so
+// every directory a build uses must sit under it in BOTH layouts (go-pkgx/bk#387).
+func TestComputeRootCoversEveryBuildDir(t *testing.T) {
+	tgt := target.Target{Platform: "darwin", Arch: "aarch64", Triple: "aarch64-apple-darwin"}
+	for name, setup := range map[string]func(){
+		"cache": func() {
+			t.Setenv("PKGX_PANTRY_DIR", "")
+			t.Setenv("PKGX_PANTRY_PATH", "")
+			t.Setenv("XDG_DATA_HOME", "/data")
+		},
+		"pantry": func() { t.Setenv("PKGX_PANTRY_DIR", "/pantry"); t.Setenv("PKGX_PANTRY_PATH", "") },
+	} {
+		setup()
+		p := Compute("acme.org/tool", "1.2.3", tgt)
+		if p.Root == "" {
+			t.Fatalf("%s: Root empty", name)
+		}
+		for _, d := range []string{p.Home, p.Src, p.Build, p.Test} {
+			if !strings.HasPrefix(d, p.Root+string(filepath.Separator)) {
+				t.Errorf("%s: %q is not under Root %q", name, d, p.Root)
+			}
+		}
+	}
+}

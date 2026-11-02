@@ -27,8 +27,10 @@ func ccShim(name string, args []string, stderr io.Writer) int {
 	}
 	driver := strings.Fields(os.Getenv(varName))
 	if len(driver) == 0 {
-		fmt.Fprintf(stderr, "bk %s: %s is not set (this shim only belongs in a --libc=pkgx build)\n", name, varName)
-		return 127
+		// No sovereign stencil (darwin, or linux on the system libc): the shim is
+		// only here to impose the path map, so it drives the compiler of the
+		// same name.
+		driver = []string{shimBase(name)}
 	}
 	flags := driver[1:]
 	if compileOnly(args) {
@@ -44,7 +46,16 @@ func ccShim(name string, args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "bk %s: %v\n", name, err)
 		return 127
 	}
-	cmd := execCommand(bin, append(flags, args...)...)
+	all := append(append([]string{}, flags...), args...)
+	// -ffile-prefix-map goes LAST, after whatever the recipe passed: it is an
+	// option of the driver invocation, so a recipe that replaces CFLAGS wholesale
+	// cannot drop it. A compiler that does not know it (GCC < 8, Clang < 10)
+	// exits non-zero with its own "unknown argument" error; we never retry
+	// without it, because a silent retry is the bug this shim exists to prevent.
+	if m := os.Getenv(prefixMapEnv); m != "" {
+		all = append(all, "-ffile-prefix-map="+m)
+	}
+	cmd := execCommand(bin, all...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, stderr
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
@@ -55,6 +66,22 @@ func ccShim(name string, args []string, stderr io.Writer) int {
 		return 127
 	}
 	return 0
+}
+
+// prefixMapEnv carries OLD=NEW for -ffile-prefix-map; buildscript.Wrap exports
+// it from the build's actual cache root.
+const prefixMapEnv = "BK_FILE_PREFIX_MAP"
+
+// shimBase strips a triple prefix: x86_64-pc-linux-gnu-gcc -> gcc.
+func shimBase(name string) string {
+	// The "-" boundary makes at most one base match ("x-gcc" ends in "-gcc",
+	// not in "-cc").
+	for _, base := range compilerShimBases {
+		if name == base || strings.HasSuffix(name, "-"+base) {
+			return base
+		}
+	}
+	return name
 }
 
 // compileOnly reports whether this invocation stops before linking: -c, -S and
