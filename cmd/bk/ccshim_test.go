@@ -90,7 +90,9 @@ func TestCCShimFailures(t *testing.T) {
 
 	t.Setenv("BK_CC", "")
 	var errb bytes.Buffer
-	if code := ccShim("cc", nil, &errb); code != 127 || !strings.Contains(errb.String(), "BK_CC is not set") {
+	// No BK_CC: the shim drives the compiler of the same name (`cc` here), and
+	// there is none on this PATH, so it says so.
+	if code := ccShim("cc", nil, &errb); code != 127 || !strings.Contains(errb.String(), "is not on PATH") {
 		t.Fatalf("code = %d, stderr = %q", code, errb.String())
 	}
 

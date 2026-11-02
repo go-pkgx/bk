@@ -93,8 +93,10 @@ func TestWriteLibexecForCompilerShims(t *testing.T) {
 	if err := WriteLibexecFor(off, false, "x86_64-unknown-linux-gnu", "linux", "x86-64"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(filepath.Join(off, "cc")); !os.IsNotExist(err) {
-		t.Fatal("cc must not appear outside pkgx-libc mode")
+	// Outside pkgx-libc mode the shims still exist: they carry
+	// -ffile-prefix-map, which no recipe env may drop (go-pkgx/bk#387).
+	if _, err := os.Lstat(filepath.Join(off, "cc")); err != nil {
+		t.Fatalf("cc shim must exist in every mode: %v", err)
 	}
 	on := t.TempDir()
 	if err := WriteLibexecFor(on, true, "x86_64-unknown-linux-gnu", "linux", "x86-64"); err != nil {
