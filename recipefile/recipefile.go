@@ -74,7 +74,32 @@ func Load(pantryDir, project string) (*pantry.Recipe, error) {
 
 // LoadFile reads one recipe by path, choosing the front-end from its
 // extension. `bk build --recipe` takes a path rather than a project.
+//
+// The path may be the recipe's DIRECTORY, in which case Names decides which
+// file to read — the same rule Load uses for a project in a pantry.
+//
+// ⛔⛔ BECAUSE A CALLER THAT SPELLS THE FILENAME HAS ALREADY CHOSEN THE FORMAT,
+// AND WILL BE WRONG LATER. This package exists so one place decides what a
+// recipe is called, and the spelling keeps escaping it anyway: four commands
+// read `package.yml` directly until go-pkgx/bk#389, and
+// `packages/.github/workflows/wasip1-c.yml` then spelled
+// `/recipes/<slug>/package.yml` in the workflow — so converting that lane to
+// HCL2 meant editing the workflow in the same commit, or shipping twelve
+// recipes the lane could not build.
+//
+// A directory is the form a caller can pass without knowing the answer. The
+// filename form stays: it is right when the file is genuinely what you have.
 func LoadFile(path string) (*pantry.Recipe, error) {
+	if st, err := os.Stat(path); err == nil && st.IsDir() {
+		for _, n := range Names {
+			b, err := os.ReadFile(filepath.Join(path, n))
+			if err != nil {
+				continue
+			}
+			return parse(b, n)
+		}
+		return nil, fmt.Errorf("%w in %s (tried %v)", ErrNoRecipe, path, Names)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
