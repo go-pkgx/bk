@@ -1,6 +1,6 @@
 module github.com/go-pkgx/bk
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/bluekeyes/go-gitdiff v0.9.0
@@ -8,7 +8,7 @@ require (
 	github.com/go-attest/sign v0.3.0
 	github.com/go-compressions/xz v0.1.0
 	github.com/go-git/go-git/v5 v5.19.3
-	github.com/go-pkgx/bottle v0.60.0
+	github.com/go-pkgx/bottle v0.63.0
 	github.com/go-regexp/engine v0.3.2
 	github.com/go-versions/semver v0.3.0
 	github.com/klauspost/compress v1.20.3
