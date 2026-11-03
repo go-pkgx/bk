@@ -140,3 +140,57 @@ func TestDepgapsStillSkipsARecipeItCannotParse(t *testing.T) {
 		t.Fatalf("the readable neighbour was not reported: %v", got)
 	}
 }
+
+// ⛔⛔ THE WALK SAYS WHAT IT READ. A ranking is a claim about a population, and
+// this walk once examined 3 recipes of 213 while printing a confident answer
+// about the whole pantry. The parse bug is fixed; the silence that hid it for
+// months is the other half, and a skip nobody counts will hide the next one.
+func TestDepgapsCountsWhatItSkipped(t *testing.T) {
+	root := t.TempDir()
+	// One good YAML, one good HCL, one unparseable, one for another platform.
+	writeGapRecipe(t, root, "ok.example", minimal+"dependencies:\n  openssl.org: ^1.1\n")
+	hclDir := filepath.Join(root, "projects", "hcl.example")
+	if err := os.MkdirAll(hclDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hclDir, "package.hcl"),
+		[]byte("distributable = { url = \"https://x/v{{version}}.tgz\" }\nversions = { github = \"a/b/tags\" }\nbuild = \"make\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	brokenDir := filepath.Join(root, "projects", "broken.example")
+	if err := os.MkdirAll(brokenDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(brokenDir, "package.hcl"), []byte("= = =\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeGapRecipe(t, root, "mac.example", minimal+"platforms:\n  - darwin\n")
+
+	_, _, cen, err := unsatisfiableCounted(root, linuxTarget(), map[string][]string{"openssl.org": {"3.5.0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cen.examined != 2 {
+		t.Errorf("examined = %d, want the two readable linux recipes", cen.examined)
+	}
+	if cen.unparsed != 1 {
+		t.Errorf("unparsed = %d, want 1", cen.unparsed)
+	}
+	if cen.offPlatform != 1 {
+		t.Errorf("offPlatform = %d, want 1", cen.offPlatform)
+	}
+	// And it must be legible, not just counted.
+	if s := cen.String(); !strings.Contains(s, "2 recipe(s) examined") ||
+		!strings.Contains(s, "1 did not parse") ||
+		!strings.Contains(s, "1 not for this platform") {
+		t.Errorf("the census does not read as a sentence: %q", s)
+	}
+}
+
+// A census with nothing to report says only what it examined: a line of
+// zeroes would train the reader to skip it.
+func TestACleanCensusIsOneClause(t *testing.T) {
+	if s := (census{examined: 7}).String(); s != "7 recipe(s) examined" {
+		t.Errorf("clean census = %q", s)
+	}
+}
