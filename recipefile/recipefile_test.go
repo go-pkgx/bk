@@ -114,3 +114,36 @@ func TestLoadFile(t *testing.T) {
 		t.Error("a missing path must fail")
 	}
 }
+
+// ⛔⛔ ParseNamed IS FOR A CALLER THAT ALREADY HOLDS THE BYTES, and the NAME is
+// what picks the front-end.
+//
+// `bk depgaps` walks a pantry, accepts any filename IsRecipe knows — so it
+// finds `package.hcl` — and then read those bytes with the YAML front-end.
+// Every HCL recipe became a parse error, which it skipped as malformed: 210 of
+// pantry-overlay's 213 recipes examined by nobody, reported as a clean result
+// (go-pkgx/bk#389).
+func TestParseNamedPicksTheFrontEndByFilename(t *testing.T) {
+	hclRec, err := ParseNamed([]byte(hclSrc), "package.hcl")
+	if err != nil {
+		t.Fatalf("an HCL recipe named package.hcl did not parse: %v", err)
+	}
+	if got := hclRec.Dependencies["openssl.org"]; got != "^3" {
+		t.Errorf("openssl.org = %v, want ^3", got)
+	}
+
+	ymlRec, err := ParseNamed([]byte(yml), "package.yml")
+	if err != nil {
+		t.Fatalf("a YAML recipe named package.yml did not parse: %v", err)
+	}
+	if got := ymlRec.Dependencies["openssl.org"]; got != "^1.1" {
+		t.Errorf("openssl.org = %v, want ^1.1", got)
+	}
+
+	// The name decides, so HCL bytes under a .yml name must FAIL rather than
+	// be rescued by a retry: a retry would make the extension advisory, and
+	// the two front-ends would stop being distinguishable in an error.
+	if _, err := ParseNamed([]byte(hclSrc), "package.yml"); err == nil {
+		t.Error("HCL content named package.yml was accepted")
+	}
+}

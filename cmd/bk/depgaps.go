@@ -136,7 +136,11 @@ func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string
 		if readErr != nil {
 			return nil
 		}
-		rec, parseErr := pantry.Parse(data)
+		// ⛔ BY THE FILENAME, NOT BY ASSUMING YAML. The walk above accepts any
+		// name IsRecipe knows, so it picks up `package.hcl` — and this used to
+		// hand those bytes to the YAML front-end, fail, and take the skip
+		// below as though the recipe were malformed.
+		rec, parseErr := recipefile.ParseNamed(data, d.Name())
 		if parseErr != nil {
 			// A recipe we cannot parse is a different problem, and one the
 			// schema gate already reports. Counting it here would be noise.

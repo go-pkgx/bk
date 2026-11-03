@@ -82,6 +82,17 @@ func LoadFile(path string) (*pantry.Recipe, error) {
 	return parse(b, filepath.Base(path))
 }
 
+// ParseNamed parses bytes a caller already holds, choosing the front-end from
+// the FILENAME those bytes came from.
+//
+// It exists for a walker: `bk depgaps` finds recipes with IsRecipe and reads
+// them itself, so it has the content and the name but no path to re-open. It
+// used to call pantry.Parse — the YAML front-end — on every one of them, which
+// made each `package.hcl` a parse error it then SKIPPED as malformed. Over
+// pantry-overlay that was 210 of 213 recipes examined by nobody, reported as
+// a clean result (go-pkgx/bk#389).
+func ParseNamed(b []byte, name string) (*pantry.Recipe, error) { return parse(b, name) }
+
 // parse picks the front-end. Both end at pantry.Parse and the same JSON
 // Schema — hcl.Parse round-trips through YAML precisely so a recipe written
 // either way cannot validate differently.
