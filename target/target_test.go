@@ -209,3 +209,49 @@ func TestTheVocabularyIsExported(t *testing.T) {
 		t.Error("the two sets are not interchangeable")
 	}
 }
+
+// ⛔⛔ THE BSDs ARE x86-64 ONLY, AND THAT IS THE RULE THIS MAP EXISTS FOR.
+//
+// `platformArches` carries its own instruction: "An arch with no machine
+// behind it is a guess, and this is the one place that should not hold one."
+// s390x waited for a LinuxONE runner. The machine behind the BSDs is the
+// `vmactions/{freebsd,netbsd,openbsd}-vm` qemu guest that go-pkgx/pkgm
+// already tests in, and those actions offer amd64 only.
+//
+// So aarch64 must be REFUSED until there is a machine. A test that only
+// checked the accepted direction would let the guess in.
+func TestTheBSDsAreX86OnlyUntilThereIsAnArm64Machine(t *testing.T) {
+	for _, goos := range []string{"freebsd", "openbsd", "netbsd"} {
+		if !IsPlatform(goos) {
+			t.Errorf("%s is not a platform", goos)
+		}
+		if !IsPair(goos, "x86-64") {
+			t.Errorf("%s/x86-64 refused, but vmactions gives us that machine", goos)
+		}
+		if IsPair(goos, "aarch64") {
+			t.Errorf("%s/aarch64 accepted, but no arm64 BSD machine exists", goos)
+		}
+	}
+}
+
+// ⛔ A BSD HOST IS NOT linux-gnu. The default arm of nativeTripleFor returns
+// `-unknown-linux-gnu` for anything it does not recognise, which would hand a
+// NATIVE FreeBSD build a Linux triple and give it a cross build's problems for
+// no reason.
+func TestANativeBSDTripleNamesTheBSD(t *testing.T) {
+	for _, tc := range []struct{ goos, goarch, want string }{
+		{"freebsd", "amd64", "x86_64-unknown-freebsd"},
+		{"openbsd", "amd64", "x86_64-unknown-openbsd"},
+		{"netbsd", "amd64", "x86_64-unknown-netbsd"},
+		{"freebsd", "arm64", "aarch64-unknown-freebsd"},
+	} {
+		if got := nativeTripleFor(tc.goos, tc.goarch); got != tc.want {
+			t.Errorf("nativeTripleFor(%s, %s) = %q, want %q", tc.goos, tc.goarch, got, tc.want)
+		}
+	}
+	// The control: an OS we do not name still falls through to linux-gnu,
+	// so the case above is doing the work and not the default.
+	if got := nativeTripleFor("plan9", "amd64"); got != "x86_64-unknown-linux-gnu" {
+		t.Errorf("the default arm changed: %q", got)
+	}
+}

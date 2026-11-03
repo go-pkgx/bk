@@ -92,6 +92,20 @@ var (
 		"linux":   {"x86-64": true, "aarch64": true, "s390x": true},
 		"windows": {"x86-64": true, "aarch64": true, "s390x": true},
 		"wasip1":  {"wasm": true},
+		// ⛔ THE BSDs ARE x86-64 ONLY, FOR THE REASON THIS MAP EXISTS. The
+		// machine behind them is the `vmactions/{freebsd,netbsd,openbsd}-vm`
+		// qemu guest that go-pkgx/pkgm already runs its tests in, and those
+		// actions offer amd64 and nothing else. aarch64 joins the day there is
+		// a machine, exactly as s390x did — adding it now would put a guess in
+		// the one place that must not hold one.
+		//
+		// `bottle` has known these three since before any bottle existed for
+		// them (host.go, pkgx.go's platform slugs), and says so on purpose:
+		// "no bottle for <project> (freebsd/aarch64)". So the consumer side
+		// was ready and the FACTORY was the gap.
+		"freebsd": {"x86-64": true},
+		"openbsd": {"x86-64": true},
+		"netbsd":  {"x86-64": true},
 	}
 	// llvm.org/mingw-w64 cross triples (see the go-pkgx/packages Windows
 	// factories: x86_64-w64-mingw32-clang / aarch64-w64-mingw32-clang).
@@ -137,6 +151,13 @@ func nativeTripleFor(goos, goarch string) string {
 		return arch + "-apple-darwin"
 	case "windows":
 		return arch + "-w64-mingw32"
+	case "freebsd", "openbsd", "netbsd":
+		// ⛔ THE DEFAULT BELOW WOULD CALL A BSD HOST "linux-gnu". These builds
+		// are NATIVE — the compiler runs inside the BSD guest — so the triple
+		// is what that guest's clang already calls itself, and handing it
+		// `x86_64-unknown-linux-gnu` is how a native build acquires a cross
+		// build's problems for no reason.
+		return arch + "-unknown-" + goos
 	default:
 		return arch + "-unknown-linux-gnu"
 	}
