@@ -88,8 +88,8 @@ func PrefixMapFor(root string, dirs ...string) (string, error) {
 	if root == "" || !filepath.IsAbs(root) || filepath.Dir(root) == root {
 		return "", fmt.Errorf("prefix map: cache root %q is not a usable absolute directory", root)
 	}
-	if strings.ContainsAny(root, "=:") {
-		return "", fmt.Errorf("prefix map: cache root %q contains '=' or ':', which -ffile-prefix-map cannot express", root)
+	if strings.ContainsAny(root, "=:,") {
+		return "", fmt.Errorf("prefix map: cache root %q contains '=', ':' or ',', which -ffile-prefix-map and -Wl,-oso_prefix cannot express", root)
 	}
 	for _, d := range dirs {
 		if rel, err := filepath.Rel(root, d); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -150,6 +150,13 @@ func Wrap(o WrapOptions) string {
 		// every compiler call. Not put in CFLAGS: a recipe's env replaces those
 		// whole.
 		fmt.Fprintf(&b, "export BK_FILE_PREFIX_MAP=%q\n", o.PrefixMap)
+		if o.Target.Platform == "darwin" {
+			// ld64 writes the object paths of the debug map (OSO stabs) itself, so
+			// -ffile-prefix-map never reaches them. The same root, handed to the
+			// linker as -oso_prefix by the shim at link time only (go-pkgx/bk#400).
+			old, _, _ := strings.Cut(o.PrefixMap, "=")
+			fmt.Fprintf(&b, "export BK_OSO_PREFIX=%q\n", old+"/")
+		}
 	}
 	b.WriteString(toolVars(o.Project))
 	b.WriteString("mkdir -p $HOME\n")

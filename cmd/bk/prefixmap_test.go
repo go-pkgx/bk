@@ -130,3 +130,65 @@ func TestShimBase(t *testing.T) {
 		}
 	}
 }
+
+// -Wl,-oso_prefix is appended at the LINK step only, last, and a linker that
+// rejects it fails the build with no retry (go-pkgx/bk#400).
+func TestCCShimAppendsTheOSOPrefixAtLinkOnly(t *testing.T) {
+	fakeDrivers(t)
+	old := execCommand
+	defer func() { execCommand = old }()
+	var got []string
+	execCommand = func(_ string, args ...string) *exec.Cmd {
+		got = args
+		return exec.Command("true")
+	}
+	t.Setenv("BK_CC", "clang")
+	t.Setenv(osoPrefixEnv, "/cache/root/")
+	var errb bytes.Buffer
+	if code := ccShim("cc", []string{"a.o", "-o", "a"}, &errb); code != 0 {
+		t.Fatal(code)
+	}
+	if got[len(got)-1] != "-Wl,-oso_prefix,/cache/root/" {
+		t.Errorf("link: last arg = %q (%v)", got[len(got)-1], got)
+	}
+	for _, a := range got {
+		if a == "-Wl,-S" {
+			t.Error("the debug map must be kept: -Wl,-S was passed")
+		}
+	}
+	if code := ccShim("cc", []string{"-c", "a.c"}, &errb); code != 0 {
+		t.Fatal(code)
+	}
+	if strings.Contains(strings.Join(got, " "), "oso_prefix") {
+		t.Errorf("compile step got a linker flag: %v", got)
+	}
+	// control: unset, no flag even at link
+	_ = os.Unsetenv(osoPrefixEnv)
+	if code := ccShim("cc", []string{"a.o"}, &errb); code != 0 {
+		t.Fatal(code)
+	}
+	if strings.Contains(strings.Join(got, " "), "oso_prefix") {
+		t.Errorf("flag present with no root: %v", got)
+	}
+}
+
+func TestCCShimLinkerRejectingOSOPrefixFailsLoudly(t *testing.T) {
+	dir := t.TempDir()
+	count := filepath.Join(dir, "calls")
+	script := "#!/bin/sh\necho x >> '" + count + "'\n" +
+		"for a in \"$@\"; do case \"$a\" in -Wl,-oso_prefix*) echo \"ld: unknown option: -oso_prefix\" >&2; exit 1;; esac; done\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "oldcc"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("BK_CC", "oldcc")
+	t.Setenv(osoPrefixEnv, "/cache/")
+	var errb bytes.Buffer
+	if code := ccShim("cc", []string{"a.o"}, &errb); code == 0 || !strings.Contains(errb.String(), "unknown option") {
+		t.Fatalf("code %d, stderr %q: want a loud failure carrying ld's message", code, errb.String())
+	}
+	calls, _ := os.ReadFile(count)
+	if n := strings.Count(string(calls), "x"); n != 1 {
+		t.Fatalf("linker ran %d times, want 1 (no retry without the flag)", n)
+	}
+}
