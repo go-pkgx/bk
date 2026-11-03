@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +80,36 @@ func TestNeitherNameInstalledFallsBackToTheBase(t *testing.T) {
 	self := shimDir(t, shim) // nothing but the shim itself
 	if got := fallbackDriver(shim, self); got != "gcc" {
 		t.Errorf("fallbackDriver(%q) = %q, want %q", shim, got, "gcc")
+	}
+}
+
+// ⛔ AND THE MESSAGE NAMES BOTH CANDIDATES, because with a prefixed shim the
+// two are different and reporting only one hides half the lookup.
+//
+// The old wording blamed $BK_CC for a build where $BK_CC was UNSET, which is
+// what sent a Windows cross build looking at the wrong thing. A prefixed name
+// with nothing installed is the case that wording was rewritten for, so it is
+// the case asserted: TestCCShimFailures drives the BARE `cc`, where both
+// candidates are one string and this branch never runs.
+func TestTheNoStencilFailureNamesBothCandidates(t *testing.T) {
+	t.Setenv("BK_CC", "")
+	const shim = "x86_64-w64-mingw32-gcc"
+	self := shimDir(t, shim) // neither the triple nor the bare gcc exists
+	old := os.Args
+	os.Args = []string{self}
+	defer func() { os.Args = old }()
+
+	var errb bytes.Buffer
+	if code := ccShim(shim, nil, &errb); code != 127 {
+		t.Fatalf("code = %d, stderr = %q", code, errb.String())
+	}
+	for _, want := range []string{"neither " + shim, "nor gcc", "$BK_CC is unset"} {
+		if !strings.Contains(errb.String(), want) {
+			t.Errorf("stderr = %q, want it to contain %q", errb.String(), want)
+		}
+	}
+	// And it must NOT say what the old message said, which is the defect.
+	if strings.Contains(errb.String(), "names a compiler that is not installed") {
+		t.Error("the message still blames $BK_CC, which is unset here")
 	}
 }
