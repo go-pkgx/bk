@@ -14,7 +14,7 @@ import (
 	"github.com/go-pkgx/bk/build"
 	"github.com/go-pkgx/bk/fetch"
 	"github.com/go-pkgx/bk/fixup"
-	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/target"
 	"github.com/go-pkgx/bk/versions"
 	"github.com/go-pkgx/bottle"
@@ -188,12 +188,9 @@ func runBuild(args []string, stdout, stderr io.Writer) int {
 	runner.Glibc = *glibc
 	runner.Concurrency = *jobs
 
-	data, err := os.ReadFile(*recipe)
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 1
-	}
-	rec, err := pantry.Parse(data)
+	// By extension: --recipe takes a path, and `package.hcl` is a recipe like
+	// any other. Reading it as YAML made HCL recipes unbuildable by name.
+	rec, err := recipefile.LoadFile(*recipe)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1

@@ -4,9 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 
-	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-pkgx/bk/recipefile"
 	"github.com/go-pkgx/bk/versions"
 )
 
@@ -17,20 +16,18 @@ import (
 func runVersions(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("versions", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	recipe := fs.String("recipe", "", "path to the package.yml recipe (required)")
+	recipe := fs.String("recipe", "", "path to the recipe (package.hcl or package.yml; required)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *recipe == "" {
-		fmt.Fprintln(stderr, "usage: bk versions --recipe <package.yml>")
+		fmt.Fprintln(stderr, "usage: bk versions --recipe <package.hcl|package.yml>")
 		return 2
 	}
-	data, err := os.ReadFile(*recipe)
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 1
-	}
-	rec, err := pantry.Parse(data)
+	// By extension. This read YAML unconditionally, so asking an HCL recipe
+	// what versions it resolves failed with a yaml unmarshal error about its
+	// first attribute — go-pkgx/bk#389.
+	rec, err := recipefile.LoadFile(*recipe)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1

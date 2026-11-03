@@ -87,12 +87,8 @@ func runTest(args []string, stdout, stderr io.Writer) int {
 	}
 	project := rest[0]
 
-	data, err := os.ReadFile(*recipe)
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return exitCannotRun
-	}
-	rec, err := pantry.Parse(data)
+	// By extension, so an HCL recipe can be tested as well as built.
+	rec, err := recipefile.LoadFile(*recipe)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return exitCannotRun
