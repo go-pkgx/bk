@@ -268,6 +268,25 @@ func checkMachoMagic(exe string) error {
 // without complaint.
 var ErrDuplicateRpath = errors.New("fixup: duplicate LC_RPATH")
 
+// ErrBuilderRpath means a shipped Mach-O still carries an absolute LC_RPATH
+// into the builder's store. Linux is clean because fixup rewrites RUNPATH; this
+// is the same promise for Mach-O, checked on the FINAL rpath set rather than
+// assumed from what the rewrite meant to do (go-pkgx/bk#395).
+var ErrBuilderRpath = errors.New("fixup: absolute LC_RPATH into the builder's store")
+
+// checkNoBuilderRpath refuses a Mach-O whose rpaths still name store (derived
+// from the build's $PKGX_DIR, never a literal). Same caller contract as
+// checkNoDuplicateRpath: exe has already parsed.
+func checkNoBuilderRpath(exe, store string) error {
+	rpaths, _ := machoRpaths(exe)
+	for _, r := range rpaths {
+		if builderRpath(r, store) {
+			return fmt.Errorf("%w: %s carries %q, a path on the machine that built it", ErrBuilderRpath, exe, r)
+		}
+	}
+	return nil
+}
+
 // checkNoDuplicateRpath reports a Mach-O that names one rpath more than once.
 // The caller has already established that exe parses: isMachO IS "machoInfo
 // succeeds", and machoRpaths fails nowhere else — so the read cannot fail here,

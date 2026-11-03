@@ -132,6 +132,13 @@ func auditBuilt(opts Options) error {
 				return err
 			}
 		}
+		// A recipe that opts out of the Mach-O rewrite (fix-machos) opted out of
+		// the removal too, so judging it by it would fail what it asked for.
+		if !has(opts.Skips, "fix-machos") {
+			if err := checkNoBuilderRpath(p, opts.PkgxDir); err != nil {
+				return err
+			}
+		}
 		// An absolute reference INTO $PKGX_DIR is this package's deliberate
 		// fallback, not a leak: rewriteMacho leaves a name absolute when no
 		// rpath reaches the store, because "@rpath would resolve to nothing,
