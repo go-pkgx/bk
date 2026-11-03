@@ -45,3 +45,23 @@ func TestWrapExportsPrefixMap(t *testing.T) {
 		t.Errorf("exported without a map:\n%s", s)
 	}
 }
+
+// BK_OSO_PREFIX is exported for darwin targets only, from the same derived root
+// as the prefix map, with a trailing slash so the recorded path becomes relative.
+func TestWrapExportsTheOSOPrefixOnDarwinOnly(t *testing.T) {
+	o := WrapOptions{UserScript: "true", Home: "/h", SrcRoot: "/r/b", PrefixMap: "/r=/build"}
+	o.Target.Platform = "darwin"
+	if s := Wrap(o); !strings.Contains(s, "export BK_OSO_PREFIX=\"/r/\"\n") {
+		t.Errorf("darwin: no OSO prefix:\n%s", s)
+	}
+	o.Target.Platform = "linux"
+	if s := Wrap(o); strings.Contains(s, "BK_OSO_PREFIX") {
+		t.Errorf("linux exports an OSO prefix:\n%s", s)
+	}
+}
+
+func TestPrefixMapRefusesACommaInTheRoot(t *testing.T) {
+	if _, err := PrefixMapFor("/a,b"); err == nil {
+		t.Error("a root with a comma cannot be passed through -Wl, and must be refused")
+	}
+}

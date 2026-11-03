@@ -55,6 +55,15 @@ func ccShim(name string, args []string, stderr io.Writer) int {
 	if m := os.Getenv(prefixMapEnv); m != "" {
 		all = append(all, "-ffile-prefix-map="+m)
 	}
+	// At the LINK step only, darwin: ld64's debug map records the object files'
+	// absolute paths (OSO stabs), which no compiler flag reaches. `-oso_prefix`
+	// removes the prefix from them and keeps the map (no -S). ld rejecting it
+	// fails the link, and there is no retry without it. (ld(1): "-oso_prefix
+	// prefix-path: When generating the debug map, the linker will remove the
+	// specified prefix-path from the path in OSO symbols.")
+	if p := os.Getenv(osoPrefixEnv); p != "" && !compileOnly(args) {
+		all = append(all, "-Wl,-oso_prefix,"+p)
+	}
 	cmd := execCommand(bin, all...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, stderr
 	if err := cmd.Run(); err != nil {
@@ -71,6 +80,10 @@ func ccShim(name string, args []string, stderr io.Writer) int {
 // prefixMapEnv carries OLD=NEW for -ffile-prefix-map; buildscript.Wrap exports
 // it from the build's actual cache root.
 const prefixMapEnv = "BK_FILE_PREFIX_MAP"
+
+// osoPrefixEnv carries the cache root for ld64's -oso_prefix; Wrap exports it
+// for darwin targets only.
+const osoPrefixEnv = "BK_OSO_PREFIX"
 
 // shimBase strips a triple prefix: x86_64-pc-linux-gnu-gcc -> gcc.
 func shimBase(name string) string {
