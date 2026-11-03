@@ -26,11 +26,12 @@ func ccShim(name string, args []string, stderr io.Writer) int {
 		varName = "BK_CXX"
 	}
 	driver := strings.Fields(os.Getenv(varName))
-	if len(driver) == 0 {
+	stencil := len(driver) > 0
+	if !stencil {
 		// No sovereign stencil (darwin, or linux on the system libc): the shim is
 		// only here to impose the path map, so it drives the compiler of the
 		// same name.
-		driver = []string{shimBase(name)}
+		driver = []string{fallbackDriver(name, os.Args[0])}
 	}
 	flags := driver[1:]
 	if compileOnly(args) {
@@ -43,6 +44,17 @@ func ccShim(name string, args []string, stderr io.Writer) int {
 	// got a bare compiler with no sysroot (go-pkgx/bk#302).
 	bin, err := resolveDriver(driver[0], os.Args[0])
 	if err != nil {
+		if !stencil {
+			// $BK_CC is EMPTY here, so blaming it sends the reader to a
+			// variable that is doing nothing. The old wording said "$BK_CC
+			// names a compiler that is not installed" while $BK_CC was unset
+			// and the name asked for was the shim's own.
+			tried := name + " is not"
+			if base := shimBase(name); base != name {
+				tried = "neither " + name + " nor " + base + " is"
+			}
+			err = fmt.Errorf("%s on PATH outside this shim's directory, and $%s is unset — nothing supplies a compiler for this build", tried, varName)
+		}
 		fmt.Fprintf(stderr, "bk %s: %v\n", name, err)
 		return 127
 	}
@@ -95,6 +107,36 @@ func shimBase(name string) string {
 		}
 	}
 	return name
+}
+
+// fallbackDriver is the compiler a shim drives when no sovereign stencil set
+// $BK_CC: the EXACT name it was invoked as when that exists on PATH, and the
+// bare base otherwise.
+//
+// ⛔⛔ THE EXACT NAME FIRST, BECAUSE FOR A WINDOWS CROSS BUILD IT IS THE ONLY
+// COMPILER THERE. bk sets no $BK_CC for windows — "its compiler comes from the
+// recipe's llvm-mingw dep" (buildscript/wrapper.go) — and compilerShimsFor
+// shims the TRIPLE-PREFIXED spellings, which this shim dir then puts FIRST on
+// PATH. So `x86_64-w64-mingw32-gcc` reached the shim, shimBase reduced it to
+// `gcc`, and the build died on a name llvm-mingw does not ship:
+//
+//	x86_64-w64-mingw32-gcc -O3 -Wall -c -o adler32.o adler32.c
+//	bk gcc: gcc is not on PATH outside …/build.libexec
+//
+// while `x86_64-w64-mingw32-gcc` sat in the llvm-mingw bottle's bin, shadowed
+// by our own shim. The doc comment above said the shim "drives the compiler of
+// the same name" and shimBase made that false for every prefixed spelling.
+//
+// ⛔ AND THE BASE SECOND, BECAUSE STRIPPING IS NOT A MISTAKE. autoconf probes
+// `x86_64-pc-linux-gnu-gcc`, which NOTHING installs under that name on a
+// sovereign linux build; reducing it to `gcc` is what makes libisl configure
+// (see compilerShimsFor). Trying the exact name first is strictly more
+// capable: it changes the answer only where that name actually exists.
+func fallbackDriver(name, self string) string {
+	if _, err := resolveDriver(name, self); err == nil {
+		return name
+	}
+	return shimBase(name)
 }
 
 // compileOnly reports whether this invocation stops before linking: -c, -S and
