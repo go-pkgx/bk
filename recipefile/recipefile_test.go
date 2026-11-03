@@ -147,3 +147,68 @@ func TestParseNamedPicksTheFrontEndByFilename(t *testing.T) {
 		t.Error("HCL content named package.yml was accepted")
 	}
 }
+
+// ⛔⛔ A RECIPE PATH MAY BE THE DIRECTORY, so a caller need not choose the
+// format to ask for the recipe.
+//
+// This package exists so one place decides what a recipe is called, and the
+// spelling kept escaping it: four commands read `package.yml` directly
+// (go-pkgx/bk#389), and the wasip1 workflow then spelled
+// `/recipes/<slug>/package.yml` of its own, so converting that lane to HCL2
+// could not be a reformat — it had to edit the workflow in the same commit or
+// ship recipes the lane could not build.
+func TestLoadFileTakesADirectoryAndLetsNamesDecide(t *testing.T) {
+	p := t.TempDir()
+	dir := Dir(p, "b.org")
+	write(t, dir, "package.hcl", hclSrc)
+
+	rec, err := LoadFile(dir)
+	if err != nil {
+		t.Fatalf("a recipe directory was not accepted: %v", err)
+	}
+	if got := rec.Dependencies["openssl.org"]; got != "^3" {
+		t.Errorf("openssl.org = %v, want ^3 — the hcl front-end did not run", got)
+	}
+}
+
+// And HCL wins over YAML by the same rule Load uses, so the two entry points
+// cannot disagree about which file a project's recipe is.
+func TestLoadFileOnADirectoryPrefersHCLLikeLoadDoes(t *testing.T) {
+	p := t.TempDir()
+	dir := Dir(p, "c.org")
+	write(t, dir, "package.yml", yml)    // openssl.org ^1.1
+	write(t, dir, "package.hcl", hclSrc) // openssl.org ^3
+
+	viaFile, err := LoadFile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaLoad, err := Load(p, "c.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viaFile.Dependencies["openssl.org"] != viaLoad.Dependencies["openssl.org"] {
+		t.Errorf("LoadFile(dir) = %v but Load(project) = %v; the two entry points disagree",
+			viaFile.Dependencies["openssl.org"], viaLoad.Dependencies["openssl.org"])
+	}
+	if got := viaFile.Dependencies["openssl.org"]; got != "^3" {
+		t.Errorf("openssl.org = %v, want ^3 (the hcl)", got)
+	}
+}
+
+// A directory holding no recipe is ErrNoRecipe — "this project has no recipe
+// here" — and not a bare "is a directory" from the read, which is what the
+// caller got before and could not act on.
+func TestLoadFileOnADirectoryWithNoRecipeSaysSo(t *testing.T) {
+	p := t.TempDir()
+	dir := Dir(p, "d.org")
+	write(t, dir, "README.md", "nothing here")
+
+	_, err := LoadFile(dir)
+	if !errors.Is(err, ErrNoRecipe) {
+		t.Fatalf("err = %v, want ErrNoRecipe", err)
+	}
+	if !strings.Contains(err.Error(), "package.hcl") {
+		t.Errorf("the error does not name what was tried: %v", err)
+	}
+}
