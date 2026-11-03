@@ -2,8 +2,9 @@
 
 `bk` is a from-scratch, `CGO_ENABLED=0` reimplementation of [pkgx](https://pkgx.sh)'s
 build tool [brewkit](https://github.com/pkgxdev/brewkit) (originally Deno/TypeScript
-with Ruby + `patchelf` helpers). It reads a pantry `package.yml`, builds the package
-in a pkgx environment, relocates the install tree, and packages a bottle.
+with Ruby + `patchelf` helpers). It reads a pantry recipe — `package.hcl` or
+`package.yml`, tried in that order — builds the package in a pkgx environment,
+relocates the install tree, and packages a bottle.
 
 The reference brewkit is a *native* build tool — everything pivots on the host it
 runs on being the thing it builds for. `bk` is **Target ≠ Host by design**: the
