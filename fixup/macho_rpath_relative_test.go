@@ -163,9 +163,12 @@ func TestARelativisedRpathIsNotWrittenTwice(t *testing.T) {
 			t.Errorf("rpath %q appears %d times; ld refuses a duplicate LC_RPATH", r, n)
 		}
 	}
-	// And the absolute one is left as it was rather than half-written.
-	if got[1] != pkgx {
-		t.Errorf("second rpath = %q, want the builder path left alone (%q)", got[1], pkgx)
+	// The absolute one is not half-written either: it is REMOVED (bk#395), since
+	// the relative entry that means the same thing is already there.
+	for _, s := range got {
+		if s == pkgx {
+			t.Errorf("builder path %q survived", pkgx)
+		}
 	}
 	// The guard is satisfied all the same: a relative rpath reaches the root.
 	checked, problems := AuditRelocatable(prefix, pkgx)

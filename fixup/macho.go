@@ -328,6 +328,17 @@ func RewriteMachoStrings(path string, fn func(string) string) error {
 // an rpath and an install name are both strings in the same kind of slot, and
 // what each may be rewritten to is not the same.
 func rewriteMachoStringsCmd(path string, fn func(uint32, string) string) error {
+	return editMacho(path, func(slice []byte, sl machoSlice) (bool, int, error) {
+		ch, err := walkMachoStrings(slice, sl.bo, sl.hdr, sl.ncmd, fn)
+		return ch, sl.ncmd, err
+	})
+}
+
+// editMacho applies edit to every architecture slice of a Mach-O, re-signs each
+// slice it changed, and writes the file back if anything changed. edit returns
+// whether it changed the slice and the slice's load-command count afterwards
+// (the signature walk needs the CURRENT count, and a command removal alters it).
+func editMacho(path string, edit func(slice []byte, sl machoSlice) (bool, int, error)) error {
 	raw, slices, err := machoInfo(path)
 	if err != nil {
 		return err
@@ -335,7 +346,7 @@ func rewriteMachoStringsCmd(path string, fn func(uint32, string) string) error {
 	changed := false
 	for i, sl := range slices {
 		slice := raw[sl.off : sl.off+sl.size]
-		ch, err := walkMachoStrings(slice, sl.bo, sl.hdr, sl.ncmd, fn)
+		ch, ncmd, err := edit(slice, sl)
 		changed = changed || ch
 		if err != nil {
 			return err
@@ -344,7 +355,7 @@ func rewriteMachoStringsCmd(path string, fn func(uint32, string) string) error {
 		// silicon the kernel kills such a binary outright — with no message, no
 		// dyld error, just exit 137. Restate the hashes over what we just wrote.
 		if ch {
-			if _, err := resignSlice(slice, sl.bo, sl.hdr, sl.ncmd); err != nil {
+			if _, err := resignSlice(slice, sl.bo, sl.hdr, ncmd); err != nil {
 				return sliceErr(path, i, len(slices), err)
 			}
 		}
@@ -362,6 +373,92 @@ func rewriteMachoStringsCmd(path string, fn func(uint32, string) string) error {
 	}
 	defer restore()
 	return osWriteFile(path, raw, mode)
+}
+
+// ErrMachoCmds means the load-command run of a Mach-O is not shaped the way
+// the format says, so a command cannot be removed from it safely.
+var ErrMachoCmds = errors.New("fixup: malformed Mach-O load commands")
+
+// dropRpathCmds deletes, from one thin slice, every LC_RPATH whose path drop
+// accepts, and reports how many it removed and the load-command count left.
+//
+// <mach-o/loader.h> defines a load command by (cmd, cmdsize) and the header by
+// (ncmds, sizeofcmds); nothing else records where a command sits, so removing
+// one is: slide the later commands down over it, zero the vacated tail, lower
+// both header counts. No section, segment or offset elsewhere in the file moves,
+// because the run only SHRINKS — the freed bytes become more of the padding the
+// linker leaves after the commands. (Compare growMachoCmd, which needs that
+// padding.) The header and the commands are inside the first hashed page, so the
+// caller re-signs.
+func dropRpathCmds(slice []byte, bo binary.ByteOrder, hdr, ncmd int, drop func(string) bool) (removed, left int, err error) {
+	end := hdr + int(bo.Uint32(slice[20:]))
+	if end > len(slice) {
+		return 0, ncmd, fmt.Errorf("%w: sizeofcmds runs past the %d-byte slice", ErrMachoCmds, len(slice))
+	}
+	read, write := hdr, hdr
+	for i := 0; i < ncmd; i++ {
+		if read+8 > end {
+			return 0, ncmd, fmt.Errorf("%w: command %d of %d starts past the command run", ErrMachoCmds, i, ncmd)
+		}
+		cmd := bo.Uint32(slice[read:])
+		size := int(bo.Uint32(slice[read+4:]))
+		if size < 8 || read+size > end {
+			return 0, ncmd, fmt.Errorf("%w: command %d of %d has cmdsize %d", ErrMachoCmds, i, ncmd, size)
+		}
+		if cmd == lcRpath {
+			if strOff := int(bo.Uint32(slice[read+8:])); strOff >= 8 && strOff <= size && drop(cstr(slice[read+strOff:read+size])) {
+				read += size
+				removed++
+				continue
+			}
+		}
+		copy(slice[write:], slice[read:read+size])
+		write += size
+		read += size
+	}
+	if removed == 0 {
+		return 0, ncmd, nil
+	}
+	for j := write; j < end; j++ {
+		slice[j] = 0
+	}
+	left = ncmd - removed
+	bo.PutUint32(slice[16:], uint32(left))
+	bo.PutUint32(slice[20:], uint32(write-hdr))
+	return removed, left, nil
+}
+
+// dropMachoRpaths removes the LC_RPATH entries of every slice that drop
+// accepts, re-signs what it changed, and returns how many entries it removed.
+func dropMachoRpaths(path string, drop func(string) bool) (int, error) {
+	total := 0
+	err := editMacho(path, func(slice []byte, sl machoSlice) (bool, int, error) {
+		n, left, err := dropRpathCmds(slice, sl.bo, sl.hdr, sl.ncmd, drop)
+		total += n
+		return n > 0, left, err
+	})
+	return total, err
+}
+
+// dropRpaths is a seam so the removal's failure is reachable from rewriteMacho.
+var dropRpaths = dropMachoRpaths
+
+// builderRpath reports whether an LC_RPATH is an ABSOLUTE path into the
+// builder's store — $PKGX_DIR as the build ran, never a literal. On the
+// machine that built the bottle it is a fallback that resolves; anywhere else
+// it resolves to nothing and only says where the builder keeps its files
+// (go-pkgx/bk#395). A path outside the store is somebody else's decision and is
+// not touched here.
+func builderRpath(rpath, store string) bool {
+	if store == "" || !filepath.IsAbs(rpath) {
+		return false
+	}
+	clean, dir := filepath.Clean(rpath), filepath.Clean(store)
+	if clean == dir {
+		return true
+	}
+	_, under := underDir(clean, dir)
+	return under
 }
 
 // machoID returns a Mach-O's LC_ID_DYLIB, or "" for a file that has none
@@ -498,6 +595,29 @@ func rewriteMacho(exe string, opts Options) error {
 	if !isMachO(exe) {
 		return nil
 	}
+	if err := rewriteMachoRefs(exe, opts); err != nil {
+		return err
+	}
+	// What rewriteRefs could not restate relatively is still the builder's path
+	// (a duplicate of an entry bk linked in, or a file that is not under the
+	// store yet). It is a search root that only means something on the build
+	// machine, so it goes: the relative entries are the mechanism (go-pkgx/bk#395).
+	n, err := dropRpaths(exe, func(s string) bool { return builderRpath(s, opts.PkgxDir) })
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+	opts.log("macho %s: removed %d absolute rpath(s) into the builder's store %s", exe, n, opts.PkgxDir)
+	// Removing every rpath of a file that still names @rpath/… would leave it
+	// unloadable anywhere; say so now rather than at someone's dyld.
+	return checkRpathResolvable(exe, opts)
+}
+
+// rewriteMachoRefs is the install-name / reference / rpath-relativising half of
+// rewriteMacho.
+func rewriteMachoRefs(exe string, opts Options) error {
 	// A darwin binary names its dependencies by ABSOLUTE install name — the
 	// LC_ID_DYLIB the dependency was built with, which is a path on the machine
 	// that built it:
