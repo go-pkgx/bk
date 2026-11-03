@@ -121,8 +121,10 @@ func FixUp(opts Options) error {
 // No windows guard here: FixUp returns before this on that platform, and a
 // branch no test can reach is a line the coverage gate is right to refuse.
 func auditBuilt(opts Options) error {
-	return walkExes(opts.Prefix, func(p string) error {
+	var c auditCounts
+	err := walkExes(opts.Prefix, func(p string) error {
 		if !isMachO(p) {
+			c.notMachO++
 			return nil
 		}
 		for _, check := range []func(string) error{
@@ -134,7 +136,10 @@ func auditBuilt(opts Options) error {
 		}
 		// A recipe that opts out of the Mach-O rewrite (fix-machos) opted out of
 		// the removal too, so judging it by it would fail what it asked for.
-		if !has(opts.Skips, "fix-machos") {
+		if has(opts.Skips, "fix-machos") {
+			c.optedOut++
+		} else {
+			c.judged++
 			if err := checkNoBuilderRpath(p, opts.PkgxDir); err != nil {
 				return err
 			}
@@ -167,6 +172,36 @@ func auditBuilt(opts Options) error {
 		}
 		return nil
 	})
+	// ALWAYS said, zeros included: a lane that quietly stops being judged would
+	// otherwise read as a lane that is clean.
+	opts.log("%s", c.summary(recipeName(opts)))
+	return err
+}
+
+// auditCounts is what auditBuilt looked at and what it did not.
+type auditCounts struct {
+	judged   int // Mach-O files checked for builder rpaths
+	optedOut int // Mach-O files not checked because the recipe skips fix-machos
+	notMachO int // files under bin/lib/libexec that are not Mach-O
+}
+
+func (c auditCounts) summary(recipe string) string {
+	s := fmt.Sprintf("fixup: builder-rpath audit of %s: judged %d Mach-O file(s); skipped %d not Mach-O, %d by the recipe's fix-machos opt-out",
+		recipe, c.judged, c.notMachO, c.optedOut)
+	if c.optedOut > 0 {
+		s += " (" + recipe + " is NOT judged)"
+	}
+	return s
+}
+
+// recipeName is the project the prefix belongs to: <store>/<project>/v<ver>,
+// or the last directory above the version when the prefix is outside the store.
+func recipeName(opts Options) string {
+	proj := filepath.Dir(opts.Prefix)
+	if rel, ok := underDir(proj, opts.PkgxDir); ok {
+		return rel
+	}
+	return filepath.Base(proj)
 }
 
 // fixPCFiles rewrites absolute build/install prefixes in pkg-config .pc files

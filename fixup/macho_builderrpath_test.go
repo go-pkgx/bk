@@ -218,3 +218,43 @@ func TestARemovalFailureStopsTheRewrite(t *testing.T) {
 		t.Fatalf("err = %v, want boom", err)
 	}
 }
+
+// auditBuilt SAYS what it judged and what it skipped, by reason, and names the
+// recipe, so a lane that stops being judged cannot read as clean.
+func TestAuditBuiltCountsWhatItJudgedAndSkipped(t *testing.T) {
+	store := filepath.Join(t.TempDir(), ".pkgx")
+	prefix := filepath.Join(store, "acme.org", "foo", "v1.0.0")
+	placePad(t, filepath.Join(prefix, "bin", "a"), 256, machoCmd{lcRpath, "@loader_path/.."})
+	placePad(t, filepath.Join(prefix, "lib", "b.dylib"), 256, machoCmd{lcRpath, "@loader_path/.."})
+	if err := os.WriteFile(filepath.Join(prefix, "bin", "script"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(skips []string) string {
+		var logged []string
+		err := auditBuilt(Options{Prefix: prefix, Platform: "darwin", PkgxDir: store, Skips: skips,
+			Log: func(s string) { logged = append(logged, s) }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(logged, "\n")
+	}
+	got := run(nil)
+	for _, want := range []string{"acme.org/foo", "judged 2 Mach-O", "1 not Mach-O", "0 by the recipe's fix-machos"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("judged case lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "is NOT judged") {
+		t.Errorf("a judged recipe was reported as not judged:\n%s", got)
+	}
+	got = run([]string{"fix-machos"})
+	for _, want := range []string{"acme.org/foo", "judged 0 Mach-O", "2 by the recipe's fix-machos", "acme.org/foo is NOT judged"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("skipped case lacks %q:\n%s", want, got)
+		}
+	}
+	// A prefix outside the store falls back to the directory above the version.
+	if n := recipeName(Options{Prefix: "/elsewhere/proj/v1", PkgxDir: store}); n != "proj" {
+		t.Errorf("recipeName outside the store = %q", n)
+	}
+}
