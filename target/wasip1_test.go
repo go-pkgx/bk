@@ -47,8 +47,14 @@ func TestWasmIsAnArchOfWasip1Only(t *testing.T) {
 
 // TestVocabularyListsAreSortedAndComplete: build derives its recipe-key regexp
 // from these lists, so they must name every platform and arch exactly once.
+// ⛔ THE BSDs BELONG HERE BECAUSE THE REGEXP IS THE POINT. A platform absent
+// from this vocabulary turns a recipe's `freebsd:` block into a DEPENDENCY on
+// a project called "freebsd" — bottle says exactly that at pkgx.go:1563, and
+// bottle has listed these three since before any bottle existed for them. bk
+// not listing them was the two halves disagreeing about what a recipe key
+// means.
 func TestVocabularyListsAreSortedAndComplete(t *testing.T) {
-	wantP := []string{"darwin", "linux", "wasip1", "windows"}
+	wantP := []string{"darwin", "freebsd", "linux", "netbsd", "openbsd", "wasip1", "windows"}
 	wantA := []string{"aarch64", "s390x", "wasm", "x86-64"}
 	for _, c := range []struct {
 		name      string
