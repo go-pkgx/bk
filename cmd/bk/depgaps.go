@@ -75,11 +75,16 @@ func runDepgaps(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	blocked, absent, err := unsatisfiable(*pantryDir, tgt, have)
+	blocked, absent, cen, err := unsatisfiableCounted(*pantryDir, tgt, have)
 	if err != nil {
 		fmt.Fprintln(stderr, "depgaps:", err)
 		return 1
 	}
+	// ⛔ WHAT WAS READ, BEFORE WHAT WAS FOUND. A ranking is a claim about a
+	// population, and this walk once read 3 recipes of 213 while printing a
+	// confident answer about the pantry (go-pkgx/bk#389). The line costs
+	// nothing and makes that failure self-reporting rather than invisible.
+	fmt.Fprintf(stdout, "depgaps: %s\n\n", cen)
 	reportGaps(stdout, blocked, *platform, *top)
 	// The front has two halves and the second is usually the bigger one:
 	// measured on 2026-08-25, linux/x86-64 had 333 dependencies blocked by a
@@ -121,7 +126,45 @@ func publishedVersions(path, osn, arch string) (map[string][]string, error) {
 
 // unsatisfiable maps "project constraint" to the recipes that ask for it and
 // cannot be served.
+// census counts what the walk did with the recipes it found.
+//
+// ⛔⛔ A TOLERANT SKIP MUST SAY HOW OFTEN IT FIRED. The skip below was written
+// so that one malformed recipe could not stop a sweep — correct, and then HCL2
+// became the default format and every `package.hcl` took the same branch. This
+// walk examined 3 of pantry-overlay's 213 recipes and printed a clean,
+// confident, silent result for the other 210 (go-pkgx/bk#389).
+//
+// The parse is fixed. The silence is the other half: a skip nobody counts
+// cannot be noticed when its population changes, and the next format, platform
+// or schema bump is the same trap with a different name.
+type census struct{ examined, unreadable, unparsed, offPlatform int }
+
+func (c census) String() string {
+	s := fmt.Sprintf("%d recipe(s) examined", c.examined)
+	for _, x := range []struct {
+		n    int
+		what string
+	}{
+		{c.unreadable, "unreadable"},
+		{c.unparsed, "did not parse"},
+		{c.offPlatform, "not for this platform"},
+	} {
+		if x.n > 0 {
+			s += fmt.Sprintf(", %d %s", x.n, x.what)
+		}
+	}
+	return s
+}
+
 func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string) (out, absent map[string][]string, err error) {
+	out, absent, _, err = unsatisfiableCounted(pantryDir, tgt, have)
+	return out, absent, err
+}
+
+// ⛔ `cen`, not `c`: the dependency loop below already binds `c` to a version
+// constraint, and a census silently shadowed by a string is the kind of thing
+// that compiles and then counts the wrong population.
+func unsatisfiableCounted(pantryDir string, tgt target.Target, have map[string][]string) (out, absent map[string][]string, cen census, err error) {
 	root := filepath.Join(pantryDir, "projects")
 	out, absent = map[string][]string{}, map[string][]string{}
 	err = filepathWalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
@@ -134,6 +177,7 @@ func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string
 		}
 		data, readErr := osReadFile(p)
 		if readErr != nil {
+			cen.unreadable++
 			return nil
 		}
 		// ⛔ BY THE FILENAME, NOT BY ASSUMING YAML. The walk above accepts any
@@ -143,7 +187,10 @@ func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string
 		rec, parseErr := recipefile.ParseNamed(data, d.Name())
 		if parseErr != nil {
 			// A recipe we cannot parse is a different problem, and one the
-			// schema gate already reports. Counting it here would be noise.
+			// schema gate already reports — so it does not become a gap. It IS
+			// counted, because a skip that leaves no trace is how this walk
+			// came to read 3 recipes of 213 and say nothing was wrong.
+			cen.unparsed++
 			return nil
 		}
 		// A recipe that declares it does not target this platform is not a gap
@@ -152,8 +199,10 @@ func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string
 		// kernel.org/linux and github.com/vmware/tdnf — both `platforms:
 		// linux` — ask for them.
 		if !pantry.Supports(rec, tgt.Platform, tgt.Arch) {
+			cen.offPlatform++
 			return nil
 		}
+		cen.examined++
 		for _, deps := range []map[string]any{rec.Dependencies, build.BuildDeps(rec)} {
 			for _, spec := range build.DepSpecs(deps, tgt) {
 				proj := build.SpecProject(spec)
@@ -181,7 +230,7 @@ func unsatisfiable(pantryDir string, tgt target.Target, have map[string][]string
 		}
 		return nil
 	})
-	return out, absent, err
+	return out, absent, cen, err
 }
 
 // anySatisfies reports whether any published version meets the constraint,
