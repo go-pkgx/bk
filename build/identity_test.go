@@ -1,6 +1,7 @@
 package build
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/go-zpkg/zbk/moustache"
@@ -101,6 +102,28 @@ func TestEveryInputChangesTheIdentity(t *testing.T) {
 			continue
 		}
 		seen[got] = "changing " + tc.what
+	}
+}
+
+// ⛔⛔ A BUILD WHOSE IDENTITY CANNOT BE COMPUTED DOES NOT BUILD. There is no
+// weaker prefix to fall back to: `v<version>` is the shape two builds of one
+// version overwrote each other in, and an identity that failed quietly would
+// either produce it or produce a prefix hashed over less than the closure
+// read. So the failure is returned and the build stops, naming the step.
+func TestABuildStopsWhenItsIdentityCannotBeComputed(t *testing.T) {
+	tenv(t)
+	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
+	rec := okRecipe()
+	// A channel has no JSON form, so the recipe does not serialise and
+	// `spec.Hash` refuses rather than hashing over the halves it managed.
+	rec.Build = map[string]any{"script": []any{"make install"}, "unserialisable": make(chan int)}
+
+	_, err := okRunner("acme.org/tool", tgt).Build(rec, "acme.org/tool", "*", tgt, tgt, "")
+	if err == nil {
+		t.Fatal("Build: nil; a build with no identity has no prefix to install into")
+	}
+	if !strings.Contains(err.Error(), "build identity") {
+		t.Errorf("the failure does not name the step: %v", err)
 	}
 }
 

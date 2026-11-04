@@ -71,6 +71,27 @@ func TestComputeDefaultLayout(t *testing.T) {
 	}
 }
 
+// ⛔⛔ A PREFIX WITHOUT AN IDENTITY IS NOT A WEAKER PREFIX, IT IS THE OLD BUG.
+// `<store>/<project>/v<version>` is the shape two builds of one version
+// overwrote each other in, and it is exactly what Compute would produce from
+// an empty hash. Refusing LOUDLY rather than returning a plausible path is
+// the point: a caller that does not know the identity has not resolved the
+// closure yet, and a silent fallback would put the layout back to two shapes
+// with nothing to notice it.
+func TestComputeRefusesAPrefixWithNoIdentity(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Compute accepted an empty hash: the prefix would name a version and not a build")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "build identity") {
+			t.Errorf("the panic does not say what is missing: %v", r)
+		}
+	}()
+	Compute("acme.org/tool", "1.2.3", "", target.Host())
+}
+
 func TestComputePantryCheckoutLayout(t *testing.T) {
 	t.Setenv("ZPKG_DIR", "/opt/pkgx")
 	t.Setenv("ZPKG_PANTRY_DIR", "/co")
