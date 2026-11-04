@@ -1,15 +1,12 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/pantry"
+	"github.com/go-zpkg/zbk/spec"
 	"github.com/go-zpkg/zbk/target"
 )
 
@@ -50,23 +47,15 @@ import (
 // covers both, in the order the closure reads them: a hash taken over one
 // half would describe a different graph from the one beside it in the same
 // file.
+// ⛔ THE CANONICAL FORM MOVED TO zbk/spec, AND THE BYTES DID NOT. This now
+// formats the dependency identities and delegates; the domain line, the
+// field order and the recipe hashing are the ones every existing lock file
+// was written with, so `lock --check` still compares like with like. The
+// reason it moved is that it sat in `package main`, where the BUILD could not
+// reach it — so the factory published 42 756 bottles with no identity while a
+// correct one sat two directories away (go-zpkg/zbk#410).
 func specHash(recs []*pantry.Recipe, proj, version string, tgt target.Target, depHashes map[string]string, deps []string) (string, error) {
-	h := sha256.New()
-	fmt.Fprintf(h, "bk-lock-spec-hash v1\n")
-	fmt.Fprintf(h, "platform %s/%s\n", tgt.Platform, tgt.Arch)
-	fmt.Fprintf(h, "project %s\n", proj)
-	fmt.Fprintf(h, "version %s\n", version)
-	for i, r := range recs {
-		b, err := json.Marshal(r)
-		if err != nil {
-			// Not swallowed: a recipe that cannot be serialised has no hash,
-			// and a project silently hashed over fewer of its halves than the
-			// closure read is the defect this function exists to avoid.
-			return "", fmt.Errorf("recipe half %d of %s: %w", i, proj, err)
-		}
-		sum := sha256.Sum256(b)
-		fmt.Fprintf(h, "recipe %d %s\n", i, hex.EncodeToString(sum[:]))
-	}
+	ids := make([]string, 0, len(deps))
 	for _, d := range deps {
 		dh, ok := depHashes[d]
 		if !ok {
@@ -77,9 +66,9 @@ func specHash(recs []*pantry.Recipe, proj, version string, tgt target.Target, de
 			// arrives, the hash must move.
 			dh = "(no recipe)"
 		}
-		fmt.Fprintf(h, "dep %s %s\n", d, dh)
+		ids = append(ids, d+" "+dh)
 	}
-	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+	return spec.Hash(spec.DomainLock, recs, proj, version, tgt, ids)
 }
 
 // specDeps is the sorted, de-duplicated set of dependency NAMES across every
