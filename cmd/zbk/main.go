@@ -130,7 +130,11 @@ func main() {
 // which can be set to anything regardless of what was compiled; this reads
 // debug.ReadBuildInfo, so it cannot disagree with the binary it is in.
 func printVersion(w io.Writer) {
-	fmt.Fprintln(w, "bk", bkVersion())
+	// ⛔ THE BINARY SAYS ITS OWN NAME. The command is `zbk` since the rename,
+	// and `bk` is now free for upstream's brewkit to occupy on the same PATH
+	// — which is what renaming ours was for. Measured: `zbk --version`
+	// answered `bk v0.59.0`.
+	fmt.Fprintln(w, "zbk", bkVersion())
 }
 
 func run(args []string, stdout, stderr io.Writer) int {

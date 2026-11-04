@@ -40,9 +40,14 @@ func TestTheVersionPrintedIsTheOneWrittenIntoLocks(t *testing.T) {
 	_, out, _ := run2(t, "version")
 	fields := strings.Fields(out)
 	if len(fields) != 2 {
-		t.Fatalf("version line is not `bk <version>`: %q", out)
+		t.Fatalf("version line is not `zbk <version>`: %q", out)
 	}
-	if fields[0] != "bk" {
+	// ⛔ `zbk`, AND THE NAME IS PART OF THE CONTRACT. The command is `zbk`
+	// since the rename, and `bk` is now free for upstream's brewkit to sit on
+	// the same PATH — the point of renaming ours. A binary that answers with
+	// the other program's name undoes that. Field POSITION is unchanged, so
+	// the release guard's `awk '{print $2}'` still reads the version.
+	if fields[0] != "zbk" {
 		t.Errorf("the line does not name the tool: %q", out)
 	}
 	// THIS IS ALSO WHAT THE RELEASE GUARD EXTRACTS (awk '{print $2}') and
@@ -64,7 +69,7 @@ func TestVersionAloneIsNotAUsageError(t *testing.T) {
 	if strings.Contains(errb, "usage:") {
 		t.Errorf("bk --version printed usage:\n%s", errb)
 	}
-	if !strings.HasPrefix(out, "bk ") {
+	if !strings.HasPrefix(out, "zbk ") {
 		t.Errorf("nothing was printed to stdout: %q", out)
 	}
 	// And the usage line, when it IS shown, offers the command.
