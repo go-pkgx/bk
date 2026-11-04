@@ -43,6 +43,40 @@ func bottleAt(t *testing.T, path string, dirMode int64, body string, mt time.Tim
 	return path
 }
 
+// bottleVersioned writes a bottle whose paths carry the version, the way a
+// real one does: `zlib.net/v<version>/…`.
+func bottleVersioned(t *testing.T, path, version string, mt time.Time) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zw := gzip.NewWriter(f)
+	tw := tar.NewWriter(zw)
+	base := "zlib.net/v" + version
+	hdrs := []tar.Header{
+		{Name: base + "/lib", Mode: 0o755, Typeflag: tar.TypeDir, ModTime: mt},
+		{Name: base + "/lib/libz.so", Mode: 0o755, Typeflag: tar.TypeReg, ModTime: mt, Size: 4},
+	}
+	for i := range hdrs {
+		if err := tw.WriteHeader(&hdrs[i]); err != nil {
+			t.Fatal(err)
+		}
+		if hdrs[i].Typeflag == tar.TypeReg {
+			if _, err := tw.Write([]byte("ELF!")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // ⛔⛔ THE 2026-09-29 FINDING, END TO END THROUGH THE COMMAND. zlib.net 1.3.2
 // built on the s390x seed VM before and after it was replaced: every file
 // byte-identical, the directories 0755 and 0775 — the two hosts' umasks.
@@ -164,6 +198,41 @@ func TestUnreadableAndEmptyAreNotPasses(t *testing.T) {
 	}
 	if !strings.Contains(errb, "proves nothing") {
 		t.Errorf("the refusal does not say why it proves nothing:\n%s", errb)
+	}
+}
+
+// ⛔ COMPARING TWO VERSIONS IS NOT AN UNREPRODUCIBLE BUILD, and the report
+// that says so is technically true and completely uninformative: a bottle's
+// paths carry the version, so `zlib.net/v1.3.1/…` against
+// `zlib.net/v1.3.2/…` shares no path at all. Measured on the real published
+// bottles — 14 entries, 28 differences, every one only-in-a or only-in-b.
+// Without this the user reads "28 differences" and concludes the factory is
+// broken.
+func TestComparingTwoVersionsSaysSoRatherThanBlamingTheBuild(t *testing.T) {
+	d := t.TempDir()
+	mt := time.Unix(1700000000, 0)
+	a := filepath.Join(d, "a.tar.gz")
+	b := filepath.Join(d, "b.tar.gz")
+	bottleVersioned(t, a, "1.3.1", mt)
+	bottleVersioned(t, b, "1.3.2", mt)
+
+	code, out, errb := run2(t, "reproduce", "-quiet", a, b)
+	if code == 0 {
+		t.Fatalf("two different versions were accepted:\n%s", out)
+	}
+	if !strings.Contains(errb, "share no entry path") {
+		t.Errorf("the refusal does not say the paths disagree:\n%s", errb)
+	}
+	if !strings.Contains(errb, "SAME version") {
+		t.Errorf("the refusal does not say what the question actually is:\n%s", errb)
+	}
+}
+
+// A flag the command does not have is a usage error, not a comparison.
+func TestAnUnknownFlagIsAUsageError(t *testing.T) {
+	code, _, _ := run2(t, "reproduce", "-no-such-flag", "a", "b")
+	if code != 2 {
+		t.Errorf("code=%d, want 2", code)
 	}
 }
 

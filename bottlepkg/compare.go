@@ -8,12 +8,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/go-compressions/xz"
-	"github.com/klauspost/compress/zstd"
 )
 
 func hasPrefix(b, p []byte) bool { return bytes.HasPrefix(b, p) }
@@ -206,7 +204,7 @@ func short(d string) string {
 // readEntries reads a .tar.gz (or plain .tar) into a map keyed by cleaned
 // archive path.
 func readEntries(path string) (map[string]member, error) {
-	f, err := os.Open(path)
+	f, err := openForRead(path)
 	if err != nil {
 		return nil, err
 	}
@@ -247,11 +245,11 @@ func readEntries(path string) (map[string]member, error) {
 		defer zr.Close()
 		r = zr
 	case hasPrefix(head, []byte{0x28, 0xb5, 0x2f, 0xfd}):
-		zr, err := zstd.NewReader(f)
+		zr, closeZstd, err := zstdNewReader(f)
 		if err != nil {
 			return nil, err
 		}
-		defer zr.Close()
+		defer closeZstd()
 		r = zr
 	case hasPrefix(head, []byte{0xfd, '7', 'z', 'X', 'Z', 0x00}):
 		xr, err := xz.NewReader(f)
