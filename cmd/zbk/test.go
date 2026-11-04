@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/buildscript"
 	"github.com/go-zpkg/zbk/config"
@@ -151,6 +152,11 @@ type testRequest struct {
 	Target    target.Target
 	Sandbox   string // empty computes the testbed
 	PkgxBin   string
+	// BuildHash is the identity of the build to test, which the install
+	// prefix now carries. Empty means "find it": `--test-only` tests an
+	// already-published bottle and never ran a build, so it has no identity
+	// to pass and the store is asked instead.
+	BuildHash string
 	// Run executes the generated script; nil uses the package default, which
 	// is the same pure-Go interpreter a build runs under.
 	Run func(scriptPath string, env []string) error
@@ -192,7 +198,22 @@ func runRecipeTest(req testRequest, stdout, stderr io.Writer) (testState, error)
 		return testNotRun, err
 	}
 
-	paths := config.Compute(req.Project, ver, req.Target)
+	// ⛔ THE TEST RUNS AGAINST A PARTICULAR BUILD, so it has to name which.
+	// `{{prefix}}` below is paths.Install, and the install prefix carries the
+	// build's hash — a test pointed at the wrong one would pass or fail about
+	// a package nobody asked about.
+	hash := req.BuildHash
+	if hash == "" {
+		p, ok := bottle.ResolveBuild(config.PkgxDir(), req.Project, bottle.Ver{Raw: ver})
+		if !ok {
+			err := fmt.Errorf("no installed build of %s %s to test in %s", req.Project, ver, config.PkgxDir())
+			fmt.Fprintln(stderr, "error:", err)
+			return testNotRun, err
+		}
+		b, _ := bottle.ParseStoreDirName(filepath.Base(p))
+		hash = b.Variant
+	}
+	paths := config.Compute(req.Project, ver, hash, req.Target)
 	box := req.Sandbox
 	if box == "" {
 		box = paths.Test

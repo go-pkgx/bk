@@ -12,6 +12,12 @@ import (
 
 var errNoHome = errors.New("no home")
 
+// testHash stands in for a build's identity in the tests that only look at the
+// SCRATCH paths (Root, Home, Src, Build, Test), none of which carry it. The
+// test that does assert the install prefix spells the hash out inline, so that
+// the expected path and the argument cannot drift apart through a constant.
+const testHash = "abcdefghijklmnop"
+
 func TestPkgxDir(t *testing.T) {
 	t.Setenv("ZPKG_DIR", "/opt/pkgx")
 	if PkgxDir() != "/opt/pkgx" {
@@ -31,9 +37,16 @@ func TestComputeDefaultLayout(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "/data")
 
 	tgt := target.Target{Platform: "windows", Arch: "x86-64", Triple: "x86_64-w64-mingw32"}
-	p := Compute("acme.org/tool", "1.2.3", tgt)
+	p := Compute("acme.org/tool", "1.2.3", "abcdefghijklmnop", tgt)
 
-	if p.Install != filepath.FromSlash("/opt/pkgx/acme.org/tool/v1.2.3") {
+	// ⛔ THE INSTALL PREFIX CARRIES THE BUILD'S IDENTITY. It is baked into
+	// every binary the build produces, so a prefix naming only the version
+	// makes those binaries unable to say which build they were linked
+	// against — and leaves a store that cannot hold two builds of one
+	// version. The SCRATCH paths below deliberately do not carry it: they are
+	// thrown away, and keying them on the hash would only stop a rebuild
+	// reusing a fetched source tree.
+	if p.Install != filepath.FromSlash("/opt/pkgx/acme.org/tool/v1.2.3-habcdefghijklmnop") {
 		t.Errorf("Install = %q", p.Install)
 	}
 	if p.BuildInstall != p.Install+"+brewing" {
@@ -52,7 +65,7 @@ func TestComputeDefaultLayout(t *testing.T) {
 	}
 
 	// a native build for a different target gets a different tree
-	q := Compute("acme.org/tool", "1.2.3", target.Target{Platform: "linux", Arch: "aarch64"})
+	q := Compute("acme.org/tool", "1.2.3", "abcdefghijklmnop", target.Target{Platform: "linux", Arch: "aarch64"})
 	if q.Home == p.Home {
 		t.Error("cross and native builds must not share a tree")
 	}
@@ -61,7 +74,7 @@ func TestComputeDefaultLayout(t *testing.T) {
 func TestComputePantryCheckoutLayout(t *testing.T) {
 	t.Setenv("ZPKG_DIR", "/opt/pkgx")
 	t.Setenv("ZPKG_PANTRY_DIR", "/co")
-	p := Compute("acme.org/tool", "2.0.0", target.Host())
+	p := Compute("acme.org/tool", "2.0.0", testHash, target.Host())
 	if p.Home != filepath.FromSlash("/co/homes/acme.org__tool-2.0.0") {
 		t.Errorf("checkout Home = %q", p.Home)
 	}
@@ -80,7 +93,7 @@ func TestComputePantryCheckoutLayout(t *testing.T) {
 	// the older ZPKG_PANTRY_PATH env is honoured too
 	t.Setenv("ZPKG_PANTRY_DIR", "")
 	t.Setenv("ZPKG_PANTRY_PATH", "/co2")
-	if q := Compute("x", "1", target.Host()); q.Home != filepath.FromSlash("/co2/homes/x-1") {
+	if q := Compute("x", "1", testHash, target.Host()); q.Home != filepath.FromSlash("/co2/homes/x-1") {
 		t.Errorf("ZPKG_PANTRY_PATH Home = %q", q.Home)
 	}
 }
@@ -141,7 +154,7 @@ func TestComputeRootCoversEveryBuildDir(t *testing.T) {
 		"pantry": func() { t.Setenv("ZPKG_PANTRY_DIR", "/pantry"); t.Setenv("ZPKG_PANTRY_PATH", "") },
 	} {
 		setup()
-		p := Compute("acme.org/tool", "1.2.3", tgt)
+		p := Compute("acme.org/tool", "1.2.3", testHash, tgt)
 		if p.Root == "" {
 			t.Fatalf("%s: Root empty", name)
 		}

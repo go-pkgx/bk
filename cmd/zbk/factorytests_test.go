@@ -17,11 +17,17 @@ import (
 )
 
 // testFactory is a factory wired for testPublished and nothing else.
+//
+// ⛔ IT INSTALLS proj.org 1.2.3, because a recorded test runs against a BUILD.
+// --test-only hands testPublished no identity — it built nothing — so the
+// store is what answers, and an empty store makes every case below "not run"
+// for a reason none of them is about.
 func testFactory(t *testing.T, out *bytes.Buffer, recipeDir string) *factory {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("ZPKG_PANTRY_DIR", dir)
 	t.Setenv("ZPKG_DIR", filepath.Join(dir, "pkgx"))
+	installTestBuild(t, filepath.Join(dir, "pkgx"), "proj.org", "1.2.3")
 	return &factory{
 		runner:      &build.Runner{RecipeDir: recipeDir, PkgxBin: "pkgx"},
 		tgt:         target.Target{Platform: "linux", Arch: "x86-64"},
@@ -75,9 +81,11 @@ func TestFactoryRecordsTestOutcomesWithoutFailingTheRun(t *testing.T) {
 			t.Cleanup(func() { factoryTestRunner = prev })
 			if tc.want == testNotRun {
 				// A version the recipe cannot resolve: the test never starts.
-				f.testPublished(rec, "proj.org", "9.9.9")
+				f.testPublished(rec, "proj.org", "9.9.9", "")
 			} else {
-				f.testPublished(rec, "proj.org", "1.2.3")
+				// "" on purpose: this is the --test-only shape, where the
+				// store is what says which build is under test.
+				f.testPublished(rec, "proj.org", "1.2.3", "")
 			}
 
 			if got := f.testCounts[tc.want]; got != 1 {
@@ -132,7 +140,7 @@ func TestFactorySkipsTestingWhenAskedTo(t *testing.T) {
 	rec, dir := parseRecipe(t, "versions:\n  - 1.2.3\nbuild: make\ntest: true\n")
 	f := testFactory(t, &out, dir)
 	f.runTests = false
-	f.testPublished(rec, "proj.org", "1.2.3")
+	f.testPublished(rec, "proj.org", "1.2.3", "")
 	if out.Len() != 0 || f.tests.Len() != 0 {
 		t.Errorf("--test=false still ran something: %q / %q", out.String(), f.tests.String())
 	}

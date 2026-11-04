@@ -17,6 +17,15 @@ import (
 
 var errBoom = errors.New("boom")
 
+// testBuildHash stands in for a build's identity where a test only wants the
+// SCRATCH paths — Root, Build, Home, Test — which do not depend on it.
+//
+// ⛔ A FIXED STRING, AND NEVER COMPARED AGAINST A REAL IDENTITY. A test that
+// asserts something about the INSTALL prefix has to ask Identity() for the
+// real hash, the way the build does; using this one there would assert that
+// the prefix contains a constant the test itself chose.
+const testBuildHash = "abcdefghijklmnop"
+
 // origLogf snapshots the real logf seam so tests can mute it and restore after.
 var origLogf = logf
 
@@ -38,21 +47,49 @@ func okRecipe() *pantry.Recipe {
 
 // okRunner returns a Runner whose stubs all succeed; its Run stub creates the
 // +brewing install dir so the subsequent rename works.
+//
+// ⛔ THE STUB READS THE STAGING DIR OFF THE RUNNER RATHER THAN COMPUTING IT.
+// It is named after the build's IDENTITY, which is a function of the recipe
+// and the resolved closure — neither of which a stub has. A real script
+// learns it because moustache substituted it in; this one reads
+// `r.BuildInstall`, which Build sets before calling Run. Recomputing it here
+// would be a second definition of the identity, free to drift from the first,
+// and it drifted the moment the hash stopped being a constant.
 func okRunner(project string, tgt target.Target) *Runner {
-	return &Runner{
+	r := &Runner{
 		PickVersion:    func(string, string) (string, error) { return "1.2.3", nil },
 		ResolveVersion: func(any, string) (string, string, error) { return "1.2.3", "v1.2.3", nil },
 		Fetch:          func(string, string, int) (string, error) { return "", nil },
 		FetchGit:       func(string, string, string) (string, error) { return "", nil },
 		Touch:          func(string) error { return nil },
-		Run: func(string, []string) error {
-			p := config.Compute(project, "1.2.3", tgt)
-			return os.MkdirAll(p.BuildInstall, 0o755)
-		},
-		FixUp:       func(fixup.Options) error { return nil },
-		WriteBottle: func(_, _, _, _, _, out string) (string, error) { return filepath.Join(out, "b.tar.gz"), nil },
-		PkgxBin:     "/pkgx/bin/pkgx", BashPath: "/bin/bash",
+		FixUp:          func(fixup.Options) error { return nil },
+		WriteBottle:    func(_, _, _, _, _, out string) (string, error) { return filepath.Join(out, "b.tar.gz"), nil },
+		PkgxBin:        "/pkgx/bin/pkgx", BashPath: "/bin/bash",
 	}
+	r.Run = func(string, []string) error { return os.MkdirAll(r.BuildInstall, 0o755) }
+	return r
+}
+
+// seedInstall runs one stubbed build so a real, hashed install prefix exists,
+// and returns it.
+//
+// ⛔ THE PREFIX IS OBTAINED FROM THE PIPELINE, NOT COMPUTED BESIDE IT. A test
+// that needs "a version of this already installed" used to write
+// `config.Compute(project, version, tgt).Install` itself; now that the
+// directory name carries the build's identity, a test that composed it would
+// be asserting against a path the build never uses — and the assertions here
+// ("the install survived", "the install was replaced") would both pass on a
+// directory nothing touches.
+func seedInstall(t *testing.T, project string, tgt target.Target) string {
+	t.Helper()
+	res, err := okRunner(project, tgt).Build(okRecipe(), project, "*", tgt, tgt, "")
+	if err != nil {
+		t.Fatalf("seeding an install: %v", err)
+	}
+	if res.Install == "" {
+		t.Fatal("the build reported no install prefix")
+	}
+	return res.Install
 }
 
 func TestBuildHappyPath(t *testing.T) {
@@ -366,17 +403,17 @@ func TestBuildStageInstallDestExists(t *testing.T) {
 	project := "acme.org/tool"
 	r := okRunner(project, tgt)
 	r.Run = func(string, []string) error {
-		p := config.Compute(project, "1.2.3", tgt)
-		if err := os.MkdirAll(p.BuildInstall, 0o755); err != nil {
+		if err := os.MkdirAll(r.BuildInstall, 0o755); err != nil {
 			return err
 		}
-		// a prior/duplicate install already occupies the final versioned prefix
-		return os.MkdirAll(p.Install, 0o755)
+		// a prior/duplicate install already occupies the final hashed prefix
+		return os.MkdirAll(r.Install, 0o755)
 	}
-	if _, err := r.Build(okRecipe(), project, "*", tgt, tgt, ""); err != nil {
+	res, err := r.Build(okRecipe(), project, "*", tgt, tgt, "")
+	if err != nil {
 		t.Fatalf("dest-exists rename should succeed: %v", err)
 	}
-	if _, err := os.Stat(config.Compute(project, "1.2.3", tgt).Install); err != nil {
+	if _, err := os.Stat(res.Install); err != nil {
 		t.Errorf("final prefix missing after stage: %v", err)
 	}
 }
@@ -389,20 +426,22 @@ func TestBuildStageInstallRemoveError(t *testing.T) {
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
 	project := "acme.org/tool"
 	r := okRunner(project, tgt)
-	install := config.Compute(project, "1.2.3", tgt).Install
-	// Only the stage-install removal (after the build runs) must fail; the initial
-	// cleanup loop's removals of the same prefix must still succeed.
-	ran := false
+	// The prefix is learned from the Runner when Run fires rather than
+	// recomputed: it carries the build's identity hash. Empty until then,
+	// which is also what keeps the seams out of the initial cleanup loop —
+	// only the stage-install removal must fail, and that one happens after
+	// the build has run.
+	var install string
 	realRun := r.Run
-	r.Run = func(p string, e []string) error { ran = true; return realRun(p, e) }
+	r.Run = func(p string, e []string) error { install = r.Install; return realRun(p, e) }
 	osStat = func(name string) (os.FileInfo, error) {
-		if name == install {
+		if install != "" && name == install {
 			return nil, nil // report the final prefix as present at stage time
 		}
 		return os.Stat(name)
 	}
 	osRemoveAll = func(name string) error {
-		if name == install && ran {
+		if install != "" && name == install {
 			return errBoom // ...but at stage time it cannot be removed
 		}
 		return os.RemoveAll(name)
@@ -451,7 +490,7 @@ func TestBuildCopiesProps(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	build := config.Compute(project, "1.2.3", tgt).Build
+	build := config.Compute(project, "1.2.3", testBuildHash, tgt).Build
 	// the patch landed at <build>/props/patch.txt with matching contents + mode
 	dstPatch := filepath.Join(build, "props", "patch.txt")
 	b, err := os.ReadFile(dstPatch)
@@ -484,7 +523,7 @@ func TestBuildNoProps(t *testing.T) {
 		if _, err := r.Build(okRecipe(), project, "*", tgt, tgt, ""); err != nil {
 			t.Fatalf("RecipeDir=%q: %v", rd, err)
 		}
-		if _, err := os.Stat(filepath.Join(config.Compute(project, "1.2.3", tgt).Build, "props")); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(config.Compute(project, "1.2.3", testBuildHash, tgt).Build, "props")); !os.IsNotExist(err) {
 			t.Errorf("RecipeDir=%q: props dir should not exist: %v", rd, err)
 		}
 	}
@@ -1324,14 +1363,14 @@ func TestMissingNameTakesOnlyADirectChild(t *testing.T) {
 func TestBuildDoesNotRemoveTheInstalledPrefixBeforeBuilding(t *testing.T) {
 	tenv(t)
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
-	paths := config.Compute("acme.org/tool", "1.2.3", tgt)
+	install := seedInstall(t, "acme.org/tool", tgt)
 
 	// What the rootfs is using while the build runs — bash's bin/bash, in the
 	// real case.
-	if err := os.MkdirAll(filepath.Join(paths.Install, "bin"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(install, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	inUse := filepath.Join(paths.Install, "bin", "sh")
+	inUse := filepath.Join(install, "bin", "sh")
 	if err := os.WriteFile(inUse, []byte("the shell the rootfs runs on"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1368,11 +1407,11 @@ func TestBuildDoesNotRemoveTheInstalledPrefixBeforeBuilding(t *testing.T) {
 func TestAFailedStageLeavesTheWorkingInstallInPlace(t *testing.T) {
 	tenv(t)
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
-	paths := config.Compute("acme.org/tool", "1.2.3", tgt)
-	if err := os.MkdirAll(filepath.Join(paths.Install, "bin"), 0o755); err != nil {
+	install := seedInstall(t, "acme.org/tool", tgt)
+	if err := os.MkdirAll(filepath.Join(install, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	inUse := filepath.Join(paths.Install, "bin", "sh")
+	inUse := filepath.Join(install, "bin", "sh")
 	if err := os.WriteFile(inUse, []byte("the working install"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1383,7 +1422,7 @@ func TestAFailedStageLeavesTheWorkingInstallInPlace(t *testing.T) {
 	// rollback too — which made the test fail for its own reason and would
 	// have read as the code being wrong.
 	osRename = func(from, to string) error {
-		if from == paths.BuildInstall {
+		if from == install+"+brewing" {
 			return errors.New("no space left on device")
 		}
 		return oldRename(from, to)
@@ -1411,10 +1450,7 @@ func TestAFailedStageLeavesTheWorkingInstallInPlace(t *testing.T) {
 func TestAFailureToDropTheReplacedPrefixIsReported(t *testing.T) {
 	tenv(t)
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
-	paths := config.Compute("acme.org/tool", "1.2.3", tgt)
-	if err := os.MkdirAll(paths.Install, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	seedInstall(t, "acme.org/tool", tgt)
 	oldRemove := osRemoveAll
 	osRemoveAll = func(p string) error {
 		if strings.HasSuffix(p, ".replacing") {
@@ -1447,7 +1483,7 @@ func TestBuildExportsThePrefixMapOfTheRealRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(res.ScriptPath)
-	want := "export BK_FILE_PREFIX_MAP=\"" + config.Compute("acme.org/tool", "1.2.3", tgt).Root + "=/build\"\n"
+	want := "export BK_FILE_PREFIX_MAP=\"" + config.Compute("acme.org/tool", "1.2.3", testBuildHash, tgt).Root + "=/build\"\n"
 	if !strings.Contains(string(b), want) {
 		t.Errorf("script lacks %q:\n%s", want, b)
 	}

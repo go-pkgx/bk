@@ -735,7 +735,9 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 		case !published:
 			f.recordTest(testNotRun, proj, ver, errors.New("no bottle here for this platform — nothing to test"))
 		default:
-			f.testPublished(rec, proj, ver)
+			// Nothing was built on this path, so there is no identity to hand
+			// over: the store is asked, and refuses if it holds two.
+			f.testPublished(rec, proj, ver, "")
 		}
 		return
 	}
@@ -797,8 +799,8 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 		fmt.Fprintf(f.stdout, "✅ BUILT %s %s %s — not published (--no-publish): %s\n",
 			proj, flavoredTag(proj, res.Version, f.glibc), f.platform, res.BottlePath)
 		f.ok++
-		f.testPublished(rec, proj, res.Version)
-		f.dropBuildTree(proj, res.Version)
+		f.testPublished(rec, proj, res.Version, bottle.ShortHash(res.SpecHash))
+		f.dropBuildTree(proj, res.Version, bottle.ShortHash(res.SpecHash))
 		return
 	}
 	tag, desc, err := factoryPublish(publishOptions{
@@ -825,8 +827,8 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 	// not the tree: if a test ever does reach for a source file, failing
 	// with it present is a legible failure and failing with it deleted is a
 	// puzzle.
-	f.testPublished(rec, proj, res.Version)
-	f.dropBuildTree(proj, res.Version)
+	f.testPublished(rec, proj, res.Version, bottle.ShortHash(res.SpecHash))
+	f.dropBuildTree(proj, res.Version, bottle.ShortHash(res.SpecHash))
 }
 
 // dropBuildTree removes a build tree once its bottle is PUBLISHED.
@@ -847,11 +849,15 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 //
 // Reported, not silent: a removal that fails leaves the disk filling, and the
 // next failure would name a different project.
-func (f *factory) dropBuildTree(proj, ver string) {
+// ⛔ IT NEEDS THE BUILD'S IDENTITY, because `BuildInstall` is derived from
+// the install prefix and the install prefix now carries the hash. Removing
+// the tree of a DIFFERENT build would be worse than leaving litter: it would
+// delete a staged install somebody else is about to publish.
+func (f *factory) dropBuildTree(proj, ver, hash string) {
 	if f.keepBuildTrees {
 		return
 	}
-	p := config.Compute(proj, ver, f.tgt)
+	p := config.Compute(proj, ver, hash, f.tgt)
 	for _, d := range []string{p.Build, p.BuildInstall} {
 		if err := factoryRemoveAll(d); err != nil {
 			fmt.Fprintf(f.stderr, "factory: could not remove %s: %v\n", d, err)
@@ -1523,7 +1529,11 @@ func satisfyingAll(vers, cs []string) []string {
 // any deadline being reached.
 var factoryTestRunner = runBashLimited
 
-func (f *factory) testPublished(rec *pantry.Recipe, proj, ver string) {
+// hash is the identity of the build just produced, and it is passed rather
+// than looked up: the factory KNOWS which build it made, and two builds of one
+// version are exactly the case a lookup cannot decide. It is empty only on the
+// --test-only path, which built nothing and so has to ask the store.
+func (f *factory) testPublished(rec *pantry.Recipe, proj, ver, hash string) {
 	if !f.runTests {
 		return
 	}
@@ -1531,7 +1541,7 @@ func (f *factory) testPublished(rec *pantry.Recipe, proj, ver string) {
 	tw := &tailWriter{w: f.stdout, max: failTailLines}
 	state, err := runRecipeTest(testRequest{
 		Recipe: rec, RecipeDir: f.runner.RecipeDir, Project: proj,
-		Version: ver, Target: f.tgt, PkgxBin: f.runner.PkgxBin,
+		Version: ver, BuildHash: hash, Target: f.tgt, PkgxBin: f.runner.PkgxBin,
 		Run: factoryTestRunner(f.testTimeout, tw, tw),
 	}, tw, tw)
 	fmt.Fprintln(f.stdout, "::endgroup::")

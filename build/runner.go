@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/buildscript"
 	"github.com/go-zpkg/zbk/config"
 	"github.com/go-zpkg/zbk/fixup"
@@ -20,6 +21,14 @@ import (
 // Runner drives a full build. Its side-effecting steps are fields so the whole
 // orchestration is testable with stubs; NewRunner wires the real bk packages.
 type Runner struct {
+	// BuildInstall and Install are the staging and final prefixes the CURRENT
+	// build is using, set before Run is called. They are published because the
+	// prefix now carries the build's identity hash, which a stubbed Run cannot
+	// predict — a real one reads it from the script moustache substituted it
+	// into. Written by Build, never read by it.
+	BuildInstall string
+	Install      string
+
 	PickVersion func(project, constraint string) (string, error)
 	// ResolveVersion resolves the MAIN project version from the recipe's own
 	// `versions:` spec, so it matches the distributable URL's {{version.raw}}
@@ -119,6 +128,19 @@ type Result struct {
 	Install    string
 	ScriptPath string
 	BottlePath string
+	// SpecHash is this build's identity: a Merkle hash over the platform,
+	// the project, the resolved version, the canonical form of the recipe
+	// and the resolved prefix of every dependency. See zbk/spec.
+	//
+	// ⛔ IT IS A FUNCTION OF THE INPUTS, NEVER OF THE OUTPUT. It has to be,
+	// because its short form is in `Install` — baked into every binary the
+	// build produces — and hashing the result into the result is circular.
+	// Nix hashes the derivation and Spack the concrete DAG for the same
+	// reason.
+	//
+	// It is what `publish` tags the bottle with and attaches as the spec
+	// annotation, so the registry and the store agree on which build this is.
+	SpecHash string
 	// Source is empty for a recipe with no distributable (a few build entirely
 	// from their dependencies).
 	Source SourceRef
@@ -150,7 +172,71 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		tag = version
 	}
 
-	paths := config.Compute(project, version, tgt)
+	// ⛔⛔ THE CLOSURE IS RESOLVED BEFORE THE PREFIX IS CHOSEN, AND THAT ORDER
+	// IS THE WHOLE POINT. The prefix is baked into every binary this build
+	// produces, so if it is to name WHICH build this is, its hash has to be
+	// known before a compiler runs — which means the identity must be a
+	// function of the INPUTS, never of the output. Hashing the result into
+	// the result is circular; Nix hashes the derivation and Spack the
+	// concrete DAG for exactly this reason.
+	//
+	// Nothing in this block touches `paths`, which is why it can move at all:
+	// it reads the recipe, the target and the dependency resolver.
+	deps := EvalLinkDeps(recipe.Dependencies, tgt)
+	bd := buildDeps(recipe)
+	var fromHost []string
+	var selfDropped bool
+	if r.Bootstrap {
+		_, selfDropped = bd[project]
+		bd = WithoutSelfDep(project, bd)
+		bd, fromHost = WithoutUnresolvable(bd, tgt, r.toolInstallable(), func(s string) { logf("%s", s) })
+		if selfDropped {
+			fromHost = append(fromHost, project)
+		}
+	}
+	toolDeps := EvalToolDeps(project, recipe.Dependencies, bd, tgt)
+	if r.Bootstrap {
+		toolDeps = BootstrapToolDeps(bd, tgt)
+	}
+	var depToks []moustache.Token
+	if r.ResolveDep != nil {
+		dt, resolved, err := DepTokens(recipe.Dependencies, bd, tgt, config.PkgxDir(), r.ResolveDep)
+		if err != nil {
+			return res, fmt.Errorf("resolve deps: %w", err)
+		}
+		depToks = dt
+		// The build environment, kept rather than discarded: the compiler,
+		// its libc and every tool the recipe invoked, at the versions
+		// actually used. It is what a published bottle has to be able to
+		// name when it is rebuilt for a toolchain vulnerability.
+		res.BuildEnv = resolved
+	}
+
+	// ⛔ DEPENDENCIES ARE IDENTIFIED BY THEIR RESOLVED PREFIX, AND THAT MAKES
+	// THE HASH MERKLE FOR FREE. Once a dependency's own prefix carries its
+	// own hash, hashing the prefix carries the dependency's whole identity
+	// with it — transitively, all the way down. It is the same mechanism as a
+	// Nix derivation referencing its inputs by store path.
+	//
+	// While a dependency is still installed at an unhashed `v<version>`, this
+	// degrades to version-level precision for that edge and no further, and
+	// it repairs itself as the registry is rebuilt. Said plainly rather than
+	// hidden: a hash is only as sharp as what it is taken over.
+	id, err := identity(recipe, project, version, tgt, res.BuildEnv)
+	if err != nil {
+		return res, fmt.Errorf("build identity: %w", err)
+	}
+	res.SpecHash = id
+
+	paths := config.Compute(project, version, bottle.ShortHash(id), tgt)
+	// ⛔ PUBLISHED FOR THE SCRIPT RUNNER, which is a seam. A real `Run`
+	// installs into the prefix the SCRIPT was given — moustache substituted
+	// it — but a stubbed one has no script to read it from, and the prefix
+	// now carries a hash no caller can predict. Without this a test harness
+	// would have to recompute the identity, which is one more place for the
+	// definition to drift. Set before Run is called and never read by the
+	// pipeline itself.
+	r.BuildInstall, r.Install = paths.BuildInstall, paths.Install
 	res.Install = paths.Install
 	// The two SCRATCH trees, and deliberately not paths.Install.
 	//
@@ -283,23 +369,9 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		}
 	}
 
-	// deps + tokens + script
-	deps := EvalLinkDeps(recipe.Dependencies, tgt)
-	bd := buildDeps(recipe)
-	var fromHost []string
-	var selfDropped bool
-	if r.Bootstrap {
-		_, selfDropped = bd[project]
-		bd = WithoutSelfDep(project, bd)
-		bd, fromHost = WithoutUnresolvable(bd, tgt, r.toolInstallable(), func(s string) { logf("%s", s) })
-		if selfDropped {
-			fromHost = append(fromHost, project)
-		}
-	}
-	toolDeps := EvalToolDeps(project, recipe.Dependencies, bd, tgt)
-	if r.Bootstrap {
-		toolDeps = BootstrapToolDeps(bd, tgt)
-	}
+	// deps + tokens + script. The RESOLUTION happened before the prefix was
+	// chosen — see the identity block above — so only the token assembly is
+	// here, where `paths` exists.
 	toks := moustache.Prefix(paths.BuildInstall)
 	toks = append(toks, moustache.Version(version, "version")...)
 	toks = append(toks, moustache.Token{From: "version.tag", To: tag})
@@ -309,18 +381,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 		moustache.Token{From: "props", To: propsDir},
 		moustache.Token{From: "pkgx.prefix", To: config.PkgxDir()},
 	)
-	if r.ResolveDep != nil {
-		dt, resolved, err := DepTokens(recipe.Dependencies, bd, tgt, config.PkgxDir(), r.ResolveDep)
-		if err != nil {
-			return res, fmt.Errorf("resolve deps: %w", err)
-		}
-		toks = append(toks, dt...)
-		// The build environment, kept rather than discarded: the compiler,
-		// its libc and every tool the recipe invoked, at the versions
-		// actually used. It is what a published bottle has to be able to
-		// name when it is rebuilt for a toolchain vulnerability.
-		res.BuildEnv = resolved
-	}
+	toks = append(toks, depToks...)
 	// A recipe that build-depends on itself still interpolates its own prefix.
 	// Appended AFTER the resolved tokens so it can only fill a gap, never
 	// displace a real bottle's prefix: on an architecture where the bottle does

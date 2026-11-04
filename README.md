@@ -168,10 +168,10 @@ wrong thing:
   so only when something runs it. The s390x second generation met
   `libselinux.so.1` twice, a full build apart, before this existed.
 - it says when a prefix is **already** on disk and will not be re-installed.
-  `bottle.InstallFor` treats the existence of `<project>/v<ver>` as "already
-  present", so a tree left half-written by a run that died — and inherited by
-  the next job on a self-hosted runner — is indistinguishable from a complete
-  one. Three runs reported "42 packages" and installed none.
+  `bottle.InstallFor` treats the existence of `<project>/v<ver>-h<hash>` as
+  "already present", so a tree left half-written by a run that died — and
+  inherited by the next job on a self-hosted runner — is indistinguishable
+  from a complete one. Three runs reported "42 packages" and installed none.
 
 None of the three refuses anything: the build that follows is the verdict.
 
@@ -375,6 +375,48 @@ serialise. The property that matters is tested both ways round — a change to a
 leaf moves the leaf and everything above it; a change at the top moves the top
 alone — and that test was checked against a deliberately broken hash, which
 fails it, so it is not passing for free.
+
+### The install prefix carries the build's identity
+
+A bottle is installed at
+
+```
+<store>/<project>/v<version>-h<hash>
+```
+
+and never at `<store>/<project>/v<version>`. The hash is the short form of the
+same Merkle identity `spec` takes — platform, project, resolved version,
+canonical recipe, and the resolved prefix of every dependency — so a build is
+addressed by **what it is** rather than by the version it claims.
+
+Three things follow, and the first two are why pkgx's unhashed path had to go:
+
+- **Two builds of one version are siblings.** `openssl.org@3.5.8` built against
+  two different zlibs are two directories, both reachable, neither shadowing
+  the other. Under `v<version>` the second install overwrote the first.
+- **The prefix is baked into the binaries.** `otool -l` on a published
+  `zlib.net` 1.3.2 shows `@rpath/zlib.net/v1.3.2/lib/libz.1.dylib`: the path
+  is in every dependent, so a path that does not say which build it is makes
+  the dependent unable to say either.
+- **Dependencies make the hash Merkle for free.** An input is identified by
+  its resolved prefix, and once that prefix carries its own hash, hashing it
+  carries the whole dependency transitively — the mechanism Nix uses when a
+  derivation references its inputs by store path.
+
+The hash is a function of the **inputs**, computed before the compiler runs;
+hashing the output into the output would be circular, which is why Nix hashes
+the derivation and Spack the concrete DAG rather than the result.
+
+Because the directory name can no longer be composed from a version, a reader
+**asks** the store (`bottle.ResolveBuild`) instead of building the path. It
+answers with the one installed build, or refuses when two are installed —
+refuses rather than taking the newest, since two builds of one version are
+exactly the case that has no order to take the first of.
+
+A default version is **not** a property of the store: it lives in a view
+(`bottle.LinkView`), which is what lets a shared read-only NFS export hold the
+builds while each user, environment or container rootfs computes its own links
+from it.
 
 ### `bk lock --check` — a lock nobody reads is a wish too
 
