@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/target"
 )
 
 // userHomeDir is a seam so tests can exercise the no-home fallback paths.
@@ -20,20 +20,20 @@ var userHomeDir = os.UserHomeDir
 type Paths struct {
 	// Root is the directory every other build directory lives under (the brewkit
 	// cache dir, or the pantry checkout). It is what -ffile-prefix-map maps to
-	// /build, so no builder path leaks into a bottle (go-pkgx/bk#387).
+	// /build, so no builder path leaks into a bottle (go-zpkg/bk#387).
 	Root         string
 	Home         string // a fresh HOME for the build (== bkroot for the default layout)
 	Src          string // extracted sources
 	Build        string // where the build runs
 	Test         string // where tests stage and run
 	TarballDir   string // where downloaded source tarballs are cached
-	Install      string // final install prefix: $PKGX_DIR/<project>/v<version>
+	Install      string // final install prefix: $ZPKG_DIR/<project>/v<version>
 	BuildInstall string // staging prefix the build writes to: <Install>+brewing
 }
 
-// PkgxDir returns the pkgx prefix ($PKGX_DIR, else ~/.pkgx).
+// PkgxDir returns the pkgx prefix ($ZPKG_DIR, else ~/.pkgx).
 func PkgxDir() string {
-	if d := os.Getenv("PKGX_DIR"); d != "" {
+	if d := os.Getenv("ZPKG_DIR"); d != "" {
 		return d
 	}
 	home, err := userHomeDir()
@@ -69,7 +69,7 @@ func dataHomeFor(goos, home string) string {
 
 // Compute lays out the build directories for project@version built for tgt.
 //
-// When PKGX_PANTRY_DIR (or the older PKGX_PANTRY_PATH) is set, the workspace is
+// When ZPKG_PANTRY_DIR (or the older ZPKG_PANTRY_PATH) is set, the workspace is
 // rooted under that checkout (homes/srcs/builds/testbeds), matching brewkit's
 // in-pantry layout; otherwise it lives under the XDG data home, keyed on the
 // target platform+arch.
@@ -104,8 +104,8 @@ func Compute(project, version string, tgt target.Target) Paths {
 }
 
 func pantryCheckout() string {
-	if d := os.Getenv("PKGX_PANTRY_DIR"); d != "" {
+	if d := os.Getenv("ZPKG_PANTRY_DIR"); d != "" {
 		return d
 	}
-	return os.Getenv("PKGX_PANTRY_PATH")
+	return os.Getenv("ZPKG_PANTRY_PATH")
 }

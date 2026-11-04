@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// go-pkgx/bk#395: every darwin bottle carried an absolute LC_RPATH into the
-// builder's store ($PKGX_DIR as the build ran). These tests derive that store
+// go-zpkg/bk#395: every darwin bottle carried an absolute LC_RPATH into the
+// builder's store ($ZPKG_DIR as the build ran). These tests derive that store
 // from the test's own PkgxDir, as the build does, and never name a runner path.
 
 func rpathsOf(t *testing.T, path string) []string {

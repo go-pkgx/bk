@@ -81,7 +81,7 @@ func placePad(t *testing.T, path string, pad int, cmds ...machoCmd) {
 }
 
 // CMake's default install name on darwin is @rpath/<soname> — a BARE name, with
-// no directory at all. A consumer's rpath reaches $PKGX_DIR, not the library's
+// no directory at all. A consumer's rpath reaches $ZPKG_DIR, not the library's
 // own lib dir, so that name resolves nowhere:
 //
 //	dyld: Library not loaded: @rpath/libzstd.1.dylib
@@ -320,16 +320,16 @@ func TestMachoCmdLimitRefusesMalformedCommands(t *testing.T) {
 	})
 }
 
-// A dylib installed outside $PKGX_DIR has no qualified name to be given: there
-// is no directory to name it relative to. With no $PKGX_DIR at all there is not
+// A dylib installed outside $ZPKG_DIR has no qualified name to be given: there
+// is no directory to name it relative to. With no $ZPKG_DIR at all there is not
 // even a question to answer — unreachable through FixUp, which only calls this
-// once an rpath has been shown to reach $PKGX_DIR, so it is asserted directly.
+// once an rpath has been shown to reach $ZPKG_DIR, so it is asserted directly.
 func TestQualifyIDOutsidePkgxDir(t *testing.T) {
 	if _, ok := qualifyID("/elsewhere/lib/libfoo.dylib", "@rpath/libfoo.dylib", Options{PkgxDir: "/opt/pkgx"}); ok {
-		t.Error("qualified an install name for a file that is not under $PKGX_DIR")
+		t.Error("qualified an install name for a file that is not under $ZPKG_DIR")
 	}
 	if _, ok := qualifyID("/opt/pkgx/a/v1/lib/libfoo.dylib", "@rpath/libfoo.dylib", Options{}); ok {
-		t.Error("qualified an install name with no $PKGX_DIR to name it against")
+		t.Error("qualified an install name with no $ZPKG_DIR to name it against")
 	}
 }
 
@@ -387,7 +387,7 @@ func TestLoaderPathInstallNameIsLeftAlone(t *testing.T) {
 }
 
 // A library that links nothing outside its own package never gets a
-// $PKGX_DIR-reaching rpath, because it needs none. Gating the install-name fix
+// $ZPKG_DIR-reaching rpath, because it needs none. Gating the install-name fix
 // on that rpath therefore skipped exactly the files whose id was least likely
 // to be repaired any other way: sourceware.org/bzip2's libbz2.1.0.8.dylib links
 // only libSystem, and came back from a repair rebuild still carrying
@@ -395,7 +395,7 @@ func TestLoaderPathInstallNameIsLeftAlone(t *testing.T) {
 //
 // An install name says where THIS file is. Whether it resolves is the
 // CONSUMER's rpath's business, and qualifying it is never worse than leaving it
-// — a consumer without a $PKGX_DIR rpath fails on either spelling.
+// — a consumer without a $ZPKG_DIR rpath fails on either spelling.
 func TestInstallNameIsFixedWithoutAnRpathOfItsOwn(t *testing.T) {
 	pkgx := filepath.Join(t.TempDir(), ".pkgx")
 	prefix := filepath.Join(pkgx, "sourceware.org", "bzip2", "v1.0.8")
@@ -425,7 +425,7 @@ func TestInstallNameIsFixedWithoutAnRpathOfItsOwn(t *testing.T) {
 }
 
 // The rest of the relocation still needs a reachable rpath. A file with an
-// absolute reference into $PKGX_DIR and no way back to it keeps that
+// absolute reference into $ZPKG_DIR and no way back to it keeps that
 // reference — @rpath would resolve nowhere, which is worse than a path that at
 // least works in one place.
 func TestReferencesStillNeedAnRpathEvenWhenTheIDIsFixed(t *testing.T) {
@@ -462,7 +462,7 @@ func TestMachoIDOfSomethingUnreadable(t *testing.T) {
 }
 
 // A bare @rpath/<soname> REFERENCE — no directory — resolves nowhere in the
-// pkgx layout: an rpath entry points at $PKGX_DIR or at a package root, never
+// pkgx layout: an rpath entry points at $ZPKG_DIR or at a package root, never
 // at a lib dir, so dyld joins the soname onto a directory that does not hold
 // it. qualifyID fixes the library's own name, which only helps whatever links
 // it AFTERWARDS; every dependent already built carries the bare string.
@@ -582,7 +582,7 @@ func TestQualifyBareReferenceFindsTheStagedFile(t *testing.T) {
 }
 
 // A bare soname that belongs to a DEPENDENCY is answered by the closure, not
-// guessed: the library is staged under $PKGX_DIR, and if exactly one project
+// guessed: the library is staged under $ZPKG_DIR, and if exactly one project
 // there ships that file, that is where it came from.
 //
 // simplesystems.org/libtiff is the measured case — bin/tiffsplit asks for

@@ -395,7 +395,7 @@ func TestUnstage(t *testing.T) {
 //
 // glibc's loader refuses a DT_RPATH on what it processes, so a libc bottle
 // fixed this way cannot load its own libc — and `ldd` comes from that bottle
-// (go-pkgx/bk#256).
+// (go-zpkg/bk#256).
 func TestSetRunpathModernisesADtRpathTag(t *testing.T) {
 	p := buildELFTag(t, elf.DT_RPATH, "/opt/rpath/only", "libc.so.6", 32)
 

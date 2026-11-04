@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://go-pkgx.github.io/bk/package.schema.json",
+  "$id": "https://go-zpkg.github.io/bk/package.schema.json",
   "title": "pkgx pantry package.yml",
-  "description": "Schema for a pkgx pantry package.yml recipe, derived from libpkgx's parser and validated against the full pkgxdev/pantry corpus. Reused by go-pkgx/bk to validate recipes (YAML and its HCL2 front-end).",
+  "description": "Schema for a pkgx pantry package.yml recipe, derived from libpkgx's parser and validated against the full pkgxdev/pantry corpus. Reused by go-zpkg/bk to validate recipes (YAML and its HCL2 front-end).",
   "type": "object",
   "additionalProperties": true,
   "properties": {

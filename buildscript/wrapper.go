@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/target"
 )
 
 // WrapOptions carries the environment the porcelain wrapper sets up around the
@@ -33,8 +33,8 @@ type WrapOptions struct {
 	Host        target.Target // where we run — drives TMPDIR
 	Home        string        // a fresh HOME for the build
 	SrcRoot     string        // the build directory (also SRCROOT / cd target)
-	PkgxDir     string        // $PKGX_DIR — the rpath root and CMAKE_PREFIX_PATH
-	Install     string        // the final install prefix ($PKGX_DIR/project/vX.Y.Z)
+	PkgxDir     string        // $ZPKG_DIR — the rpath root and CMAKE_PREFIX_PATH
+	Install     string        // the final install prefix ($ZPKG_DIR/project/vX.Y.Z)
 	Project     string        // the project being built, so we never preset a tool IT provides
 	BrewkitPath string        // dir prepended to PATH for the build shims (optional)
 	PkgxBin     string        // path to the pkgx binary (for the deps eval + $PKGX)
@@ -83,7 +83,7 @@ const BottleBuildDir = "/build"
 // PrefixMapFor derives the -ffile-prefix-map value from the cache root the
 // build ACTUALLY uses, and refuses to produce one that could not match: a map
 // whose OLD is not a prefix of every build directory is a silent no-op, which
-// is the failure this exists to rule out (go-pkgx/bk#387).
+// is the failure this exists to rule out (go-zpkg/bk#387).
 func PrefixMapFor(root string, dirs ...string) (string, error) {
 	if root == "" || !filepath.IsAbs(root) || filepath.Dir(root) == root {
 		return "", fmt.Errorf("prefix map: cache root %q is not a usable absolute directory", root)
@@ -109,7 +109,7 @@ func Wrap(o WrapOptions) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "#!%s\n\nset -eo pipefail\n\n", bash)
-	b.WriteString("export PKGX_HOME=\"$HOME\"\n")
+	b.WriteString("export ZPKG_HOME=\"$HOME\"\n")
 	if o.Bootstrap {
 		// The last of the implicit injections a first fill runs into, and the
 		// one that stops everything rather than one thing: bottle adds
@@ -121,7 +121,7 @@ func Wrap(o WrapOptions) string {
 		// environment, so the reason a seed build differs is visible in the
 		// artefact that ran it.
 		b.WriteString("# bootstrap: this machine has a libc; the registry does not yet\n")
-		b.WriteString("export PKGX_IMPLICIT_ROOTS=none\n")
+		b.WriteString("export ZPKG_IMPLICIT_ROOTS=none\n")
 	}
 
 	pkgxBin := o.PkgxBin
@@ -153,7 +153,7 @@ func Wrap(o WrapOptions) string {
 		if o.Target.Platform == "darwin" {
 			// ld64 writes the object paths of the debug map (OSO stabs) itself, so
 			// -ffile-prefix-map never reaches them. The same root, handed to the
-			// linker as -oso_prefix by the shim at link time only (go-pkgx/bk#400).
+			// linker as -oso_prefix by the shim at link time only (go-zpkg/bk#400).
 			old, _, _ := strings.Cut(o.PrefixMap, "=")
 			fmt.Fprintf(&b, "export BK_OSO_PREFIX=%q\n", old+"/")
 		}
@@ -237,7 +237,7 @@ func (o WrapOptions) depPlus() string {
 		parts = append(parts, `"+github.com/WebAssembly/wasi-libc"`, `"+compiler-rt.llvm.org/wasi"`)
 	}
 	// pkgx-libc mode needs the gnu.org/glibc bottle present in the eval so its
-	// headers/crt/libc/loader are on disk under $PKGX_DIR for wrapFlags to point
+	// headers/crt/libc/loader are on disk under $ZPKG_DIR for wrapFlags to point
 	// the compiler at (linux only). kernel.org/linux-headers supplies the Linux
 	// kernel headers (linux/*.h, asm/*.h) glibc's own headers include — glibc's
 	// recipe depends on it for exactly this reason; the bottle doesn't bundle
@@ -252,7 +252,7 @@ func (o WrapOptions) depPlus() string {
 		glibcSpec := `"+gnu.org/glibc"`
 		if o.Glibc != "" {
 			// Pin the exact glibc version as the sysroot floor. Only this version
-			// is then installed under $PKGX_DIR, so wrapFlags' version-sort picks it.
+			// is then installed under $ZPKG_DIR, so wrapFlags' version-sort picks it.
 			//
 			// The pin is `@<version>` with NO operator: pkgx accepts a bare numeric
 			// after `@` and REJECTS `@=2.27.0` with "Error: invalid semver". That
@@ -375,9 +375,9 @@ func glibcLoader(arch string) (string, bool) {
 }
 
 // darwinRpaths returns the -rpath flags a darwin link needs: the relative ones
-// that make the bottle relocatable, then the absolute $PKGX_DIR.
+// that make the bottle relocatable, then the absolute $ZPKG_DIR.
 //
-// The depth comes from where the package installs — $PKGX_DIR/<project>/vX.Y.Z
+// The depth comes from where the package installs — $ZPKG_DIR/<project>/vX.Y.Z
 // is three levels for a two-segment project and two for a one-segment one, and
 // counting it by hand is how a wrong rpath gets shipped. A binary in bin/ or a
 // dylib in lib/ is one level below that; libexec/<sub>/ is one more, so both
@@ -396,7 +396,7 @@ func darwinRpaths(pkgxDir, install string) []string {
 }
 
 // rpathExtraDepths is how far below the prefix a Mach-O may sit and still get a
-// relative rpath that reaches $PKGX_DIR.
+// relative rpath that reaches $ZPKG_DIR.
 //
 // 1 and 2 cover bin/ and lib/ — where almost everything lives — and they were
 // enough until a guard started refusing bottles that could only run on the
@@ -423,8 +423,8 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 	case "darwin":
 		// A darwin binary records its dependencies by ABSOLUTE install name, and
 		// fixup rewrites those into @rpath/… so the bottle resolves wherever
-		// $PKGX_DIR happens to be. That only works if the binary carries an
-		// LC_RPATH that reaches $PKGX_DIR from where it is installed — and unlike
+		// $ZPKG_DIR happens to be. That only works if the binary carries an
+		// LC_RPATH that reaches $ZPKG_DIR from where it is installed — and unlike
 		// ELF's RUNPATH, an LC_RPATH cannot be lengthened after the fact: the
 		// string lives in a fixed-size load command, and "@loader_path/../../../.."
 		// is LONGER than the absolute path it would replace.
@@ -438,7 +438,7 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 		// LENGTHEN an install name rather than skip it.
 		//
 		// CMake's default on darwin writes @rpath/<soname> — a bare name that
-		// resolves nowhere, since a consumer's rpath reaches $PKGX_DIR and not
+		// resolves nowhere, since a consumer's rpath reaches $ZPKG_DIR and not
 		// the library's own lib dir. The correct name,
 		// @rpath/facebook.com/zstd/v1.5.7/lib/libzstd.1.dylib, is longer than
 		// the wrong one, and a Mach-O load command can only grow into slack the
@@ -483,10 +483,10 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 		// the host binutils cannot write a wasm object index.
 		out = append(out, wasiResolve...)
 	case "linux":
-		// Both arches get an absolute -Wl,-rpath,$PKGX_DIR so the linker emits a
+		// Both arches get an absolute -Wl,-rpath,$ZPKG_DIR so the linker emits a
 		// DT_RUNPATH *slot* fixup/rpath.go later rewrites $ORIGIN-relative. A
 		// literal "$ORIGIN" here would be mangled by shell/make re-expansion, so
-		// we pass the absolute PKGX_DIR and relocate it at fixup time.
+		// we pass the absolute ZPKG_DIR and relocate it at fixup time.
 		//
 		// We deliberately do NOT add -pie. gcc already defaults to PIE for
 		// executables (measured: debian gcc 14.2 `gcc main.c` → a PIE executable),
@@ -501,7 +501,7 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 	}
 
 	// pkgx-libc mode (linux): resolve the gnu.org/glibc bottle in the eval'd
-	// $PKGX_DIR at build time (its version isn't known here, so glob + version-
+	// $ZPKG_DIR at build time (its version isn't known here, so glob + version-
 	// sort in the shell), then point the compiler driver at its headers, crt
 	// objects, libc and dynamic linker. --rtlib=compiler-rt keeps the runtime on
 	// llvm's builtins (the pkgx llvm.org bottle ships compiler-rt but no libgcc);
@@ -714,7 +714,7 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 	//
 	// It takes the SAME list as LDFLAGS, relative entries included. Handing
 	// rustc only the absolute one would leave every Rust package with no rpath
-	// reaching $PKGX_DIR from where it installs — and fixup, which checks that
+	// reaching $ZPKG_DIR from where it installs — and fixup, which checks that
 	// before rewriting an install name into @rpath/…, would then correctly
 	// refuse to touch it. The bottle would build, publish and run on the
 	// runner, and be exactly as unrelocatable as before. Measured on the
@@ -783,7 +783,7 @@ func wrapFlags(tgt target.Target, pkgxDir, install string, hasBinutils, libcPkgx
 
 // wasiFlags is the driver stencil of a wasip1/wasm build: target, sysroot,
 // resource dir (compiler-rt builtins + clang headers) and the wasm CPU
-// baseline. Quoted paths: a $PKGX_DIR with a space must not split them.
+// baseline. Quoted paths: a $ZPKG_DIR with a space must not split them.
 //
 // --rtlib=compiler-rt: the llvm.org bottle's clang defaults to libgcc, so a wasm
 // LINK asked wasm-ld for -lgcc ("wasm-ld: error: unable to find library -lgcc",
@@ -798,8 +798,8 @@ const wasiFlags = `--target=wasm32-wasip1 --sysroot="$BK_WASI_SYSROOT" -resource
 // failure would surface as an undeclared stdio.h a thousand lines later.
 var wasiResolve = []string{
 	sysrootResolve[0],
-	`export BK_WASI_SYSROOT="$(bkresolve "$PKGX_DIR/github.com/WebAssembly/wasi-libc/v[0-9]*")"`,
-	`export BK_WASI_RT="$(bkresolve "$PKGX_DIR/compiler-rt.llvm.org/wasi/v[0-9]*")"`,
+	`export BK_WASI_SYSROOT="$(bkresolve "$ZPKG_DIR/github.com/WebAssembly/wasi-libc/v[0-9]*")"`,
+	`export BK_WASI_RT="$(bkresolve "$ZPKG_DIR/compiler-rt.llvm.org/wasi/v[0-9]*")"`,
 	`[ -n "$BK_WASI_SYSROOT" ] && [ -n "$BK_WASI_RT" ] || { echo "bk: the wasip1 toolchain is not installed (github.com/WebAssembly/wasi-libc, compiler-rt.llvm.org/wasi)" >&2; exit 1; }`,
 	`export BK_CC="clang ` + wasiFlags + `"`,
 	// libc++/libc++abi are a separate bottle (libcxx.llvm.org/wasi), present only
@@ -811,7 +811,7 @@ var wasiResolve = []string{
 	// default to it for wasm32-wasip1, and a TU that throws needs __cxa_throw,
 	// which this libc++abi (exceptions off, no unwinder) does not provide
 	// ("undefined symbol: __cxa_allocate_exception", simdjson, run 40389842826).
-	`export BK_WASI_CXX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/wasi/v[0-9]*")"`,
+	`export BK_WASI_CXX="$(bkresolve "$ZPKG_DIR/libcxx.llvm.org/wasi/v[0-9]*")"`,
 	`export BK_CXX="clang++ ` + wasiFlags + `${BK_WASI_CXX:+ -fno-exceptions -stdlib=libc++ -nostdinc++ -isystem $BK_WASI_CXX/include/wasm32-wasip1/c++/v1 -L$BK_WASI_CXX/lib/wasm32-wasip1}"`,
 	`export CC="${CC:-$BK_CC}" CXX="${CXX:-$BK_CXX}"`,
 	`export AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip`,
@@ -830,7 +830,7 @@ const baseSysrootFlags = `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREF
 //	/pkgx/openssl.org/v3.6.4/include/openssl/asn1.h:27:10:
 //	  fatal error: 'stdio.h' file not found
 //
-// on rpm.org/rpm-sequoia (go-pkgx/packages run 40498046156) — openssl 3 was
+// on rpm.org/rpm-sequoia (go-zpkg/packages run 40498046156) — openssl 3 was
 // found and configured correctly, and then a C library's first #include was
 // unreachable because libclang had no sysroot.
 //
@@ -848,15 +848,15 @@ const bindgenSysrootFlags = `--sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_P
 // sysroot for the same reason and must not grow a second copy that drifts.
 var sysrootResolve = []string{
 	`bkresolve() { set +f; for d in $1; do case "$d" in *'*'*|*'['*) continue;; esac; printf '%s\n' "$d"; done | sort -V | tail -n1; }`,
-	`export BK_GLIBC_PREFIX="$(bkresolve "$PKGX_DIR/gnu.org/glibc/v[0-9]*")"`,
+	`export BK_GLIBC_PREFIX="$(bkresolve "$ZPKG_DIR/gnu.org/glibc/v[0-9]*")"`,
 	`[ -n "$BK_GLIBC_PREFIX" ] && export BK_GLIBC_PREFIX="$BK_GLIBC_PREFIX/"`,
 	`export BK_GLIBC_LIB="$(bkresolve "${BK_GLIBC_PREFIX}lib/glibc-[0-9]*")"`,
 	`[ -n "$BK_GLIBC_LIB" ] && export BK_GLIBC_LIB="$BK_GLIBC_LIB/"`,
-	`export BK_KHDR_PREFIX="$(bkresolve "$PKGX_DIR/kernel.org/linux-headers/v[0-9]*")"`,
+	`export BK_KHDR_PREFIX="$(bkresolve "$ZPKG_DIR/kernel.org/linux-headers/v[0-9]*")"`,
 	`[ -n "$BK_KHDR_PREFIX" ] && export BK_KHDR_PREFIX="$BK_KHDR_PREFIX/"`,
-	`export BK_LIBCXX_PREFIX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/v[0-9]*")"`,
+	`export BK_LIBCXX_PREFIX="$(bkresolve "$ZPKG_DIR/libcxx.llvm.org/v[0-9]*")"`,
 	`[ -n "$BK_LIBCXX_PREFIX" ] && export BK_LIBCXX_PREFIX="$BK_LIBCXX_PREFIX/"`,
-	`export BK_LIBGCC="$(bkresolve "$PKGX_DIR/gnu.org/gcc/v[0-9]*/lib/gcc/*/[0-9]*")"`,
+	`export BK_LIBGCC="$(bkresolve "$ZPKG_DIR/gnu.org/gcc/v[0-9]*/lib/gcc/*/[0-9]*")"`,
 }
 
 // SysrootCC is the driver flag set for compiling C against a pkgx-supplied

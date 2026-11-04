@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/pantry"
+	"github.com/go-zpkg/zbk/pantry"
 )
 
 const curlHCL = `

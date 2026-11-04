@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-pkgx/bk/httpretry"
+	"github.com/go-zpkg/zbk/httpretry"
 )
 
 // sleepFn paces the retry backoff; a test sets it to a no-op.

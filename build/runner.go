@@ -9,12 +9,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-pkgx/bk/buildscript"
-	"github.com/go-pkgx/bk/config"
-	"github.com/go-pkgx/bk/fixup"
-	"github.com/go-pkgx/bk/moustache"
-	"github.com/go-pkgx/bk/pantry"
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/buildscript"
+	"github.com/go-zpkg/zbk/config"
+	"github.com/go-zpkg/zbk/fixup"
+	"github.com/go-zpkg/zbk/moustache"
+	"github.com/go-zpkg/zbk/pantry"
+	"github.com/go-zpkg/zbk/target"
 )
 
 // Runner drives a full build. Its side-effecting steps are fields so the whole
@@ -156,7 +156,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	//
 	// Removing the installed prefix here destroyed the rootfs the build was
 	// running in. In the sovereign generation /bin/sh is a symlink to
-	// $PKGX_DIR/gnu.org/bash/v<ver>/bin/bash and /lib/<loader> to glibc's,
+	// $ZPKG_DIR/gnu.org/bash/v<ver>/bin/bash and /lib/<loader> to glibc's,
 	// because $ORIGIN in their RUNPATH has to resolve from the real location
 	// — a copy would break it. So `bk factory` building gnu.org/bash at the
 	// version /bin/sh points at deleted the shell BEFORE running a line, and
@@ -352,7 +352,7 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	}
 	// The map is derived from the root the build really uses and refused when it
 	// would not cover the build directories: a no-op map ships the builder's
-	// path silently (go-pkgx/bk#387).
+	// path silently (go-zpkg/bk#387).
 	prefixMap, err := buildscript.PrefixMapFor(paths.Root, paths.Home, paths.Src, paths.Build, paths.Test)
 	if err != nil {
 		return res, err

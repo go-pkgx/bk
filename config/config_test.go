@@ -7,17 +7,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/target"
 )
 
 var errNoHome = errors.New("no home")
 
 func TestPkgxDir(t *testing.T) {
-	t.Setenv("PKGX_DIR", "/opt/pkgx")
+	t.Setenv("ZPKG_DIR", "/opt/pkgx")
 	if PkgxDir() != "/opt/pkgx" {
 		t.Errorf("PkgxDir env = %q", PkgxDir())
 	}
-	t.Setenv("PKGX_DIR", "")
+	t.Setenv("ZPKG_DIR", "")
 	got := PkgxDir()
 	if !strings.HasSuffix(got, ".pkgx") {
 		t.Errorf("PkgxDir default = %q", got)
@@ -25,9 +25,9 @@ func TestPkgxDir(t *testing.T) {
 }
 
 func TestComputeDefaultLayout(t *testing.T) {
-	t.Setenv("PKGX_PANTRY_DIR", "")
-	t.Setenv("PKGX_PANTRY_PATH", "")
-	t.Setenv("PKGX_DIR", "/opt/pkgx")
+	t.Setenv("ZPKG_PANTRY_DIR", "")
+	t.Setenv("ZPKG_PANTRY_PATH", "")
+	t.Setenv("ZPKG_DIR", "/opt/pkgx")
 	t.Setenv("XDG_DATA_HOME", "/data")
 
 	tgt := target.Target{Platform: "windows", Arch: "x86-64", Triple: "x86_64-w64-mingw32"}
@@ -59,8 +59,8 @@ func TestComputeDefaultLayout(t *testing.T) {
 }
 
 func TestComputePantryCheckoutLayout(t *testing.T) {
-	t.Setenv("PKGX_DIR", "/opt/pkgx")
-	t.Setenv("PKGX_PANTRY_DIR", "/co")
+	t.Setenv("ZPKG_DIR", "/opt/pkgx")
+	t.Setenv("ZPKG_PANTRY_DIR", "/co")
 	p := Compute("acme.org/tool", "2.0.0", target.Host())
 	if p.Home != filepath.FromSlash("/co/homes/acme.org__tool-2.0.0") {
 		t.Errorf("checkout Home = %q", p.Home)
@@ -77,11 +77,11 @@ func TestComputePantryCheckoutLayout(t *testing.T) {
 	if p.TarballDir != filepath.FromSlash("/co/srcs") {
 		t.Errorf("checkout TarballDir = %q", p.TarballDir)
 	}
-	// the older PKGX_PANTRY_PATH env is honoured too
-	t.Setenv("PKGX_PANTRY_DIR", "")
-	t.Setenv("PKGX_PANTRY_PATH", "/co2")
+	// the older ZPKG_PANTRY_PATH env is honoured too
+	t.Setenv("ZPKG_PANTRY_DIR", "")
+	t.Setenv("ZPKG_PANTRY_PATH", "/co2")
 	if q := Compute("x", "1", target.Host()); q.Home != filepath.FromSlash("/co2/homes/x-1") {
-		t.Errorf("PKGX_PANTRY_PATH Home = %q", q.Home)
+		t.Errorf("ZPKG_PANTRY_PATH Home = %q", q.Home)
 	}
 }
 
@@ -90,7 +90,7 @@ func TestNoHomeFallbacks(t *testing.T) {
 	defer func() { userHomeDir = orig }()
 	userHomeDir = func() (string, error) { return "", errNoHome }
 
-	t.Setenv("PKGX_DIR", "")
+	t.Setenv("ZPKG_DIR", "")
 	if got := PkgxDir(); got != ".pkgx" {
 		t.Errorf("PkgxDir no-home = %q", got)
 	}
@@ -129,16 +129,16 @@ func mustHome(t *testing.T) string {
 }
 
 // TestComputeRootCoversEveryBuildDir: Root is what -ffile-prefix-map maps, so
-// every directory a build uses must sit under it in BOTH layouts (go-pkgx/bk#387).
+// every directory a build uses must sit under it in BOTH layouts (go-zpkg/bk#387).
 func TestComputeRootCoversEveryBuildDir(t *testing.T) {
 	tgt := target.Target{Platform: "darwin", Arch: "aarch64", Triple: "aarch64-apple-darwin"}
 	for name, setup := range map[string]func(){
 		"cache": func() {
-			t.Setenv("PKGX_PANTRY_DIR", "")
-			t.Setenv("PKGX_PANTRY_PATH", "")
+			t.Setenv("ZPKG_PANTRY_DIR", "")
+			t.Setenv("ZPKG_PANTRY_PATH", "")
 			t.Setenv("XDG_DATA_HOME", "/data")
 		},
-		"pantry": func() { t.Setenv("PKGX_PANTRY_DIR", "/pantry"); t.Setenv("PKGX_PANTRY_PATH", "") },
+		"pantry": func() { t.Setenv("ZPKG_PANTRY_DIR", "/pantry"); t.Setenv("ZPKG_PANTRY_PATH", "") },
 	} {
 		setup()
 		p := Compute("acme.org/tool", "1.2.3", tgt)

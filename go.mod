@@ -1,4 +1,4 @@
-module github.com/go-pkgx/bk
+module github.com/go-zpkg/zbk
 
 go 1.27.3
 
@@ -8,9 +8,9 @@ require (
 	github.com/go-attest/sign v0.3.0
 	github.com/go-compressions/xz v0.1.0
 	github.com/go-git/go-git/v5 v5.19.3
-	github.com/go-pkgx/bottle v0.64.0
 	github.com/go-regexp/engine v0.3.2
 	github.com/go-versions/semver v0.3.0
+	github.com/go-zpkg/bottle v0.67.0
 	github.com/klauspost/compress v1.20.3
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1

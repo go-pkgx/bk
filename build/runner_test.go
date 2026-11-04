@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/buildscript"
-	"github.com/go-pkgx/bk/config"
-	"github.com/go-pkgx/bk/fixup"
-	"github.com/go-pkgx/bk/pantry"
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/buildscript"
+	"github.com/go-zpkg/zbk/config"
+	"github.com/go-zpkg/zbk/fixup"
+	"github.com/go-zpkg/zbk/pantry"
+	"github.com/go-zpkg/zbk/target"
 )
 
 var errBoom = errors.New("boom")
@@ -20,12 +20,12 @@ var errBoom = errors.New("boom")
 // origLogf snapshots the real logf seam so tests can mute it and restore after.
 var origLogf = logf
 
-// tenv points config at temp dirs so no real PKGX_DIR/data-home is touched.
+// tenv points config at temp dirs so no real ZPKG_DIR/data-home is touched.
 func tenv(t *testing.T) {
-	t.Setenv("PKGX_DIR", filepath.Join(t.TempDir(), "pkgx"))
+	t.Setenv("ZPKG_DIR", filepath.Join(t.TempDir(), "pkgx"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
-	t.Setenv("PKGX_PANTRY_DIR", "")
-	t.Setenv("PKGX_PANTRY_PATH", "")
+	t.Setenv("ZPKG_PANTRY_DIR", "")
+	t.Setenv("ZPKG_PANTRY_PATH", "")
 }
 
 func okRecipe() *pantry.Recipe {
@@ -1310,7 +1310,7 @@ func TestMissingNameTakesOnlyADirectChild(t *testing.T) {
 // installed, because the rootfs the build runs in may BE that install.
 //
 // In the sovereign generation /bin/sh is a symlink to
-// $PKGX_DIR/gnu.org/bash/v<ver>/bin/bash — a symlink and not a copy, because
+// $ZPKG_DIR/gnu.org/bash/v<ver>/bin/bash — a symlink and not a copy, because
 // $ORIGIN in bash's RUNPATH has to resolve from the real location. So
 // removing the prefix up front deleted the shell before a line ran, and the
 // first `#!/bin/sh` script to be exec'd failed with
@@ -1437,7 +1437,7 @@ func TestAFailureToDropTheReplacedPrefixIsReported(t *testing.T) {
 }
 
 // TestBuildExportsThePrefixMapOfTheRealRoot: the script carries a map derived
-// from the root the build actually uses (go-pkgx/bk#387).
+// from the root the build actually uses (go-zpkg/bk#387).
 func TestBuildExportsThePrefixMapOfTheRealRoot(t *testing.T) {
 	tenv(t)
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}

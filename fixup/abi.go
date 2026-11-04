@@ -19,7 +19,7 @@ import (
 // libxml2.16.dylib. Both answer `^2`. A bottle that records what it provides
 // lets a checker decide, from published metadata alone, whether a declared
 // constraint can honour the references its dependents record — which is the
-// question go-pkgx/packages#207 asks and nothing can currently answer.
+// question go-zpkg/packages#207 asks and nothing can currently answer.
 //
 // The basename, not the whole install name: the path is where this build put
 // it, the basename is what dyld and ld.so match on.

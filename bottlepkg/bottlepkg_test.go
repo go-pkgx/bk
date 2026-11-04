@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/go-pkgx/bottle"
+	"github.com/go-zpkg/bottle"
 	"github.com/klauspost/compress/zstd"
 )
 

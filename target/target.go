@@ -94,7 +94,7 @@ var (
 		"wasip1":  {"wasm": true},
 		// ⛔ THE BSDs ARE x86-64 ONLY, FOR THE REASON THIS MAP EXISTS. The
 		// machine behind them is the `vmactions/{freebsd,netbsd,openbsd}-vm`
-		// qemu guest that go-pkgx/pkgm already runs its tests in, and those
+		// qemu guest that go-zpkg/pkgm already runs its tests in, and those
 		// actions offer amd64 and nothing else. aarch64 joins the day there is
 		// a machine, exactly as s390x did — adding it now would put a guess in
 		// the one place that must not hold one.
@@ -107,7 +107,7 @@ var (
 		"openbsd": {"x86-64": true},
 		"netbsd":  {"x86-64": true},
 	}
-	// llvm.org/mingw-w64 cross triples (see the go-pkgx/packages Windows
+	// llvm.org/mingw-w64 cross triples (see the go-zpkg/packages Windows
 	// factories: x86_64-w64-mingw32-clang / aarch64-w64-mingw32-clang).
 	windowsTriples = map[string]string{
 		"x86-64":  "x86_64-w64-mingw32",

@@ -319,7 +319,7 @@ func TestFlattenHeadersConsultsTheFilesystem(t *testing.T) {
 // version, so the flatten must go ahead: ncurses exports no CPATH of its own
 // and 49 recipes `#include <curses.h>`. Widening the shadow guard to consult
 // the filesystem changed that as collateral; this is the stopgap that puts it
-// back, and go-pkgx/bk#155 is the design question it stands in for.
+// back, and go-zpkg/bk#155 is the design question it stands in for.
 func TestFlattenHeadersStillFlattensNcurses(t *testing.T) {
 	prefix := t.TempDir()
 	for _, h := range []string{"curses.h", "term.h", "panel.h", "ncurses_dll.h"} {

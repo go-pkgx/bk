@@ -24,8 +24,8 @@ func place(t *testing.T, path string, cmds ...machoCmd) {
 	}
 }
 
-// An install name pointing into $PKGX_DIR becomes an @rpath reference, so the
-// bottle resolves it wherever $PKGX_DIR turns out to be.
+// An install name pointing into $ZPKG_DIR becomes an @rpath reference, so the
+// bottle resolves it wherever $ZPKG_DIR turns out to be.
 func TestInstallNamesBecomeRpathReferences(t *testing.T) {
 	pkgx := filepath.Join(t.TempDir(), ".pkgx")
 	prefix := filepath.Join(pkgx, "other.org", "bar", "v2.0.0")
@@ -45,7 +45,7 @@ func TestInstallNamesBecomeRpathReferences(t *testing.T) {
 	want := []string{
 		"@loader_path/../../../..",                // an rpath is a search root, not a reference
 		"@rpath/acme.org/foo/v1/lib/libfoo.dylib", // major-versioned: v1 is a symlink pkgx maintains
-		"/usr/lib/libSystem.B.dylib",              // the OS is not in $PKGX_DIR
+		"/usr/lib/libSystem.B.dylib",              // the OS is not in $ZPKG_DIR
 	}
 	for i := range want {
 		if got[i] != want[i] {
@@ -54,7 +54,7 @@ func TestInstallNamesBecomeRpathReferences(t *testing.T) {
 	}
 }
 
-// The same file with an rpath that does NOT reach $PKGX_DIR keeps its absolute
+// The same file with an rpath that does NOT reach $ZPKG_DIR keeps its absolute
 // names: @rpath would resolve to nothing, which is worse than a path that at
 // least works on one machine.
 func TestNoReachingRpathLeavesNamesAbsolute(t *testing.T) {
@@ -83,7 +83,7 @@ func TestNoReachingRpathLeavesNamesAbsolute(t *testing.T) {
 	}
 }
 
-// Every shape an rpath can take, and whether it reaches $PKGX_DIR from a
+// Every shape an rpath can take, and whether it reaches $ZPKG_DIR from a
 // binary installed at <pkgx>/other.org/bar/v2.0.0/bin/bar.
 func TestRpathReaches(t *testing.T) {
 	pkgx := "/opt/.pkgx"
@@ -134,7 +134,7 @@ func TestUnderDir(t *testing.T) {
 	}
 }
 
-// Without a $PKGX_DIR — `bk fixup <prefix>` run by hand — the pass does what it
+// Without a $ZPKG_DIR — `bk fixup <prefix>` run by hand — the pass does what it
 // always did: strip the staging prefix, and nothing else.
 func TestNoPkgxDirIsTheOldBehaviour(t *testing.T) {
 	dir := t.TempDir()
@@ -335,7 +335,7 @@ func TestNoRpathReferenceNeedsNoRpath(t *testing.T) {
 // old guard asked only whether an LC_RPATH existed.
 //
 // The guard that caught it is still there, but it no longer has anything to
-// say about this file: an absolute rpath INSIDE $PKGX_DIR states the target,
+// say about this file: an absolute rpath INSIDE $ZPKG_DIR states the target,
 // the file's own location states the depth, and relativeRpath writes the entry
 // that means the same thing from anywhere. What used to be a build refusal is
 // now a repair — see TestAbsolutePkgxRpathsBecomeLoaderPath for the shape that
@@ -362,7 +362,7 @@ func TestAnAbsoluteRpathBecomesRelocatable(t *testing.T) {
 }
 
 // What the guard is still for: an absolute rpath that does NOT name anything
-// inside $PKGX_DIR. Homebrew's prefix is a real directory on the build machine
+// inside $ZPKG_DIR. Homebrew's prefix is a real directory on the build machine
 // and a missing one everywhere else, and no arithmetic on the file's own
 // location can say where a consumer keeps it — so this is the case that must
 // still refuse to publish rather than be guessed at.

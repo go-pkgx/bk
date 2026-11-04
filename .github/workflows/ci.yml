@@ -9,7 +9,7 @@ jobs:
   # here it ran only when somebody pushed, and an advisory does not wait for a
   # push. GO-2026-6860 and GO-2026-6866 were published on 2026-10-27 and found
   # on the 28th by a pull request that added a subcommand and touched no
-  # dependency; go-pkgx/packages found the same pair on the 30th the same
+  # dependency; go-zpkg/packages found the same pair on the 30th the same
   # accidental way. The job name is unchanged, so any rule naming
   # "govulncheck, judged by vulngate" still matches.
   test:

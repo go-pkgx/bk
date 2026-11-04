@@ -444,10 +444,10 @@ func dropMachoRpaths(path string, drop func(string) bool) (int, error) {
 var dropRpaths = dropMachoRpaths
 
 // builderRpath reports whether an LC_RPATH is an ABSOLUTE path into the
-// builder's store — $PKGX_DIR as the build ran, never a literal. On the
+// builder's store — $ZPKG_DIR as the build ran, never a literal. On the
 // machine that built the bottle it is a fallback that resolves; anywhere else
 // it resolves to nothing and only says where the builder keeps its files
-// (go-pkgx/bk#395). A path outside the store is somebody else's decision and is
+// (go-zpkg/bk#395). A path outside the store is somebody else's decision and is
 // not touched here.
 func builderRpath(rpath, store string) bool {
 	if store == "" || !filepath.IsAbs(rpath) {
@@ -535,7 +535,7 @@ func underDir(p, dir string) (string, bool) {
 	return filepath.ToSlash(p[len(dir):]), true
 }
 
-// relativeRpath turns an ABSOLUTE rpath pointing inside $PKGX_DIR into the
+// relativeRpath turns an ABSOLUTE rpath pointing inside $ZPKG_DIR into the
 // @loader_path one that means the same thing, and reports whether it changed.
 //
 // This is the third defect of a darwin bottle, distinct from a bare install
@@ -576,7 +576,7 @@ func relativeRpath(exe, rpath, pkgxDir string) (string, bool) {
 	if _, under := underDir(clean, dir); !under && clean != dir {
 		return rpath, false
 	}
-	// A file outside $PKGX_DIR would get a relative path climbing out of the
+	// A file outside $ZPKG_DIR would get a relative path climbing out of the
 	// tree, which is neither shorter nor more portable than what it replaces.
 	if _, under := underDir(exe, dir); !under {
 		return rpath, false
@@ -601,7 +601,7 @@ func rewriteMacho(exe string, opts Options) error {
 	// What rewriteRefs could not restate relatively is still the builder's path
 	// (a duplicate of an entry bk linked in, or a file that is not under the
 	// store yet). It is a search root that only means something on the build
-	// machine, so it goes: the relative entries are the mechanism (go-pkgx/bk#395).
+	// machine, so it goes: the relative entries are the mechanism (go-zpkg/bk#395).
 	n, err := dropRpaths(exe, func(s string) bool { return builderRpath(s, opts.PkgxDir) })
 	if err != nil {
 		return err
@@ -628,19 +628,19 @@ func rewriteMachoRefs(exe string, opts Options) error {
 	// machine, and no rpath rescues it: an absolute reference never consults
 	// one. Rewriting those into @rpath/… is what makes the bottle relocatable.
 	//
-	// But ONLY if this file carries an rpath that reaches $PKGX_DIR. Turning a
+	// But ONLY if this file carries an rpath that reaches $ZPKG_DIR. Turning a
 	// reference that works on the build machine into an @rpath one that
 	// resolves nowhere would trade a bottle that works in one place for a
 	// bottle that works in none — so it is measured per file, not assumed.
 	toRpath := false
 	// Whether any rpath is a builder path we can restate relatively. It is
 	// tracked apart from toRpath because the two are independent: a file can
-	// carry an rpath that reaches $PKGX_DIR on the builder and nowhere else,
+	// carry an rpath that reaches $ZPKG_DIR on the builder and nowhere else,
 	// which is precisely the case worth repairing.
 	relocRpath := false
 	// Every rpath spelling the file already carries. Relativising an absolute
 	// one can land on a string that is ALREADY there — bk links in
-	// @loader_path/../../../.. itself, and a file four levels below $PKGX_DIR
+	// @loader_path/../../../.. itself, and a file four levels below $ZPKG_DIR
 	// whose build also recorded the absolute path produces exactly that — and a
 	// duplicate LC_RPATH is not cosmetic:
 	//
@@ -679,9 +679,9 @@ func rewriteMachoRefs(exe string, opts Options) error {
 	// the CONSUMER's rpath, not on this file's. So it is fixed even for a
 	// library that needs no rpath of its own — sourceware.org/bzip2's
 	// libbz2.1.0.8.dylib links nothing but libSystem, therefore never gets a
-	// $PKGX_DIR-reaching rpath, therefore kept its unresolvable "libbz2.dylib"
+	// $ZPKG_DIR-reaching rpath, therefore kept its unresolvable "libbz2.dylib"
 	// id through a rebuild that was meant to repair exactly that. Qualifying it
-	// is never worse than leaving it: a consumer without a $PKGX_DIR rpath
+	// is never worse than leaving it: a consumer without a $ZPKG_DIR rpath
 	// fails on either spelling.
 	fixableID := false
 	if _, ok := qualifyID(exe, machoID(exe), opts); ok {
@@ -741,7 +741,7 @@ func rewriteMachoRefs(exe string, opts Options) error {
 			return s
 		}
 		if !toRpath {
-			// No rpath reaches $PKGX_DIR — often no LC_RPATH at all — so
+			// No rpath reaches $ZPKG_DIR — often no LC_RPATH at all — so
 			// nothing below can help: an @rpath reference rewritten to another
 			// @rpath reference still resolves nowhere. A SIBLING needs no
 			// rpath, though. mpdecimal's C++ library records
@@ -770,7 +770,7 @@ func rewriteMachoRefs(exe string, opts Options) error {
 			// library's own install name only helps what is linked AFTER; every
 			// dependent already carries the bare string, and nothing rewrote it.
 			//
-			// It resolves nowhere: an rpath entry points at $PKGX_DIR or at a
+			// It resolves nowhere: an rpath entry points at $ZPKG_DIR or at a
 			// package root, never at some other package's lib dir, so dyld
 			// joins the soname onto a directory that does not contain it.
 			// Measured on the published catalogue — the reference and the file
@@ -842,8 +842,8 @@ func rewriteMachoRefs(exe string, opts Options) error {
 // CMake's default on darwin (MACOSX_RPATH) writes the install name as
 // @rpath/<soname> — no directory at all. Every branch below leaves that alone,
 // because it already starts with @rpath and "libzstd.1.dylib" joined onto
-// $PKGX_DIR is, technically, under $PKGX_DIR. It is also nowhere: a consumer's
-// rpath points at $PKGX_DIR, not at zstd's lib dir, so dyld aborts:
+// $ZPKG_DIR is, technically, under $ZPKG_DIR. It is also nowhere: a consumer's
+// rpath points at $ZPKG_DIR, not at zstd's lib dir, so dyld aborts:
 //
 //	dyld: Library not loaded: @rpath/libzstd.1.dylib
 //	  Referenced from: …/build/bin/llvm-min-tblgen
@@ -926,7 +926,7 @@ func qualifyRef(exe, soname string, opts Options) (string, bool) {
 	}
 	// Not ours. A bare soname can still be a DEPENDENCY's, and which one is a
 	// question the closure answers rather than a guess: the library is staged
-	// under $PKGX_DIR, and if exactly one project there ships that file, that
+	// under $ZPKG_DIR, and if exactly one project there ships that file, that
 	// is the project it came from.
 	//
 	// Measured over the installed closures of 44 packages — 1135 Mach-O files,
@@ -945,7 +945,7 @@ func qualifyRef(exe, soname string, opts Options) (string, bool) {
 	return "", false
 }
 
-// closureOwner finds the one project under $PKGX_DIR that ships soname in its
+// closureOwner finds the one project under $ZPKG_DIR that ships soname in its
 // lib dir, and names it the way a sibling reference is named everywhere else:
 // through transformRpath, so the MAJOR version directory is used and a
 // dependency's minor upgrade does not orphan its dependents.
@@ -975,9 +975,9 @@ func closureOwner(soname string, opts Options) (string, bool) {
 	if len(hits) != 1 {
 		return "", false
 	}
-	// The hit came out of a glob rooted at $PKGX_DIR and transformRpath only
+	// The hit came out of a glob rooted at $ZPKG_DIR and transformRpath only
 	// rewrites the version segment, so the result is still under it: there is
-	// no not-under-$PKGX_DIR case to handle, and a branch no test can reach is
+	// no not-under-$ZPKG_DIR case to handle, and a branch no test can reach is
 	// a line the coverage gate is right to refuse.
 	t := transformRpath(hits[0], filepath.Dir(opts.Prefix))
 	rel, _ := underDir(t, opts.PkgxDir)

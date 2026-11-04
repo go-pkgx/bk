@@ -13,7 +13,7 @@ import (
 // What a darwin bottle is FOR: to work on a machine that is not the one that
 // built it. Everything else here checks a step; this checks the outcome.
 //
-// It builds a two-package $PKGX_DIR the way bk lays one out — a library in
+// It builds a two-package $ZPKG_DIR the way bk lays one out — a library in
 // acme.org/foo/v1.2.3/lib, a program in other.org/bar/v2.0.0/bin — runs the
 // real FixUp over both, then MOVES the whole tree and runs the program from
 // its new home. A bottle whose dependency is named by absolute install name
@@ -38,7 +38,7 @@ func TestBottleSurvivesBeingMoved(t *testing.T) {
 	foo := write("foo.c", "int foo(void){ return 42; }\n")
 	mainC := write("main.c", "#include <stdio.h>\nint foo(void);\nint main(void){ printf(\"foo=%d\\n\", foo()); return 0; }\n")
 
-	// build lays out one $PKGX_DIR and returns (pkgxDir, libPrefix, exePrefix,
+	// build lays out one $ZPKG_DIR and returns (pkgxDir, libPrefix, exePrefix,
 	// exe). The rpaths are the ones bk's wrapper now links in: relative, at the
 	// depth this layout implies.
 	build := func(name string) (string, string, string, string) {
@@ -129,7 +129,7 @@ func TestBottleSurvivesBeingMoved(t *testing.T) {
 			found = true
 		}
 		if strings.HasPrefix(s, pkgxDir) {
-			t.Errorf("a path into the build machine's $PKGX_DIR survived: %q", s)
+			t.Errorf("a path into the build machine's $ZPKG_DIR survived: %q", s)
 		}
 	}
 	if !found {
@@ -151,7 +151,7 @@ func TestBottleSurvivesBeingMoved(t *testing.T) {
 	}
 }
 
-// A binary with no rpath reaching $PKGX_DIR keeps its absolute install names.
+// A binary with no rpath reaching $ZPKG_DIR keeps its absolute install names.
 // Rewriting them to @rpath/… would resolve to nothing at all, trading a bottle
 // that works on one machine for a bottle that works on none.
 func TestWithoutAnRpathTheNamesAreLeftAlone(t *testing.T) {

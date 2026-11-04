@@ -132,7 +132,7 @@ func systemIncludeDirs() []string {
 // declining to change what the guard was never aimed at.
 //
 // The design question — stop flattening and have a package export its include
-// subdirectory instead, which would make this list unnecessary — is go-pkgx/bk#155.
+// subdirectory instead, which would make this list unnecessary — is go-zpkg/bk#155.
 // Until it is answered, this is a stopgap and is meant to read like one.
 var intentionalShadow = map[string]bool{
 	"ncursesw": true,

@@ -69,7 +69,7 @@ type Result struct {
 	// on, or when one of OUR earlier patches does. Nothing about the build says
 	// so afterwards: the recipe is merely the unpatched one, and it fails for
 	// whatever reason the patch existed to remove. Measured 2026-09-24 on
-	// go-pkgx/packages: 3 of 231 overrides had stopped applying, among them the
+	// go-zpkg/packages: 3 of 231 overrides had stopped applying, among them the
 	// -Werror switch mozilla.org/nss needs, whose absence cost two rebuilds and
 	// a duplicate fix for a defect that was already fixed.
 	SkippedProjects map[string][]string

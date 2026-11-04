@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/moustache"
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/moustache"
+	"github.com/go-zpkg/zbk/target"
 )
 
 func opts(platform, arch, version string) Options {
@@ -277,7 +277,7 @@ func TestGenerateNodeLevelFixture(t *testing.T) {
 	}
 	for _, want := range []string{
 		"FIXTURE=$(mktemp)",
-		"cat <<DEV_PKGX_EOF > $FIXTURE",
+		"cat <<DEV_ZPKG_EOF > $FIXTURE",
 		"hello, world",
 		"mv $FIXTURE test.cpp",
 		"rm -f $FIXTURE*",

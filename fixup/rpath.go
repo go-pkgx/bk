@@ -122,7 +122,7 @@ func SetRunpath(path, value string) error {
 	// libc bottle fixed up this way cannot load its own libc — and since
 	// gnu.org/glibc provides bin/ldd and bottle puts glibc in every linux
 	// closure, `ldd` stops working for everything we publish there
-	// (go-pkgx/bk#256).
+	// (go-zpkg/bk#256).
 	//
 	// Converting rather than removing, and measured rather than assumed: of
 	// 393 shared objects in the s390x store, 295 already carry DT_RUNPATH and

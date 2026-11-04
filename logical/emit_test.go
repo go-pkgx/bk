@@ -50,11 +50,11 @@ func TestEmitRoundTrips(t *testing.T) {
 }
 
 // HCL reads ${…} and %{…} inside a quoted string and inside a heredoc, and a
-// recipe is full of $ARGS, ${PKGX_DIR:-$HOME/.pkgx} and 100%{_libdir}. They
+// recipe is full of $ARGS, ${ZPKG_DIR:-$HOME/.pkgx} and 100%{_libdir}. They
 // have to come back as themselves.
 func TestEmitEscapesTemplateIntroducers(t *testing.T) {
 	for _, v := range []string{
-		`./configure ${PKGX_DIR:-$HOME/.pkgx} $ARGS`,
+		`./configure ${ZPKG_DIR:-$HOME/.pkgx} $ARGS`,
 		"multi\n${LINE}\n100%{_libdir}\n",
 		`%{x}`,
 	} {

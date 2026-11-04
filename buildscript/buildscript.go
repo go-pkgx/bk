@@ -10,9 +10,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/go-pkgx/bk/moustache"
-	"github.com/go-pkgx/bk/target"
 	"github.com/go-versions/semver"
+	"github.com/go-zpkg/zbk/moustache"
+	"github.com/go-zpkg/zbk/target"
 )
 
 // Options carries everything script generation needs beyond the node itself.
@@ -360,7 +360,7 @@ func posixQuote(value string) string {
 	//
 	// Latent until something set one: no recipe in the pantry assigns an empty
 	// env value, and the first thing that did was an override clearing
-	// LDFLAGS for gnu.org/glibc (go-pkgx/packages#291). The build failed to
+	// LDFLAGS for gnu.org/glibc (go-zpkg/packages#291). The build failed to
 	// PARSE, which is a long way from the line that caused it.
 	if strings.TrimSpace(value) == "" {
 		return `""`
@@ -411,9 +411,9 @@ func wrapFixture(fx any, key, run string, opts Options) string {
 	return fmt.Sprintf(`OLD_%s=$%s
 %s=$(mktemp)%s
 
-cat <<DEV_PKGX_EOF > $%s
+cat <<DEV_ZPKG_EOF > $%s
 %s
-DEV_PKGX_EOF
+DEV_ZPKG_EOF
 %s%s
 
 rm -f $%s*

@@ -20,8 +20,8 @@
 package hcl
 
 import (
-	"github.com/go-pkgx/bk/pantry"
-	"github.com/go-pkgx/bottle"
+	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/pantry"
 )
 
 // Parse decodes a package.hcl into a validated pantry.Recipe.

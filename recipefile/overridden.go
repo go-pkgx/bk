@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/go-pkgx/bk/logical"
-	"github.com/go-pkgx/bk/pantry"
-	"github.com/go-pkgx/bottle"
+	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/logical"
+	"github.com/go-zpkg/zbk/pantry"
 	"gopkg.in/yaml.v3"
 )
 
@@ -134,8 +134,8 @@ func LoadBuildRecipe(set *logical.Set, overlayDir, pantryDir, project string) (*
 //
 // Not the overlay preferred whole. That was right while every overlay entry
 // was a full copy of an upstream recipe, and it broke the day they stopped
-// being: go-pkgx/pantry-overlay reduced its 183 entries to the keys they
-// change (go-pkgx/bottle#103), so reading one on its own gives a fragment.
+// being: go-zpkg/pantry-overlay reduced its 183 entries to the keys they
+// change (go-zpkg/bottle#103), so reading one on its own gives a fragment.
 // Measured before this existed — `bk closure --build curl.se` went from 54
 // projects to 8, because the entry says `dependencies` and nothing else, and
 // the walk never saw upstream's build dependencies at all.

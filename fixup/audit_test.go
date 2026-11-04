@@ -25,7 +25,7 @@ func TestAuditRelocatableFindsTheBuilderOnlyRpath(t *testing.T) {
 	// would have missed git-scm.org, whose broken files are under libexec/.
 	bad := filepath.Join(prefix, "libexec", "git")
 	place(t, bad, ref, machoCmd{lcRpath, "/Users/runner/.pkgx"})
-	// lib/libok.dylib: a relative rpath that reaches $PKGX_DIR from lib/.
+	// lib/libok.dylib: a relative rpath that reaches $ZPKG_DIR from lib/.
 	place(t, filepath.Join(prefix, "lib", "libok.dylib"), ref, machoCmd{lcRpath, "@loader_path/../../.."})
 
 	checked, problems := AuditRelocatable(prefix, pkgxDir)
@@ -58,7 +58,7 @@ func TestAuditRelocatableIsQuietOnAHealthyPrefix(t *testing.T) {
 		t.Fatalf("checked %d Mach-O, want 1", checked)
 	}
 	if len(problems) != 0 {
-		t.Errorf("reported %v on a prefix whose relative rpath reaches $PKGX_DIR", problems)
+		t.Errorf("reported %v on a prefix whose relative rpath reaches $ZPKG_DIR", problems)
 	}
 }
 

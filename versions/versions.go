@@ -15,7 +15,7 @@
 package versions
 
 import (
-	"github.com/go-pkgx/bk/useragent"
+	"github.com/go-zpkg/zbk/useragent"
 
 	"encoding/json"
 	"fmt"

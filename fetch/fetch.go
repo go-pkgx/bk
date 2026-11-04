@@ -27,7 +27,7 @@ import (
 	"github.com/go-compressions/xz"
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-pkgx/bottle"
+	"github.com/go-zpkg/bottle"
 )
 
 // maxXzDictionary bounds the window an .xz source archive may make the decoder
@@ -436,7 +436,7 @@ func headCommit(repo *gogit.Repository) string {
 // `path.Clean` removes it before the count, so N components off a "./"-prefixed
 // archive strips N+1 — which does not fail, it FLATTENS: the real root entry is
 // dropped and a subdirectory's namesake takes its place. The tar side of this
-// is go-pkgx/bottle#69, where `hdfgroup.org/HDF5 2.2.0` built the wrong tree
+// is go-zpkg/bottle#69, where `hdfgroup.org/HDF5 2.2.0` built the wrong tree
 // and cmake reported it as an unknown command in "CMakeLists.txt". Zip archives
 // carry "./" prefixes less often, but the two extractors must not disagree
 // about what `strip-components` means.

@@ -83,16 +83,16 @@ jobs:
             freebsd/amd64 freebsd/arm64 netbsd/amd64 openbsd/amd64; do
             os=${target%/*}
             arch=${target#*/}
-            out="bk-${os}-${arch}"
+            out="zbk-${os}-${arch}"
             if [ "$os" = "windows" ]; then
               out="${out}.exe"
             fi
             echo "building $out"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -trimpath -ldflags="-s -w" -o "$DIST/${out}" ./cmd/bk
+              go build -trimpath -ldflags="-s -w" -o "$DIST/${out}" ./cmd/zbk
           done
           cd "$DIST"
-          sha256sum bk-* > SHA256SUMS
+          sha256sum zbk-* > SHA256SUMS
           cat SHA256SUMS
 
       # An ASSERTION, not a hope. bk writes its own module version into every
@@ -103,7 +103,7 @@ jobs:
       # `v0.6.2-0.2026…+dirty` instead -- so this can fail, and when it does
       # the fix is -ldflags "-X", not a shrug.
       #
-      # `go version -m` is the same idiom go-pkgx/packages already uses to
+      # `go version -m` is the same idiom go-zpkg/packages already uses to
       # record which bk built a bottle.
       # ⛔⛔ THE BINARIES. PLURAL. This step was already an EXACT equality,
       # and it passed for thirteen releases while shipping dirty binaries,
@@ -128,13 +128,13 @@ jobs:
           set -eu
           DIST="$RUNNER_TEMP/dist"
           bad=0
-          for bin in "$DIST"/bk-*; do
+          for bin in "$DIST"/zbk-*; do
             name=$(basename "$bin")
             info=$(go version -m "$bin")
             stamped=$(printf '%s\n' "$info" | awk '$1=="mod" {print $3; exit}')
             echo "$name: $stamped"
             if [ "$stamped" != "$TAG" ]; then
-              echo "::error::$name stamps $stamped but this is $TAG — every lock written by this build would name the wrong bk"
+              echo "::error::$name stamps $stamped but this is $TAG — every lock written by this build would name the wrong zbk"
               bad=1
             fi
             if printf '%s\n' "$info" | grep -q 'vcs\.modified=true'; then
@@ -142,18 +142,18 @@ jobs:
               bad=1
             fi
           done
-          # AND THE VERSION IT PRINTS. Until now bk had no way to say which
-          # bk it was — `bk --version` was "flag provided but not defined"
-          # and `bk version` was "unknown command" — so this half could not
+          # AND THE VERSION IT PRINTS. Until now it had no way to say which
+          # build it was — `--version` was "flag provided but not defined"
+          # and `version` was "unknown command" — so this half could not
           # be checked at all.
           #
           # It is not a duplicate of the loop above even though both read
           # debug.ReadBuildInfo: this one proves the COMMAND works, on the
           # binary a user will actually run. A wiring break (missing case,
           # wrong field, output to stderr) is invisible to `go version -m`.
-          got=$("$DIST/bk-linux-amd64" version | awk '{print $2}')
+          got=$("$DIST/zbk-linux-amd64" version | awk '{print $2}')
           if [ "$got" != "$TAG" ]; then
-            echo "::error::bk version says '$got', want exactly '$TAG'"
+            echo "::error::zbk version says '$got', want exactly '$TAG'"
             bad=1
           fi
           exit "$bad"
@@ -164,12 +164,12 @@ jobs:
       # would replace the manifest. A provenance attestation is the half
       # that cannot be forged from the release page — GitHub signs, through
       # Sigstore, a statement that THIS workflow built THAT file from THAT
-      # commit, and `gh attestation verify -R go-pkgx/bk <file>` checks it.
+      # commit, and `gh attestation verify -R go-zpkg/bk <file>` checks it.
       #
-      # Measured 2026-10-20 on go-pkgx/pkgx v0.23.1, with go-fleettools'
+      # Measured 2026-10-20 on go-zpkg/pkgx v0.23.1, with go-fleettools'
       # relverify: twelve files, every checksum right, and every attestation
       # lookup `HTTP 404: Not Found`. The same was true here, and of
-      # go-pkgx/pkgm and go-pkgx/mirror — one organisation publishing
+      # go-zpkg/pkgm and go-zpkg/mirror — one organisation publishing
       # binaries that verify as far as a manifest can take them and no
       # further. go-fileshare/fileshare has had this step since its v0.29
       # series.
@@ -181,7 +181,7 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
-            ${{ runner.temp }}/dist/bk-*
+            ${{ runner.temp }}/dist/zbk-*
             ${{ runner.temp }}/dist/SHA256SUMS
 
       - name: Publish GitHub Release

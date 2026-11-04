@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/go-pkgx/bk/config"
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/config"
+	"github.com/go-zpkg/zbk/target"
 )
 
 // TestProofPropsInBuildDir is a focused end-to-end proof: a recipe whose script

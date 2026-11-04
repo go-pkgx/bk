@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/target"
 )
 
 func lin() target.Target { return target.Target{Platform: "linux", Arch: "x86-64"} }
@@ -206,20 +206,20 @@ func TestSanitizedEnv(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "secret")
 	// Where the build's own `pkgx +deps` resolves from: a local registry cache
 	// and a corrected overlay only apply if they survive the sanitised env.
-	t.Setenv("PKGX_DIST", "oci://http://cache:5111/go-pkgx/packages")
-	t.Setenv("PKGX_PANTRY", "https://pantry.example/projects")
-	t.Setenv("PKGX_PANTRY_OVERLAY", "https://overlay.example/projects")
+	t.Setenv("ZPKG_DIST", "oci://http://cache:5111/go-zpkg/packages")
+	t.Setenv("ZPKG_PANTRY", "https://pantry.example/projects")
+	t.Setenv("ZPKG_PANTRY_OVERLAY", "https://overlay.example/projects")
 	// The opt-out a test harness needs when it points at unsigned fixtures.
-	t.Setenv("PKGX_VERIFY", "0")
-	os.Unsetenv("PKGX_PANTRY_DIR")
+	t.Setenv("ZPKG_VERIFY", "0")
+	os.Unsetenv("ZPKG_PANTRY_DIR")
 	env := SanitizedEnv("/h", "/pkgx")
 	joined := strings.Join(env, "\n")
-	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "PKGX_DIR=/pkgx", "TERM=xterm", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true", "FORCE_UNSAFE_CONFIGURE=1", "PKGX_DIST=oci://http://cache:5111/go-pkgx/packages", "PKGX_PANTRY=https://pantry.example/projects", "PKGX_PANTRY_OVERLAY=https://overlay.example/projects", "PKGX_VERIFY=0"} {
+	for _, want := range []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/h", "ZPKG_DIR=/pkgx", "TERM=xterm", "MAKEFLAGS=ACLOCAL=true AUTOMAKE=true AUTOCONF=true AUTOHEADER=true AUTOPOINT=true", "FORCE_UNSAFE_CONFIGURE=1", "ZPKG_DIST=oci://http://cache:5111/go-zpkg/packages", "ZPKG_PANTRY=https://pantry.example/projects", "ZPKG_PANTRY_OVERLAY=https://overlay.example/projects", "ZPKG_VERIFY=0"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("SanitizedEnv missing %q in %v", want, env)
 		}
 	}
-	if strings.Contains(joined, "PKGX_PANTRY_DIR") {
+	if strings.Contains(joined, "ZPKG_PANTRY_DIR") {
 		t.Error("unset var leaked into SanitizedEnv")
 	}
 
@@ -439,7 +439,7 @@ func TestBaseToolchainHasHelp2man(t *testing.T) {
 // sanitised environment, each for a reason that was measured rather than
 // assumed.
 //
-// PKGX_CACHE names a distribution point, like PKGX_DIST beside it: dropping it
+// ZPKG_CACHE names a distribution point, like ZPKG_DIST beside it: dropping it
 // sends the `pkgx +deps` line of every generated script past the pull-through
 // cache the job was configured to use.
 //
@@ -453,11 +453,11 @@ func TestBaseToolchainHasHelp2man(t *testing.T) {
 // the same bash with QEMU_RESERVED_VA set succeeds, and the distribution's bash
 // (built --without-bash-malloc) never had the problem.
 func TestSanitizedEnvPassesCacheAndQemu(t *testing.T) {
-	t.Setenv("PKGX_CACHE", "oci://http://10.0.0.1:5111/go-pkgx/packages")
+	t.Setenv("ZPKG_CACHE", "oci://http://10.0.0.1:5111/go-zpkg/packages")
 	t.Setenv("QEMU_RESERVED_VA", "0x100000000")
 	env := SanitizedEnv("/root", "/pkgx")
 	for _, want := range []string{
-		"PKGX_CACHE=oci://http://10.0.0.1:5111/go-pkgx/packages",
+		"ZPKG_CACHE=oci://http://10.0.0.1:5111/go-zpkg/packages",
 		"QEMU_RESERVED_VA=0x100000000",
 	} {
 		if !slices.Contains(env, want) {

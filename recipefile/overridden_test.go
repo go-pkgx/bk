@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/logical"
+	"github.com/go-zpkg/zbk/logical"
 )
 
 func writeRecipe(t *testing.T, pantry, project, name, body string) {

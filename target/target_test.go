@@ -215,7 +215,7 @@ func TestTheVocabularyIsExported(t *testing.T) {
 // `platformArches` carries its own instruction: "An arch with no machine
 // behind it is a guess, and this is the one place that should not hold one."
 // s390x waited for a LinuxONE runner. The machine behind the BSDs is the
-// `vmactions/{freebsd,netbsd,openbsd}-vm` qemu guest that go-pkgx/pkgm
+// `vmactions/{freebsd,netbsd,openbsd}-vm` qemu guest that go-zpkg/pkgm
 // already tests in, and those actions offer amd64 only.
 //
 // So aarch64 must be REFUSED until there is a machine. A test that only

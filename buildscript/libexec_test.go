@@ -94,7 +94,7 @@ func TestWriteLibexecForCompilerShims(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Outside pkgx-libc mode the shims still exist: they carry
-	// -ffile-prefix-map, which no recipe env may drop (go-pkgx/bk#387).
+	// -ffile-prefix-map, which no recipe env may drop (go-zpkg/bk#387).
 	if _, err := os.Lstat(filepath.Join(off, "cc")); err != nil {
 		t.Fatalf("cc shim must exist in every mode: %v", err)
 	}
