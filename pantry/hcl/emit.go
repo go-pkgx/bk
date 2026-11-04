@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/go-pkgx/bk/pantry"
-	"github.com/go-pkgx/bottle"
+	"github.com/go-zpkg/zbk/pantry"
+	"github.com/go-zpkg/bottle"
 )
 
 // convertFn is a seam. The two guards below protect against a defect in the

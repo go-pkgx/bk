@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/target"
 )
 
 func linuxHost() target.Target {
@@ -24,7 +24,7 @@ func TestWrapTestRunsThePackageInAnEmptySandbox(t *testing.T) {
 		"#!/opt/bash\n",
 		"set -e",
 		`export HOME="/bk/home"`,
-		`export PKGX_DIR="/opt/pkgx"`,
+		`export ZPKG_DIR="/opt/pkgx"`,
 		`export TMPDIR="$HOME/tmp"; mkdir -p "$TMPDIR"`,
 		`__bk_deps_env="$(CLICOLOR_FORCE=1 /opt/pkgx/bin/pkgx "+gnu.org/gawk@5.4.1" "+gnu.org/diffutils")" || {`,
 		`bk: the test environment failed`,
@@ -98,9 +98,9 @@ func TestWrapTestDefaultsBashAndPkgx(t *testing.T) {
 	if strings.Contains(s, "export PKGX=") {
 		t.Errorf("exported an empty PKGX:\n%s", s)
 	}
-	// Nor an empty PKGX_DIR, for the same reason.
-	if strings.Contains(s, "export PKGX_DIR=") {
-		t.Errorf("exported an empty PKGX_DIR:\n%s", s)
+	// Nor an empty ZPKG_DIR, for the same reason.
+	if strings.Contains(s, "export ZPKG_DIR=") {
+		t.Errorf("exported an empty ZPKG_DIR:\n%s", s)
 	}
 }
 

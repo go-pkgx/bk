@@ -238,7 +238,7 @@ func (c *OSVClient) askChunk(ps []Pinned) ([]Finding, error) {
 // under its CVE is the same record OSV returns under a GHSA.
 // ⛔ AND A KNOWN ID IS DETECTED AGAIN WHEN THE PUBLISHED VERSION CHANGES,
 // because a decision taken about one version says nothing about the next —
-// go-pkgx/bk#340. The new detection carries the version, so the next reader
+// go-zpkg/bk#340. The new detection carries the version, so the next reader
 // can see which one was examined.
 //
 // Only when the record ALREADY names versions. A record written before this

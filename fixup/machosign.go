@@ -38,7 +38,7 @@ import (
 // program bk cannot rely on when cross-building.
 //
 // The layout below was verified against a real published bottle before any of
-// it was used: recomputing every code slot of ghcr.io/go-pkgx/packages'
+// it was used: recomputing every code slot of ghcr.io/go-zpkg/packages'
 // darwin/aarch64 `rust-lang.org/cargo` v0.99.0 reproduced 8159 of 8159 stored
 // hashes. An unmodified binary hashing to itself is the proof the structure is
 // read correctly.

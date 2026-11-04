@@ -21,11 +21,11 @@ import (
 //
 // Neither directory exists anywhere, on any machine, including the one that
 // built it. Pointing them at the final prefix does not make the bottle
-// relocatable — a consumer whose PKGX_DIR differs is still out of luck, and
+// relocatable — a consumer whose ZPKG_DIR differs is still out of luck, and
 // only the tool itself can fix that (bison's yacc, for one, carries gnulib's
 // relocatable-sh and works out its own prefix from $0) — but it turns a path
 // that is wrong everywhere into one that is right wherever the bottle is
-// installed under the same PKGX_DIR, which is the case for the factory's own
+// installed under the same ZPKG_DIR, which is the case for the factory's own
 // builds and for the sovereign builder.
 //
 // Only files beginning with `#!` are touched. Rewriting an ELF or Mach-O this
@@ -73,7 +73,7 @@ func walkScripts(dir, buildInstall, prefix string, log func(string, ...any)) err
 		// ESCAPED in the recipe and is not a glob at all: pkgx writes a `v*`
 		// alias beside `v<version>` when it installs a package
 		// (bottle.writeVersionLinks), so the target is a real path — for a
-		// PKGX_DIR that has binutils in it. For one that does not, the link
+		// ZPKG_DIR that has binutils in it. For one that does not, the link
 		// dangles, and the fix-up then said
 		//
 		//	fix-up: open …/gnu.org/gcc/v14.4.0/bin/ar: no such file or directory

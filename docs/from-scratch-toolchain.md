@@ -6,7 +6,7 @@ what shipped, kept because the hazards below are still the ones that bite.**
 ## What shipped, and how to read this note
 
 The mechanism is `--libc=pkgx` on `bk build` and `bk factory` — not the
-`BK_PKGX_LIBC=1` environment variable the body of this note names. That name was
+`BK_ZPKG_LIBC=1` environment variable the body of this note names. That name was
 the design-time one; every occurrence below should be read as "the pkgx-libc
 mode". The rest of the analysis stands as written.
 
@@ -121,7 +121,7 @@ build environment:
   `eval "$(pkgx +…)"`, then the target-keyed `LDFLAGS`/`CFLAGS`, then the user
   script. `depPlus` is exactly where `+llvm.org` is appended today.
 
-The mechanism adds, **for a linux target only, when `BK_PKGX_LIBC=1`**:
+The mechanism adds, **for a linux target only, when `BK_ZPKG_LIBC=1`**:
 
 1. **Implicit toolchain deps.** Inject `gnu.org/glibc` and
    `gnu.org/gcc/libstdcxx` into the `pkgx +…` closure (clang from `llvm.org` is
@@ -133,16 +133,16 @@ The mechanism adds, **for a linux target only, when `BK_PKGX_LIBC=1`**:
 
 2. **A generated `clang.cfg`.** In the wrapper, before `cd $SRCROOT`, emit the
    shell that (a) locates the pkgx glibc lib dir + loader + libgcc_s from the
-   already-`eval`'d `$PKGX_DIR`, (b) writes `clang.cfg` next to the resolved
+   already-`eval`'d `$ZPKG_DIR`, (b) writes `clang.cfg` next to the resolved
    clang, and (c) symlinks `clang++.cfg`, `clang-cpp.cfg`, `<versioned>.cfg` to
    it. Because the pkgx env is `eval`'d with `set -a` just above, the glibc/gcc
-   prefixes are discoverable by globbing `$PKGX_DIR/gnu.org/glibc/v*/lib` — no
+   prefixes are discoverable by globbing `$ZPKG_DIR/gnu.org/glibc/v*/lib` — no
    `{{deps.*}}` moustache needed (though the `{{deps.gnu.org/glibc.prefix}}`
    token is available too, since `DepTokens` already resolves it).
 
    Locating clang itself: `command -v clang` after the pkgx `eval` gives the
    shimmed path; `readlink -f` resolves it into the real
-   `$PKGX_DIR/llvm.org/v*/bin` dir where the `.cfg` must land (a `.cfg` beside a
+   `$ZPKG_DIR/llvm.org/v*/bin` dir where the `.cfg` must land (a `.cfg` beside a
    symlink is *not* read — clang reads it beside the **real** binary, located
    via `/proc/self/exe`).
 
@@ -153,11 +153,11 @@ The mechanism adds, **for a linux target only, when `BK_PKGX_LIBC=1`**:
 Sketch of the wrapper addition (see the experimental Go at the end):
 
 ```sh
-# --- BK_PKGX_LIBC: retarget clang at the pkgx glibc bottle (linux only) ---
-if [ -n "$BK_PKGX_LIBC" ]; then
-  GLIBCLIB=$(dirname "$(ls "$PKGX_DIR"/gnu.org/glibc/v*/lib/glibc-*/libc.so.6 2>/dev/null | sort | tail -1)")
+# --- BK_ZPKG_LIBC: retarget clang at the pkgx glibc bottle (linux only) ---
+if [ -n "$BK_ZPKG_LIBC" ]; then
+  GLIBCLIB=$(dirname "$(ls "$ZPKG_DIR"/gnu.org/glibc/v*/lib/glibc-*/libc.so.6 2>/dev/null | sort | tail -1)")
   GLIBCLD=$(ls "$GLIBCLIB"/ld-linux*.so.* 2>/dev/null | head -1)
-  GCCLIB=$(dirname "$(ls "$PKGX_DIR"/gnu.org/gcc/libstdcxx/v*/lib*/libgcc_s.so.1 2>/dev/null | head -1)")
+  GCCLIB=$(dirname "$(ls "$ZPKG_DIR"/gnu.org/gcc/libstdcxx/v*/lib*/libgcc_s.so.1 2>/dev/null | head -1)")
   CLANGREAL=$(readlink -f "$(command -v clang)")
   cat > "$(dirname "$CLANGREAL")/clang.cfg" <<CFG
 -B$GLIBCLIB
@@ -207,7 +207,7 @@ that sets `LDFLAGS` may or may not clobber ours depending on order.
    to `CFLAGS`/`LDFLAGS` still inherits the loader retarget.
 2. Detect the hazard: after the build, the verifier (below) fails the build if
    any produced ELF's `PT_INTERP` is not the pkgx loader. This converts a silent
-   host-glibc leak into a hard build error. Under `BK_PKGX_LIBC=1` this check is
+   host-glibc leak into a hard build error. Under `BK_ZPKG_LIBC=1` this check is
    the real guarantee; the `clang.cfg` is best-effort, the verifier is the gate.
 3. A recipe that legitimately needs the host gcc (e.g. a kernel module) opts out
    via a per-recipe skip (analogous to the existing `skip: [fix-patchelf]`).
@@ -238,7 +238,7 @@ wrong. Constraints:
   bottle and a target-arch `--dynamic-linker`. pkgx bottles are per-arch, so
   this is expressible, but the prototype and first landing scope to
   **Target.Arch == Host.Arch** (native). Cross-arch libc retarget is future
-  work; the gate is `BK_PKGX_LIBC=1 && linux && Target==Host arch`.
+  work; the gate is `BK_ZPKG_LIBC=1 && linux && Target==Host arch`.
 
 ### (e) Recipes with no compile step (pure scripts)
 
@@ -270,7 +270,7 @@ shell-out. `bk`'s `fixup` package already exposes `ReadNeeded` and
 self-contained against the pkgx closure iff:
 
 1. **`PT_INTERP`** is either absent (static — pass) **or** equal to the pkgx
-   `ld-linux` path (inside `$PKGX_DIR/gnu.org/glibc/...`). It must **not** be
+   `ld-linux` path (inside `$ZPKG_DIR/gnu.org/glibc/...`). It must **not** be
    `/lib64/ld-linux-*` or `/lib/ld-linux-*` (host loader → fail).
 2. Every **`DT_NEEDED`** resolves along the binary's own `DT_RPATH`/`DT_RUNPATH`
    into the pkgx closure — no needed lib is satisfiable *only* from the host
@@ -286,7 +286,7 @@ readelf -d <bin> | grep -E 'NEEDED|RPATH|RUNPATH'
 ```
 
 Proposed Go helper (in `fixup`, so it can gate the build under
-`BK_PKGX_LIBC=1`):
+`BK_ZPKG_LIBC=1`):
 
 ```go
 // ReadInterp returns an ELF's PT_INTERP (the requested dynamic linker), or ""
@@ -311,7 +311,7 @@ Two ways, matching what the recipes already do:
   fix-up point `$ORIGIN` at them (heavier bottle, but truly `FROM scratch` with
   no pkgx dep).
 
-The first is the pkgx-idiomatic choice and is what `BK_PKGX_LIBC=1` should pair
+The first is the pkgx-idiomatic choice and is what `BK_ZPKG_LIBC=1` should pair
 with; the verifier checks link-correctness, the runtime-dep declaration checks
 closure-completeness.
 
@@ -439,7 +439,7 @@ viable future variant.
   loader/glibc name differs); a full autotools package with `configure` probes
   and host-tool sub-builds (the Hazard (a) `GLIBC_2.29` class); and the
   cross-arch (Target ≠ Host) libc retarget (Hazard (d)). Those are the next
-  milestones before wiring `BK_PKGX_LIBC=1` into a default path.
+  milestones before wiring `BK_ZPKG_LIBC=1` into a default path.
 
 ## Experimental Go (off by default)
 
@@ -448,7 +448,7 @@ behind an off-by-default switch — see `buildscript`:
 
 * `WrapOptions.PkgxLibc` (Go-side gate, default `false`) makes `Wrap` emit the
   clang.cfg-generation shell, itself additionally guarded at runtime by
-  `if [ -n "$BK_PKGX_LIBC" ]`. With `PkgxLibc` false the wrapper output is
+  `if [ -n "$BK_ZPKG_LIBC" ]`. With `PkgxLibc` false the wrapper output is
   byte-identical to before, so nothing in the default build path changes.
 * The emitted block is skipped for a `windows` target and for a cross-arch build
   (`Target.Arch != Host.Arch`) — Hazards (d)/(e).

@@ -18,15 +18,15 @@ func mustParse(t *testing.T, y string) *AdvisoryFile {
 
 func opts(subjects ...Subject) VEXOptions {
 	return VEXOptions{
-		ID:        "https://go-pkgx.dev/vex/1",
-		Author:    "https://github.com/go-pkgx",
+		ID:        "https://go-zpkg.github.io/vex/1",
+		Author:    "https://github.com/go-zpkg",
 		Timestamp: time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC),
 		Version:   1,
 		Subjects:  subjects,
 	}
 }
 
-const product = "pkg:oci/openssl@sha256:abc?repository_url=ghcr.io/go-pkgx/openssl.org&tag=3.5.8_1--linux-x86-64"
+const product = "pkg:oci/openssl@sha256:abc?repository_url=ghcr.io/go-zpkg/openssl.org&tag=3.5.8_1--linux-x86-64"
 
 // productVersion is the version `product` is a bottle of. It is a constant
 // rather than a literal in each fixture because the scoping rule compares it

@@ -35,7 +35,7 @@ func TestAbsolutePkgxRpathsBecomeLoaderPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Nine levels from the bundle's own directory back to $PKGX_DIR.
+	// Nine levels from the bundle's own directory back to $ZPKG_DIR.
 	up := strings.TrimSuffix(strings.Repeat("../", 9), "/")
 	want := []string{
 		"@loader_path/" + up,
@@ -59,7 +59,7 @@ func TestAbsolutePkgxRpathsBecomeLoaderPath(t *testing.T) {
 	}
 }
 
-// An rpath outside $PKGX_DIR names something the bottle does not carry and did
+// An rpath outside $ZPKG_DIR names something the bottle does not carry and did
 // not build — making it relative would point it at the wrong tree.
 func TestRpathsOutsidePkgxDirAreLeftAlone(t *testing.T) {
 	pkgx := filepath.Join(t.TempDir(), ".pkgx")
@@ -110,7 +110,7 @@ func TestRelativeRpathRefusals(t *testing.T) {
 			}
 		})
 	}
-	// $PKGX_DIR itself, as the rpath of a file sitting directly in it.
+	// $ZPKG_DIR itself, as the rpath of a file sitting directly in it.
 	if got, ok := relativeRpath("/x/.pkgx/l.dylib", pkgx, pkgx); !ok || got != "@loader_path" {
 		t.Errorf("own directory = %q, %v; want \"@loader_path\", true", got, ok)
 	}
@@ -130,7 +130,7 @@ func TestRelativeRpathRefusals(t *testing.T) {
 //
 // Leaving the absolute entry keeps a builder path in the artefact, which is a
 // leak. Writing the duplicate breaks every dependent, which is a break. The
-// guard's requirement — a relative rpath that reaches $PKGX_DIR — is satisfied
+// guard's requirement — a relative rpath that reaches $ZPKG_DIR — is satisfied
 // either way, because the one that would have been duplicated is already there.
 func TestARelativisedRpathIsNotWrittenTwice(t *testing.T) {
 	pkgx := filepath.Join(t.TempDir(), ".pkgx")

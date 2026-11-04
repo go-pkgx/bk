@@ -244,7 +244,7 @@ func TestEnsureWritableChmodErrorAtEveryWriter(t *testing.T) {
 	})
 }
 
-// An @rpath reference that names nothing under $PKGX_DIR is left exactly as it
+// An @rpath reference that names nothing under $ZPKG_DIR is left exactly as it
 // is: /usr/lib and the frameworks are not ours to rewrite.
 func TestRpathReferenceOutsidePkgxDirIsUntouched(t *testing.T) {
 	pkgx := filepath.Join(t.TempDir(), ".pkgx")

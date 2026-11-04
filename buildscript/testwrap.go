@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/target"
 )
 
 // TestWrapOptions carries what a recipe's test: block needs around it.
@@ -22,7 +22,7 @@ import (
 //	                      or rpath are wrong, which is the thing worth
 //	                      catching. The compiler itself is supplied; the
 //	                      build's flags are not.
-//	CMAKE_PREFIX_PATH     the whole store (go-pkgx/bk#164). A test that found
+//	CMAKE_PREFIX_PATH     the whole store (go-zpkg/bk#164). A test that found
 //	                      a header there would be finding it by accident.
 //	$SRCROOT / the build  the sources are gone by then, and a test that reads
 //	                      tree                  them is testing the tree and
@@ -62,7 +62,7 @@ type TestWrapOptions struct {
 	Compiler bool
 	Home     string        // a fresh HOME, created by the script
 	Sandbox  string        // the empty directory the test runs in
-	PkgxDir  string        // $PKGX_DIR, so the eval resolves where the build published
+	PkgxDir  string        // $ZPKG_DIR, so the eval resolves where the build published
 	PkgxBin  string        // path to the pkgx binary
 	BashPath string        // shebang interpreter (default /bin/bash)
 	Host     target.Target // where we run — drives TMPDIR
@@ -141,17 +141,17 @@ func WrapTest(o TestWrapOptions) string {
 	// What pipefail would have caught — a producer dying while a later stage
 	// succeeds — the common test shape catches anyway: in `foo | grep x`, a
 	// dead foo writes nothing and grep fails on its own. That is exactly the
-	// case go-pkgx/bk#162 opened with, muscle's
+	// case go-zpkg/bk#162 opened with, muscle's
 	// `(muscle --version 2>&1 || true) | grep '{{version.raw}}'`, where grep
 	// is what reports the kill.
 	//
 	// Copied from Wrap when this file was written, which was not a decision.
 	fmt.Fprintf(&b, "#!%s\n\nset -e\n\n", bash)
 	fmt.Fprintf(&b, "export HOME=%q\n", o.Home)
-	b.WriteString("export PKGX_HOME=\"$HOME\"\n")
+	b.WriteString("export ZPKG_HOME=\"$HOME\"\n")
 	b.WriteString("mkdir -p \"$HOME\"\n")
 	if o.PkgxDir != "" {
-		fmt.Fprintf(&b, "export PKGX_DIR=%q\n", o.PkgxDir)
+		fmt.Fprintf(&b, "export ZPKG_DIR=%q\n", o.PkgxDir)
 	}
 	b.WriteString(tmpdirLine(o.Host) + "\n")
 
@@ -166,7 +166,7 @@ func WrapTest(o TestWrapOptions) string {
 		fmt.Fprintf(&b, "export PKGX=%q\n", o.PkgxBin)
 	}
 
-	// After the eval, so the bottles are on disk and $PKGX_DIR is set; before
+	// After the eval, so the bottles are on disk and $ZPKG_DIR is set; before
 	// the sandbox, so a test that compiles finds CC already pointing at a
 	// libc it can use.
 	if o.Compiler && o.Host.Platform == "linux" {

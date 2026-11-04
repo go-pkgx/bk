@@ -82,7 +82,7 @@ func hclString(s string) string {
 // quote renders a one-line string. Go's %q escapes what HCL needs escaped in a
 // quoted string, and then the template introducers have to be doubled on top:
 // HCL reads ${…} and %{…} inside quotes, and a recipe is full of $ARGS and
-// ${PKGX_DIR:-$HOME/.pkgx}.
+// ${ZPKG_DIR:-$HOME/.pkgx}.
 func quote(s string) string {
 	return escapeTemplates(fmt.Sprintf("%q", s))
 }

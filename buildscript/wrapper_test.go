@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/target"
 )
 
 func linuxTgt() target.Target  { return target.Target{Platform: "linux", Arch: "x86-64"} }
@@ -159,8 +159,8 @@ func TestWrapLibcPkgxLinuxX86(t *testing.T) {
 		// a literal `v[0-9]*` in the flags reaches the linker and breaks the very
 		// first configure probe.
 		`bkresolve() { set +f; for d in $1; do case "$d" in *'*'*|*'['*) continue;; esac; printf '%s\n' "$d"; done | sort -V | tail -n1; }`,
-		`export BK_GLIBC_PREFIX="$(bkresolve "$PKGX_DIR/gnu.org/glibc/v[0-9]*")"`,
-		`export BK_LIBCXX_PREFIX="$(bkresolve "$PKGX_DIR/libcxx.llvm.org/v[0-9]*")"`,
+		`export BK_GLIBC_PREFIX="$(bkresolve "$ZPKG_DIR/gnu.org/glibc/v[0-9]*")"`,
+		`export BK_LIBCXX_PREFIX="$(bkresolve "$ZPKG_DIR/libcxx.llvm.org/v[0-9]*")"`,
 		// C: glibc sysroot + compiler-rt, no unwinder (exception-free C).
 		`export CFLAGS="-fPIC --sysroot="$BK_GLIBC_PREFIX" -isystem "${BK_GLIBC_PREFIX}include" -isystem "${BK_KHDR_PREFIX}include" -B "$BK_GLIBC_LIB" -L"$BK_GLIBC_LIB"${BK_LIBGCC:+ -L"$BK_LIBGCC"} --rtlib=compiler-rt -fuse-ld=lld -Wno-unused-command-line-argument --unwindlib=none -Wno-implicit-function-declaration`,
 		// C++: libc++ headers FIRST (before glibc's), then sysroot + libunwind.
@@ -475,7 +475,7 @@ func TestDarwinGivesRustcTheRpath(t *testing.T) {
 		Install: "/opt/pkgx/acme.org/foo/v1.2.3",
 	})
 	// The SAME list LDFLAGS gets, relative entries included. With only the
-	// absolute one, a Rust package installs with no rpath reaching $PKGX_DIR,
+	// absolute one, a Rust package installs with no rpath reaching $ZPKG_DIR,
 	// and fixup then correctly refuses to rewrite its install names into
 	// @rpath/… — leaving the bottle exactly as unrelocatable as before, while
 	// building, publishing and running perfectly on the machine that made it.
@@ -552,8 +552,8 @@ func TestDarwinRpathDepths(t *testing.T) {
 				"-Wl,-rpath,@loader_path/../../../../../../..",
 				"-Wl,-rpath,/opt/pkgx"}},
 		{"no install prefix", "/opt/pkgx", "", []string{"-Wl,-rpath,/opt/pkgx"}},
-		{"installed outside $PKGX_DIR", "/opt/pkgx", "/elsewhere/foo/v1", []string{"-Wl,-rpath,/opt/pkgx"}},
-		{"installed AT $PKGX_DIR", "/opt/pkgx", "/opt/pkgx", []string{"-Wl,-rpath,/opt/pkgx"}},
+		{"installed outside $ZPKG_DIR", "/opt/pkgx", "/elsewhere/foo/v1", []string{"-Wl,-rpath,/opt/pkgx"}},
+		{"installed AT $ZPKG_DIR", "/opt/pkgx", "/opt/pkgx", []string{"-Wl,-rpath,/opt/pkgx"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := darwinRpaths(tc.pkgxDir, tc.install)

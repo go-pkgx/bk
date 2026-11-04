@@ -358,7 +358,7 @@ func detectedAt(f *AdvisoryFile, id string) []string {
 // A purl names a version, so the OpenVEX document is a statement ABOUT a
 // version — while a false-positive-determination carries none. Determine it
 // for 1.0.0, publish 2.0.0, and the same record re-emits `not_affected`
-// about a version nobody examined (go-pkgx/bk#340).
+// about a version nobody examined (go-zpkg/bk#340).
 func TestMergeDetectsAgainWhenThePublishedVersionChanges(t *testing.T) {
 	now := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
 	f := &AdvisoryFile{Project: "crates.io/demo", Advisories: []Advisory{{

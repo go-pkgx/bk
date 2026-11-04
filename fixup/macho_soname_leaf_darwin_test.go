@@ -63,7 +63,7 @@ func TestAPatchUpgradeOfADependencyDoesNotOrphanItsDependents(t *testing.T) {
 		return strings.TrimSpace(string(out)), err
 	}
 
-	// build lays out $PKGX_DIR/<name> with zlib.example v1.3.1 — the real file
+	// build lays out $ZPKG_DIR/<name> with zlib.example v1.3.1 — the real file
 	// carrying the full version, the soname link beside it, and v1 pointing at
 	// the version directory, exactly as pkgx installs one — plus a program
 	// linked against the full-version file, as a build does when that is the

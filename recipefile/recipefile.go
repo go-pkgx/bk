@@ -20,8 +20,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/go-pkgx/bk/pantry"
-	"github.com/go-pkgx/bk/pantry/hcl"
+	"github.com/go-zpkg/zbk/pantry"
+	"github.com/go-zpkg/zbk/pantry/hcl"
 )
 
 // ErrNoRecipe is "this project has no recipe file here", which is not the same
@@ -81,7 +81,7 @@ func Load(pantryDir, project string) (*pantry.Recipe, error) {
 // ⛔⛔ BECAUSE A CALLER THAT SPELLS THE FILENAME HAS ALREADY CHOSEN THE FORMAT,
 // AND WILL BE WRONG LATER. This package exists so one place decides what a
 // recipe is called, and the spelling keeps escaping it anyway: four commands
-// read `package.yml` directly until go-pkgx/bk#389, and
+// read `package.yml` directly until go-zpkg/bk#389, and
 // `packages/.github/workflows/wasip1-c.yml` then spelled
 // `/recipes/<slug>/package.yml` in the workflow — so converting that lane to
 // HCL2 meant editing the workflow in the same commit, or shipping twelve
@@ -115,7 +115,7 @@ func LoadFile(path string) (*pantry.Recipe, error) {
 // used to call pantry.Parse — the YAML front-end — on every one of them, which
 // made each `package.hcl` a parse error it then SKIPPED as malformed. Over
 // pantry-overlay that was 210 of 213 recipes examined by nobody, reported as
-// a clean result (go-pkgx/bk#389).
+// a clean result (go-zpkg/bk#389).
 func ParseNamed(b []byte, name string) (*pantry.Recipe, error) { return parse(b, name) }
 
 // parse picks the front-end. Both end at pantry.Parse and the same JSON

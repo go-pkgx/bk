@@ -15,14 +15,14 @@ rather than a retrofit.
 ## Verifying a downloaded `bk`
 
 ⛔ **`SHA256SUMS` is a checksum of itself.** It says the binaries on a
-[release](https://github.com/go-pkgx/bk/releases) match a manifest published
+[release](https://github.com/go-zpkg/zbk/releases) match a manifest published
 beside them, and whoever replaced the binaries would replace the manifest.
 The half that cannot be forged from the release page is GitHub's **provenance
 attestation** — signed through Sigstore, saying that this repository's release
 workflow built that file from that commit:
 
 ```sh
-gh attestation verify -R go-pkgx/bk bk-linux-amd64
+gh attestation verify -R go-zpkg/bk bk-linux-amd64
 ```
 
 It matters more here than for the other binaries in this organisation:
@@ -35,7 +35,7 @@ closed, so a 404 on an older binary means *unattested*, not *tampered with*.
 ## Status
 
 In production: `bk factory` is what fills
-[`ghcr.io/go-pkgx/packages`](https://github.com/orgs/go-pkgx/packages) —
+[`ghcr.io/go-zpkg/packages`](https://github.com/orgs/go-zpkg/packages) —
 **1585 projects, 42 746 signed (project, os, arch, version) bottles** as of
 2026-10-04 17:00 UTC+2 — linux/aarch64 15 136, linux/x86-64 13 255,
 darwin/x86-64 7 113, darwin/aarch64 6 649, windows/x86-64 554, and
@@ -47,8 +47,8 @@ roots unresolvable at 11:45 and 21 of 25 at 17:03 the same day, because
 another session was publishing while this was measured. A registry count is
 dated to the HOUR. Re-measure it rather than trusting this line: `go run
 ./catalog` in
-[go-pkgx/packages](https://github.com/go-pkgx/packages) enumerates the registry
-itself, and <https://go-pkgx.github.io/packages> browses it.
+[go-zpkg/packages](https://github.com/go-zpkg/packages) enumerates the registry
+itself, and <https://go-zpkg.github.io/packages> browses it.
 
 The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `go tool cover -func`, enforced in CI):
 
@@ -181,7 +181,7 @@ The `package.yml` schema (`schema/package.schema.json`) doubles as editor
 autocompletion — add to a recipe:
 
 ```yaml
-# yaml-language-server: $schema=https://go-pkgx.github.io/bk/package.schema.json
+# yaml-language-server: $schema=https://go-zpkg.github.io/bk/package.schema.json
 ```
 
 The same recipe in HCL2 (`package.hcl`) decodes to the identical `Recipe`:
@@ -201,7 +201,7 @@ provides = ["bin/curl", "bin/curl-config"]
 
 ## Why
 
-Completes the pure-Go [`go-pkgx`](https://github.com/go-pkgx) family (bottle / pkgm /
+Completes the pure-Go [`go-zpkg`](https://github.com/go-zpkg) family (bottle / pkgm /
 pkgx / mirror) with the last Deno piece — a single static binary that builds pantry
 recipes with no Deno/Ruby/patchelf runtime, and cross-builds cleanly.
 
@@ -216,7 +216,7 @@ installed or depended on.
 A recipe carrying `members` is a **set**:
 
 ```hcl
-# go-pkgx/base-toolchain
+# go-zpkg/base-toolchain
 members = {
   # clang, lld, compiler-rt — the compiler itself
   "llvm.org" = "*"
@@ -226,8 +226,8 @@ members = {
 }
 ```
 
-`bk closure go-pkgx/base-toolchain` resolves it. So does `bk factory
---recipes go-pkgx/base-toolchain`, and so would anything else that takes a
+`bk closure go-zpkg/base-toolchain` resolves it. So does `bk factory
+--recipes go-zpkg/base-toolchain`, and so would anything else that takes a
 project name — a set is expanded **at the root**, before the dependency walk
 looks at it, so nothing downstream learns the word.
 
@@ -269,8 +269,8 @@ has *"the same concrete specs"*.
 `members` is the abstract half. `bk lock` is the concrete one:
 
 ```
-$ bk lock --platform linux/x86-64 -o base-toolchain.lock.hcl go-pkgx/base-toolchain
-set: go-pkgx/base-toolchain names 25 member(s)
+$ bk lock --platform linux/x86-64 -o base-toolchain.lock.hcl go-zpkg/base-toolchain
+set: go-zpkg/base-toolchain names 25 member(s)
 lock: 41 project(s) pinned → base-toolchain.lock.hcl
 ```
 
@@ -281,7 +281,7 @@ platform         = "linux/x86-64"
 generated        = "2026-10-05T09:10:39Z"
 pantry           = "fd646990024e22f5752578cfdcfe2518b20c0797"
 overlay          = "f8f6dcfd7b17410a6de780bdd58c81fbbb38d1b3"
-roots            = ["go-pkgx/base-toolchain"]
+roots            = ["go-zpkg/base-toolchain"]
 
 locked = {
   "curl.se" = { version = "8.17.0", spec = "sha256:5284d597c180…" }
@@ -466,7 +466,7 @@ Until v0.17.0 it recorded nothing. Measured on the published
 `stedolan.github.io/jq`, whose **signed** SLSA statement carried:
 
 ```json
-"builder": { "id": "https://github.com/go-pkgx/bk" },
+"builder": { "id": "https://github.com/go-zpkg/zbk" },
 "buildDefinition": { "externalParameters": {}, "internalParameters": {} }
 ```
 
@@ -543,7 +543,7 @@ what stops it being one.
 ### `--rebuild` — a new build of a version that is already published
 
 A recipe fix can change the binary without changing the upstream version.
-Measured on 2026-11-02: go-pkgx/packages#399 gave `fftw.org` its SIMD
+Measured on 2026-11-02: go-zpkg/packages#399 gave `fftw.org` its SIMD
 codelets, the darwin lane rebuilt it, and the result went out as **`3.3.11`**
 — the same tag the scalar build had. `nm` on the two shows 0 → **207**
 `_neon` symbols, so they are plainly different bottles; nothing in the
@@ -610,7 +610,7 @@ So the factory now states it, and this reads it back:
 $ bk origin --platform linux/s390x lz4.org 1.10.0
 lz4.org 1.10.0 linux/s390x
   host toolchain used: no — built from bottles
-  inputs resolved from: oci://ghcr.io/go-pkgx/packages
+  inputs resolved from: oci://ghcr.io/go-zpkg/packages
 ```
 
 `--promotable` turns it into a gate: silent and exit 0 only when the
@@ -644,7 +644,7 @@ the host toolchain was unused.
 
 ```console
 $ bk factory --platform linux/s390x --mirror-from oci://127.0.0.1:5000/seed \
-    --to oci://ghcr.io/go-pkgx/packages --require-origin --recipes "lz4.org"
+    --to oci://ghcr.io/go-zpkg/packages --require-origin --recipes "lz4.org"
 ❌ FAIL lz4.org 1.10.0: origin: not promotable: it was built with --bootstrap,
    so its compiler and shell came from the host distribution rather than from
    bottles
@@ -694,7 +694,7 @@ bk unresolved -platform linux/aarch64 gnu.org/bash curl.se
 
 ⛔ **`-platform` exists because an audit that can only ask about its own
 machine covers one platform of six.** Wired into CI (`sonames.yml` in
-go-pkgx/packages) this found **967 unresolvable references over 259 of
+go-zpkg/packages) this found **967 unresolvable references over 259 of
 1407 bottled projects** on linux/x86-64 — and said nothing about the other
 five, which were not clean but **unasked**. The reader was never the
 problem: it walks ELF and Mach-O in one pass precisely because a store
@@ -811,7 +811,7 @@ asked **which of them a given bottle has**.
 $ bk attest --platform linux/x86-64 bitwarden.com 1.22.1
 bitwarden.com 1.22.1 linux/x86-64: 4 referrer(s)
   application/vnd.cyclonedx+json       3412 bytes  pkg:pkgx/bitwarden.com@1.22.1
-  application/vnd.in-toto+json         1890 bytes  https://github.com/go-pkgx/bk@v0.26.0
+  application/vnd.in-toto+json         1890 bytes  https://github.com/go-zpkg/zbk@v0.26.0
   application/vnd.openvex+json         1204 bytes  1 statement(s): MAL-2026-3020=not_affected
   application/vnd.dev.cosign…          …           signed
 ```
@@ -1022,7 +1022,7 @@ bottle.
 ### The bottle carries its own justification
 
 ```
-bk publish --to oci://ghcr.io/go-pkgx/bottles --project openssl.org \
+bk publish --to oci://ghcr.io/go-zpkg/bottles --project openssl.org \
            --version 3.5.8_1 --platform linux/x86-64 \
            --advisories ./advisories  openssl.org-3.5.8_1.tar.xz
 ```
@@ -1261,7 +1261,7 @@ becomes trust-every-time. They are distinguished, said out loud, and
 default, because an unreachable registry is not evidence of tampering and a
 build must not die because ghcr hiccuped.
 
-Still open (go-pkgx/bk#282): nothing reads `sig:`. Verifying a detached
+Still open (go-zpkg/bk#282): nothing reads `sig:`. Verifying a detached
 signature needs a key policy — *whose* key — and that is a decision, not a
 patch.
 
@@ -1318,13 +1318,13 @@ by the pantry and the overlay, with its runtime dependencies, and — with
 `--platform`. `--publish` pushes it signed.
 
 `--recipes DIR` (repeatable) names a **flat** recipe tree
-(`<DIR>/<project>/package.yml`, the layout of `go-pkgx/packages/wasip1/recipes`)
+(`<DIR>/<project>/package.yml`, the layout of `go-zpkg/packages/wasip1/recipes`)
 whose projects are listed too. A platform lane can build a project that neither
 the pantry nor the overlay carries — `github.com/simdjson/simdjson` for
 `wasip1/wasm` — and without this flag its published bottle was missing from
-that platform's catalogue (go-pkgx/packages#387).
+that platform's catalogue (go-zpkg/packages#387).
 
-**The lane's recipe wins** for a project both trees have (since go-pkgx/bk#376;
+**The lane's recipe wins** for a project both trees have (since go-zpkg/bk#376;
 v0.45.0 had the pantry winning). A recipe in a platform lane's tree is the
 recipe *for that lane*: its `provides` and `dependencies` describe the bottle
 that was actually built, whereas the pantry's describe the host build. With the
@@ -1361,7 +1361,7 @@ exits 1 on any finding or on a project that could not be checked. It lives in
 `bk` because it needs the catalogue types, the platform-explicit closure
 install and the same `provides` reduction `bk catalog` applies; a workflow runs
 it right after `bk catalog`. Found by running every published wasm module, not
-by comparing the two (go-pkgx/bk#376).
+by comparing the two (go-zpkg/bk#376).
 
 ## License
 

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/target"
 )
 
 // TestLibtoolToolVarsBeatTheBakedDefault is the claim itself, run rather than

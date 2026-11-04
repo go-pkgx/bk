@@ -21,7 +21,7 @@ import (
 //
 // This reports and does not refuse. Whether a mirror is REQUIRED to be
 // relocatable is a question about what our signature claims, and it is
-// go-pkgx/packages#147's to answer; what a publisher should not have to do is
+// go-zpkg/packages#147's to answer; what a publisher should not have to do is
 // find out from a third package's dyld error.
 func AuditRelocatable(prefix, pkgxDir string) (checked int, problems []error) {
 	opts := Options{PkgxDir: pkgxDir}
@@ -50,7 +50,7 @@ func AuditRelocatable(prefix, pkgxDir string) (checked int, problems []error) {
 	return checked, problems
 }
 
-// ErrMissingRef means a Mach-O names a file under $PKGX_DIR that is not there.
+// ErrMissingRef means a Mach-O names a file under $ZPKG_DIR that is not there.
 //
 // The reference records a decision taken when the binary was LINKED —
 // @rpath/gnome.org/libxml2/v2/lib/libxml2.2.dylib — and the resolver takes the
@@ -70,7 +70,7 @@ func AuditRelocatable(prefix, pkgxDir string) (checked int, problems []error) {
 // drain first.
 var ErrMissingRef = errors.New("fixup: @rpath reference names a file that is not there")
 
-// checkRefExists reports an @rpath reference naming a path under $PKGX_DIR that
+// checkRefExists reports an @rpath reference naming a path under $ZPKG_DIR that
 // does not exist. During a build the closure installed is exactly what the
 // recipe declared, so this is that build's own disagreement and not an
 // inherited one.
@@ -133,13 +133,13 @@ var systemLibDirs = []string{"/usr/lib/", "/System/"}
 
 // tolerate, when non-nil, is asked about each absolute reference before it is
 // refused. The build path uses it for the ONE absolute form that is deliberate
-// — a path into $PKGX_DIR, left by rewriteMacho when no rpath reaches the store
+// — a path into $ZPKG_DIR, left by rewriteMacho when no rpath reaches the store
 // — and the mirror audit passes nil, because in a bottle we only copy there is
 // no such decision to respect.
 //
 // It takes the REFERENCE, not the error text. Deciding on the message was the
 // first thing tried and it was always true: the message names the file too, and
-// the file is itself under $PKGX_DIR.
+// the file is itself under $ZPKG_DIR.
 func checkAbsoluteRefs(exe string, tolerate func(ref string) bool) error {
 	refs, err := readMachoRefs(exe)
 	if err != nil {
@@ -271,11 +271,11 @@ var ErrDuplicateRpath = errors.New("fixup: duplicate LC_RPATH")
 // ErrBuilderRpath means a shipped Mach-O still carries an absolute LC_RPATH
 // into the builder's store. Linux is clean because fixup rewrites RUNPATH; this
 // is the same promise for Mach-O, checked on the FINAL rpath set rather than
-// assumed from what the rewrite meant to do (go-pkgx/bk#395).
+// assumed from what the rewrite meant to do (go-zpkg/bk#395).
 var ErrBuilderRpath = errors.New("fixup: absolute LC_RPATH into the builder's store")
 
 // checkNoBuilderRpath refuses a Mach-O whose rpaths still name store (derived
-// from the build's $PKGX_DIR, never a literal). Same caller contract as
+// from the build's $ZPKG_DIR, never a literal). Same caller contract as
 // checkNoDuplicateRpath: exe has already parsed.
 func checkNoBuilderRpath(exe, store string) error {
 	rpaths, _ := machoRpaths(exe)

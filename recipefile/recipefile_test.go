@@ -122,7 +122,7 @@ func TestLoadFile(t *testing.T) {
 // finds `package.hcl` — and then read those bytes with the YAML front-end.
 // Every HCL recipe became a parse error, which it skipped as malformed: 210 of
 // pantry-overlay's 213 recipes examined by nobody, reported as a clean result
-// (go-pkgx/bk#389).
+// (go-zpkg/bk#389).
 func TestParseNamedPicksTheFrontEndByFilename(t *testing.T) {
 	hclRec, err := ParseNamed([]byte(hclSrc), "package.hcl")
 	if err != nil {
@@ -153,7 +153,7 @@ func TestParseNamedPicksTheFrontEndByFilename(t *testing.T) {
 //
 // This package exists so one place decides what a recipe is called, and the
 // spelling kept escaping it: four commands read `package.yml` directly
-// (go-pkgx/bk#389), and the wasip1 workflow then spelled
+// (go-zpkg/bk#389), and the wasip1 workflow then spelled
 // `/recipes/<slug>/package.yml` of its own, so converting that lane to HCL2
 // could not be a reformat — it had to edit the workflow in the same commit or
 // ship recipes the lane could not build.

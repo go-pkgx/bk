@@ -10,7 +10,7 @@ import (
 // Everything sovereign about this environment reaches a build through `cc`
 // — the shim that re-execs $BK_CC — or through $CC. bindgen drives libclang
 // in-process, so it sees none of it. Measured on rpm.org/rpm-sequoia
-// (go-pkgx/packages run 40498046156): openssl 3.6.4 was found and
+// (go-zpkg/packages run 40498046156): openssl 3.6.4 was found and
 // configured correctly, and then
 //
 //	/pkgx/openssl.org/v3.6.4/include/openssl/asn1.h:27:10:

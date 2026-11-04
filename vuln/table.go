@@ -47,7 +47,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/go-pkgx/bk/versions"
+	"github.com/go-zpkg/zbk/versions"
 	"gopkg.in/yaml.v3"
 )
 

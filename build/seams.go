@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-pkgx/bk/buildscript"
+	"github.com/go-zpkg/zbk/buildscript"
 )
 
 // logf is a seam over log.Printf so Build's mirror-fallback notice is emitted

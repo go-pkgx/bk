@@ -109,7 +109,7 @@ func SetInterp(path, value string) error {
 // exists during the build and nowhere after it. `/home/linux1` is the runner's
 // home: a published, signed bottle naming the account that made it.
 //
-// Measured when it was found (go-pkgx/bk#263): of 250 ELFs sampled in the
+// Measured when it was found (go-zpkg/bk#263): of 250 ELFs sampled in the
 // s390x store, exactly one carried a staging interpreter. So this is not a
 // sweep that fixes a class — it is one artefact, and the guard is here rather
 // than in the glibc recipe because every other consumer of a staged path
@@ -118,7 +118,7 @@ func SetInterp(path, value string) error {
 // program header that was not.
 //
 // It does NOT make the path portable — the final prefix is still absolute and
-// still under whoever's $PKGX_DIR built it. What it buys is that the path
+// still under whoever's $ZPKG_DIR built it. What it buys is that the path
 // names a directory that will exist, and that the artefact stops carrying a
 // username. Making it relocatable is a different problem, and pkgx solves it
 // by never executing libc.so.6 directly.

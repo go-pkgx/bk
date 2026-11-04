@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/versions"
+	"github.com/go-zpkg/zbk/versions"
 )
 
 const minimal = "schema-version: 1\nprojects:\n  openssl.org:\n    cpe: [openssl:openssl]\n"

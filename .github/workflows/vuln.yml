@@ -7,7 +7,7 @@
 #               golang.org/x/net/html (both fixed in v0.62.0)
 #   2026-10-28  found here, by a pull request that added a subcommand and
 #               touched no dependency at all (#368)
-#   2026-10-30  found in go-pkgx/packages the same way, by a pull request
+#   2026-10-30  found in go-zpkg/packages the same way, by a pull request
 #               that edited one workflow file (#385)
 #
 # Both repositories required x/net v0.60.0 and had been green for days. The
@@ -54,7 +54,7 @@ jobs:
   #
   # ⛔ AND THE `go` DIRECTIVE IS THE TOOLCHAIN. This lane always pinned
   # go-version 1.27.2, so what CI built was never vulnerable — but `go install
-  # github.com/go-pkgx/bk/cmd/bk@main` builds with the user's toolchain, and a
+  # github.com/go-zpkg/zbk/cmd/bk@main` builds with the user's toolchain, and a
   # directive of 1.27.1 let 1.27.1 do it. Raising the directive is what forces
   # every builder, here and on a laptop, onto the fixed standard library.
   # Measured on a copy before the change was made: 22 findings at 1.27.1, 6 at

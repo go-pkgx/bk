@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/useragent"
+	"github.com/go-zpkg/zbk/useragent"
 )
 
 // The download path must send bk's User-Agent. Go's default is rejected

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/target"
 )
 
 func wasiTgt() target.Target {
@@ -29,11 +29,11 @@ func TestWrapWasip1C(t *testing.T) {
 			`export BK_CXX="clang++ --target=wasm32-wasip1`,
 			`export CC="${CC:-$BK_CC}" CXX="${CXX:-$BK_CXX}"`,
 			`export AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip`,
-			`$PKGX_DIR/github.com/WebAssembly/wasi-libc/v[0-9]*`,
-			`$PKGX_DIR/compiler-rt.llvm.org/wasi/v[0-9]*`,
+			`$ZPKG_DIR/github.com/WebAssembly/wasi-libc/v[0-9]*`,
+			`$ZPKG_DIR/compiler-rt.llvm.org/wasi/v[0-9]*`,
 			`the wasip1 toolchain is not installed`,
 			// C++: libc++ is its own bottle, named only when installed
-			`$PKGX_DIR/libcxx.llvm.org/wasi/v[0-9]*`,
+			`$ZPKG_DIR/libcxx.llvm.org/wasi/v[0-9]*`,
 			`${BK_WASI_CXX:+ -fno-exceptions -stdlib=libc++ -nostdinc++ -isystem $BK_WASI_CXX/include/wasm32-wasip1/c++/v1 -L$BK_WASI_CXX/lib/wasm32-wasip1}`,
 		} {
 			if !strings.Contains(s, want) {

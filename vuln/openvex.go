@@ -60,7 +60,7 @@ type Product struct {
 	// version, but only as text inside an identifier nobody here parses, and
 	// a check that depends on parsing a string the caller built is a check
 	// that stops working the day the caller spells it differently. See
-	// scopedTo and go-pkgx/bk#340.
+	// scopedTo and go-zpkg/bk#340.
 	Version string
 	// PURL goes into `identifiers`, whose label for a Package URL is "purl"
 	// (OpenVEX "favors the use of purl"). Optional.
@@ -239,11 +239,11 @@ func scopedTo(a Advisory, v string) (bool, []string) {
 func unexaminedNote(status, version string, examined []string) string {
 	if len(examined) == 0 {
 		return fmt.Sprintf("This record reaches %q, but no event in it names a version, so nothing here was examined at %s. "+
-			"A VEX statement names a version and this one is not restated for an artefact nobody looked at (go-pkgx/bk#340).",
+			"A VEX statement names a version and this one is not restated for an artefact nobody looked at (go-zpkg/bk#340).",
 			status, version)
 	}
 	return fmt.Sprintf("This record reaches %q for %s, and %s was not examined. "+
-		"A VEX statement names a version and this one is not restated for an artefact nobody looked at (go-pkgx/bk#340).",
+		"A VEX statement names a version and this one is not restated for an artefact nobody looked at (go-zpkg/bk#340).",
 		status, strings.Join(examined, ", "), version)
 }
 

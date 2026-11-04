@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/target"
 )
 
 // Two `pkgx +…` invocations, not one — and the TOOL one first, because every
@@ -125,12 +125,12 @@ func TestBootstrapTellsPkgxTheHostHasALibc(t *testing.T) {
 		}
 	}
 	boot := Wrap(opts(true))
-	if !strings.Contains(boot, "export PKGX_IMPLICIT_ROOTS=none") {
+	if !strings.Contains(boot, "export ZPKG_IMPLICIT_ROOTS=none") {
 		t.Errorf("a seed build must tell pkgx the host supplies the libc:\n%s", boot)
 	}
 	// And an ordinary build must NOT: a closure assembled without the implicit
 	// roots is complete only against the machine that assembled it.
-	if strings.Contains(Wrap(opts(false)), "PKGX_IMPLICIT_ROOTS") {
+	if strings.Contains(Wrap(opts(false)), "ZPKG_IMPLICIT_ROOTS") {
 		t.Error("an ordinary build must keep the implicit roots")
 	}
 }

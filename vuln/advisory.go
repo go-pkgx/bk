@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-pkgx/bottle"
+	"github.com/go-zpkg/bottle"
 	"gopkg.in/yaml.v3"
 )
 
@@ -125,7 +125,7 @@ type Event struct {
 	// "not affected" goes stale when the component changes and that a gate
 	// should re-check rather than treat it as permanent; an unjustified or
 	// stale one is worse than issuing nothing, because it stops the reader
-	// looking. See go-pkgx/bk#340.
+	// looking. See go-zpkg/bk#340.
 	//
 	// ⛔ A RECORD THAT NAMES NO VERSION NOW REACHES NOTHING. The emitter
 	// refuses to restate `not_affected` or `fixed` — the two statuses that

@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-pkgx/bk/logical"
-	"github.com/go-pkgx/bk/moustache"
-	"github.com/go-pkgx/bk/recipefile"
-	"github.com/go-pkgx/bk/target"
+	"github.com/go-zpkg/zbk/logical"
+	"github.com/go-zpkg/zbk/moustache"
+	"github.com/go-zpkg/zbk/recipefile"
+	"github.com/go-zpkg/zbk/target"
 )
 
 var (
@@ -140,7 +140,7 @@ func SpecProject(spec string) string {
 }
 
 // DepTokens resolves each recipe dependency (runtime + build) to a version and
-// install prefix ($PKGX_DIR/<project>/v<version>) and returns the
+// install prefix ($ZPKG_DIR/<project>/v<version>) and returns the
 // `{{deps.<project>.prefix}}` / `{{deps.<project>.version.*}}` moustache tokens.
 // resolve maps a project + constraint to a concrete version.
 // DepTokens also returns the RESOLVED dependencies it built those tokens from.
@@ -722,7 +722,7 @@ func EvalDeps(project string, runtime, buildDeps map[string]any, tgt target.Targ
 }
 
 // SanitizedEnv is the clean environment the build script runs within (brewkit's
-// clearEnv): a fixed PATH, PKGX_DIR and HOME, plus a small allow-list passed
+// clearEnv): a fixed PATH, ZPKG_DIR and HOME, plus a small allow-list passed
 // through from the caller's environment. It prevents a stray toolchain (eg. a
 // system Homebrew) from leaking into the build (proven: wget linked the wrong
 // openssl under an unsanitized env).
@@ -730,7 +730,7 @@ func SanitizedEnv(home, pkgxDir string) []string {
 	env := []string{
 		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
 		"HOME=" + home,
-		"PKGX_DIR=" + pkgxDir,
+		"ZPKG_DIR=" + pkgxDir,
 		// Neutralise autotools maintainer-mode. A release tarball ships a correct
 		// configure/Makefile.in/aclocal.m4, but timestamp skew after extraction
 		// makes `make` try to regenerate them with a pinned aclocal-1.NN /
@@ -760,7 +760,7 @@ func SanitizedEnv(home, pkgxDir string) []string {
 	//   mkdir: error while loading shared libraries: libc.so.6: cannot open …
 	// The caller opting in (an ENV in the builder image) is a deliberate choice,
 	// not ambient host state.
-	// PKGX_DIST / PKGX_PANTRY / PKGX_PANTRY_OVERLAY choose WHERE the `pkgx +deps`
+	// ZPKG_DIST / ZPKG_PANTRY / ZPKG_PANTRY_OVERLAY choose WHERE the `pkgx +deps`
 	// line of the generated script resolves from. Dropping them silently sent
 	// every build back to the default ghcr.io registry and the upstream pantry —
 	// a local registry cache was bypassed by the builds it exists for, and a
@@ -770,12 +770,12 @@ func SanitizedEnv(home, pkgxDir string) []string {
 	// toolchain state, so passing them through does not reopen the leak
 	// SanitizedEnv guards against.
 	//
-	// PKGX_VERIFY travels with them, and for the same reason: it is the other
+	// ZPKG_VERIFY travels with them, and for the same reason: it is the other
 	// half of the same decision — which registry, and on what terms. Verification
 	// is on by default and a build inherits that; the opt-out exists for a test
 	// harness pointed at a scratch registry of deliberately unsigned bottles,
 	// where the alternative is not "less safety" but "no test".
-	// PKGX_CACHE belongs with PKGX_DIST for exactly the reason spelled out above:
+	// ZPKG_CACHE belongs with ZPKG_DIST for exactly the reason spelled out above:
 	// it names a distribution point. Dropping it sent the `pkgx +deps` line of
 	// every generated script past the pull-through cache the job had just been
 	// configured to use.
@@ -801,15 +801,15 @@ func SanitizedEnv(home, pkgxDir string) []string {
 	// against a fresh pantry on 2026-10-05, that is not what uses it:
 	//
 	//	1899 recipes · 2 reference GITHUB_TOKEN · BOTH in their `test:` block
-	//	0 in go-pkgx/pantry-overlay
+	//	0 in go-zpkg/pantry-overlay
 	//	bk's own fetcher never sends it — fetch/ has no Authorization header
 	//
 	// So no build block in the pantry wants it, and the rate-limit argument
 	// does not apply to bk's downloads either. The two that do want it are
 	// tests, and `bk test` adds it there on purpose — see cmd/bk/test.go.
 	// Privilege where the need was measured, and not one caller wider.
-	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "PKGX_PANTRY_DIR", "PKGX_PANTRY_PATH",
-		"PKGX_DIST", "PKGX_CACHE", "PKGX_PANTRY", "PKGX_PANTRY_OVERLAY", "PKGX_VERIFY",
+	for _, k := range []string{"LANG", "LOGNAME", "USER", "TERM", "ZPKG_PANTRY_DIR", "ZPKG_PANTRY_PATH",
+		"ZPKG_DIST", "ZPKG_CACHE", "ZPKG_PANTRY", "ZPKG_PANTRY_OVERLAY", "ZPKG_VERIFY",
 		"LD_LIBRARY_PATH", "QEMU_RESERVED_VA"} {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)

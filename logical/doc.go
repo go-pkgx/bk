@@ -3,7 +3,7 @@
 //
 // # Why not a unified diff
 //
-// go-pkgx/packages carries 242 overrides as `git diff` output against
+// go-zpkg/packages carries 242 overrides as `git diff` output against
 // upstream's package.yml. A diff is anchored on the text AROUND the change, so
 // it stops applying the moment upstream edits a neighbouring line — and
 // nothing downstream says so. Measured on 2026-09-24: 3 of 231 had silently
