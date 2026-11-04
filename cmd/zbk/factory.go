@@ -116,6 +116,8 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	maxVersions := fs.Int("max-versions", envInt("MAX_VERSIONS"), "cap versions built per requested project, newest first (0 = all)")
 	versionSpec := fs.String("versions", envOr("VERSIONS", ""), `only consider versions of the REQUESTED projects that match this pkgx constraint. A BARE version is a RANGE, not an exact match: "2.28.0" means >=2.28.0 within major 2, so an exact version needs "=2.28.0". Also "^3", ">=2.4". Applied before --max-versions. A closure-only dependency is NOT governed by this: it resolves to the newest version every one of its dependents can use`)
 	mirrorFrom := fs.String("mirror-from", "", "instead of building, copy each bottle from this upstream pkgx dist (e.g. https://dist.pkgx.dev) and republish it signed + attested — for versions we cannot or need not rebuild, such as ancient glibc")
+	noPublish := fs.Bool("no-publish", envBool("NO_PUBLISH"),
+		"BUILD and stage each bottle under --bottles, and push nothing. Not a dry run: the compile, the staging, the packing and the package's own test all happen — only the one irreversible step is skipped. This is what lets a recipe be built TWICE and the two bottles compared (`zbk reproduce`) without publishing a second copy of something already published")
 	rebuild := fs.Bool("rebuild", envBool("REBUILD"), "publish a build of an ALREADY-PUBLISHED version as the next `_N` rebuild instead of replacing its tag — Homebrew's `rebuild`, Debian's `+bN`. For a recipe fix that changes the binary without changing the upstream version: fftw gained SIMD codelets and went out as the same 3.3.11, so nothing could tell the two apart. NOT folded into --force, which every manual darwin dispatch already sets: a counter minted on every forced run would bump N each time a lane was retried. ⛔ upstream pkgx/libpkgx cannot parse `_N` at all, so a project carrying one is unreadable to an upstream client")
 	requireOrigin := fs.Bool("require-origin", false, "with --mirror-from, PROMOTE instead of mirror: refuse any bottle whose source provenance does not prove the host toolchain was unused, and carry that verdict forward instead of restating it as ours. This is how a sovereign seed reaches the production registry — generations 0 and 1 publish only to a throwaway registry, and `bk origin` is the only thing that can tell one of their bottles from a host-built one")
 	libc := fs.String("libc", "", `C library to link against: "pkgx" targets the gnu.org/glibc bottle instead of the build container's`)
@@ -155,6 +157,27 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 	if *requireOrigin && *mirrorFrom == "" {
 		fmt.Fprintln(stderr, "factory: --require-origin reads the provenance of the bottle being copied, "+
 			"so it needs --mirror-from. On a BUILD the origin is recorded from this run's own inputs and there is nothing to check.")
+		return 2
+	}
+	// ⛔ REFUSED RATHER THAN QUIETLY IGNORED, because both combinations would
+	// do something other than what was asked and look like they worked.
+	//
+	// --mirror-from COPIES a bottle somebody else built; publishing it is the
+	// entire operation, so "mirror but do not publish" is a run that downloads
+	// and discards.
+	//
+	// --rebuild asks the registry for the next free `_N` so a NEW tag can be
+	// pushed beside an existing one. With nothing pushed, the counter is
+	// minted against a registry that will never see the result.
+	if *noPublish && *mirrorFrom != "" {
+		fmt.Fprintln(stderr, "factory: --no-publish with --mirror-from would download each bottle and discard it. "+
+			"Mirroring IS publishing: there is no build here to keep.")
+		return 2
+	}
+	if *noPublish && *rebuild {
+		fmt.Fprintln(stderr, "factory: --rebuild asks the registry for the next free `_N` so a new tag can be pushed "+
+			"beside the published one. With --no-publish nothing is pushed, so the counter would be minted against a "+
+			"registry that never sees the result.")
 		return 2
 	}
 	// Before any work: an operator who asked for a source mirror and cannot have
@@ -331,6 +354,7 @@ func runFactory(args []string, stdout, stderr io.Writer) int {
 		mirror:           strings.TrimRight(*mirrorFrom, "/"),
 		requireOrigin:    *requireOrigin,
 		rebuild:          *rebuild,
+		noPublish:        *noPublish,
 		want:             strings.TrimSpace(*versionSpec),
 		wantPer:          pins,
 		demands:          demands,
@@ -456,7 +480,23 @@ type factory struct {
 	// rebuild mints a `_N` counter when the version being built is already
 	// published here, instead of replacing its tag. See rebuild.go.
 	rebuild bool
-	want    string // pkgx constraint the requested projects' versions must satisfy, "" = any
+	// noPublish BUILDS and stages the bottle under --bottles, and pushes
+	// nothing.
+	//
+	// ⛔ IT EXISTS FOR A QUESTION NOTHING COULD ASK BEFORE: do two builds of
+	// one recipe produce the same bottle? Answering it means building twice,
+	// and every bottle this factory produced until now went straight to the
+	// registry — so asking the question meant publishing a second copy of
+	// something already published, which is exactly what `--force` is
+	// deliberately loud about. The bottle is written to --bottles either way;
+	// this only skips the push.
+	//
+	// ⛔ NOT A DRY RUN. The compile happens, the tree is staged, the bottle is
+	// packed, and the package's own test still runs. What does NOT happen is
+	// the one irreversible part. A flag that also skipped the build would be
+	// useless for the question it exists for.
+	noPublish bool
+	want      string // pkgx constraint the requested projects' versions must satisfy, "" = any
 	// demands is what the DEPENDENTS of a project asked for, collected by the
 	// closure walk. A closure-only dependency is resolved against it instead of
 	// against "*", so the factory stops building a version nobody can use.
@@ -746,6 +786,20 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 			fmt.Fprintf(f.stdout, "rebuild: %s %s is already published for %s — publishing as %s\n",
 				proj, res.Version, f.platform, publishVersion)
 		}
+	}
+	// ⛔ THE BOTTLE IS ALREADY ON DISK HERE. `res.BottlePath` is under
+	// --bottles whether or not anything is pushed, which is why --no-publish
+	// can stop at this line and still leave something to compare. It is
+	// counted as ok and NOT added to f.pushed: nothing was pushed, and a
+	// later step that reads f.pushed (the catalogue, the index) must not be
+	// told otherwise.
+	if f.noPublish {
+		fmt.Fprintf(f.stdout, "✅ BUILT %s %s %s — not published (--no-publish): %s\n",
+			proj, flavoredTag(proj, res.Version, f.glibc), f.platform, res.BottlePath)
+		f.ok++
+		f.testPublished(rec, proj, res.Version)
+		f.dropBuildTree(proj, res.Version)
+		return
 	}
 	tag, desc, err := factoryPublish(publishOptions{
 		Dist: f.dist, Project: proj, Version: publishVersion,
