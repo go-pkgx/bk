@@ -20,7 +20,7 @@ var numberWords = map[int]string{
 	22: "twenty-two", 23: "twenty-three", 24: "twenty-four", 25: "twenty-five",
 	26: "twenty-six", 27: "twenty-seven", 28: "twenty-eight", 29: "twenty-nine",
 	30: "thirty", 31: "thirty-one", 32: "thirty-two", 33: "thirty-three",
-	34: "thirty-four", 35: "thirty-five",
+	34: "thirty-four", 35: "thirty-five", 36: "thirty-six",
 }
 
 // The README says how many subcommands bk has and names them. Both drifted:
@@ -56,13 +56,14 @@ func TestTheREADMECountsTheSubcommandsItHas(t *testing.T) {
 	}
 	var row string
 	for _, line := range strings.Split(string(readme), "\n") {
-		if strings.HasPrefix(line, "| `cmd/bk` |") {
+		// `cmd/zbk` since the rename — the directory really is called that.
+		if strings.HasPrefix(line, "| `cmd/zbk` |") {
 			row = line
 			break
 		}
 	}
 	if row == "" {
-		t.Fatal("the README has no `cmd/bk` row — if the table moved, move this guard with it")
+		t.Fatal("the README has no `cmd/zbk` row — if the table moved, move this guard with it")
 	}
 
 	want, ok := numberWords[len(names)]
