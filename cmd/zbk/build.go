@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/bottlepkg"
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/fetch"
@@ -17,7 +18,6 @@ import (
 	"github.com/go-zpkg/zbk/recipefile"
 	"github.com/go-zpkg/zbk/target"
 	"github.com/go-zpkg/zbk/versions"
-	"github.com/go-zpkg/bottle"
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"

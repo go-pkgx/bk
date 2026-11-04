@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-zpkg/zbk/pantry"
 	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/pantry"
 )
 
 // A catalogue is a ~50 KB artefact every reader downloads, and some

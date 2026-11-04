@@ -19,10 +19,10 @@ import (
 	"github.com/go-attest/sbom/provenance"
 
 	"github.com/go-attest/sign"
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/fixup"
 	"github.com/go-zpkg/zbk/moustache"
-	"github.com/go-zpkg/bottle"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 

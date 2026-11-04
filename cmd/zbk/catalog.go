@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/go-attest/sign"
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/logical"
 	"github.com/go-zpkg/zbk/pantry"
 	"github.com/go-zpkg/zbk/recipefile"
 	"github.com/go-zpkg/zbk/target"
-	"github.com/go-zpkg/bottle"
 )
 
 // runCatalog builds the catalogue a browser reads, and optionally publishes

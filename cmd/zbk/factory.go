@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-attest/sign"
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/bottlepkg"
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/config"
@@ -24,7 +25,6 @@ import (
 	"github.com/go-zpkg/zbk/recipefile"
 	"github.com/go-zpkg/zbk/target"
 	"github.com/go-zpkg/zbk/versions"
-	"github.com/go-zpkg/bottle"
 )
 
 // defaultEpoch pins SOURCE_DATE_EPOCH when the environment leaves it unset, so

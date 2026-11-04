@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/bottlepkg"
 	"github.com/go-zpkg/zbk/build"
-	"github.com/go-zpkg/bottle"
 )
 
 // fakeStage replaces the four bottle seams with an in-memory registry that

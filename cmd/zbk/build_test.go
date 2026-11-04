@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/config"
 	"github.com/go-zpkg/zbk/fixup"
 	"github.com/go-zpkg/zbk/target"
-	"github.com/go-zpkg/bottle"
 	"mvdan.cc/sh/v3/interp"
 )
 

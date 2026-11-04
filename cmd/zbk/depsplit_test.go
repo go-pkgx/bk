@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/logical"
 	"github.com/go-zpkg/zbk/target"
-	"github.com/go-zpkg/bottle"
 )
 
 // fakePicker is the control. The live registry cannot plant a positive, and a

@@ -12,9 +12,9 @@ import (
 
 	"github.com/go-attest/sbom"
 	"github.com/go-attest/sign"
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/logical"
 	"github.com/go-zpkg/zbk/pantry"
-	"github.com/go-zpkg/bottle"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 

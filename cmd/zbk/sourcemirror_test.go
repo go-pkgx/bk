@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-zpkg/zbk/fetch"
 	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/fetch"
 )
 
 type fakeStore struct {

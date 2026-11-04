@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/go-zpkg/zbk/fetch"
 	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/fetch"
 )
 
 // sourceMirrorProject is the single repository the mirror lives in.

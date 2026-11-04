@@ -17,6 +17,7 @@ import (
 
 	"fmt"
 	"github.com/go-attest/sign"
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/config"
 	"github.com/go-zpkg/zbk/logical"
@@ -24,7 +25,6 @@ import (
 	"github.com/go-zpkg/zbk/pantry"
 	"github.com/go-zpkg/zbk/target"
 	"github.com/go-zpkg/zbk/versions"
-	"github.com/go-zpkg/bottle"
 )
 
 // published records what the stubbed publish seam was asked to push.

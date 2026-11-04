@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/go-zpkg/zbk/fixup"
 	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/fixup"
 )
 
 // rpathRefRE pulls the project out of an @rpath reference: the segments before

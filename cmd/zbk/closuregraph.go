@@ -7,12 +7,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/logical"
 	"github.com/go-zpkg/zbk/pantry"
 	"github.com/go-zpkg/zbk/recipefile"
 	"github.com/go-zpkg/zbk/target"
-	"github.com/go-zpkg/bottle"
 )
 
 // closureGraph walks a project set following runtime dependencies and,

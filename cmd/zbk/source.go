@@ -10,8 +10,8 @@ import (
 	"os"
 	"path"
 
-	"github.com/go-zpkg/zbk/target"
 	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/target"
 )
 
 // sourceAttestations and sourcePuller are seams: the tests drive the whole

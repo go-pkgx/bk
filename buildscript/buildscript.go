@@ -10,9 +10,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/go-versions/semver"
 	"github.com/go-zpkg/zbk/moustache"
 	"github.com/go-zpkg/zbk/target"
-	"github.com/go-versions/semver"
 )
 
 // Options carries everything script generation needs beyond the node itself.

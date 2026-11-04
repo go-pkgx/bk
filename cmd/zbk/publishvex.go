@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/go-zpkg/zbk/vuln"
 	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/vuln"
 )
 
 // vexReferrer builds the OpenVEX document a bottle carries, or nothing.

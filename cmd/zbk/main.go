@@ -42,10 +42,10 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/config"
 	"github.com/go-zpkg/zbk/fixup"
 	"github.com/go-zpkg/zbk/target"
-	"github.com/go-zpkg/bottle"
 )
 
 // trustEmbeddedCAs makes every HTTPS call bk performs — version listings, source

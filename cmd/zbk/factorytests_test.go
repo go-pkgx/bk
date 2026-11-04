@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/pantry"
 	"github.com/go-zpkg/zbk/target"
-	"github.com/go-zpkg/bottle"
 )
 
 // testFactory is a factory wired for testPublished and nothing else.

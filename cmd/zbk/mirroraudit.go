@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/go-zpkg/zbk/fixup"
 	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/fixup"
 )
 
 // machoMagic are the four leading bytes of a Mach-O, thin or fat, either

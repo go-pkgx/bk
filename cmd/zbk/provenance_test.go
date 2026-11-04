@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/zbk/moustache"
-	"github.com/go-zpkg/bottle"
 )
 
 // decodeProv pulls the in-toto statement out of the referrers and reads it as

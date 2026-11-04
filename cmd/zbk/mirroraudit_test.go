@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/bottlepkg"
 	"github.com/go-zpkg/zbk/fixup"
-	"github.com/go-zpkg/bottle"
 	"github.com/klauspost/compress/zstd"
 )
 

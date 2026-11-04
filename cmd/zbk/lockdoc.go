@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/logical"
 	"github.com/go-zpkg/zbk/pantry"
 	"github.com/go-zpkg/zbk/target"
 	"github.com/go-zpkg/zbk/versions"
-	"github.com/go-zpkg/bottle"
 )
 
 // lockedPin and lockDoc are bottle's types under the names this file has

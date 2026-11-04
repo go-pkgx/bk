@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-zpkg/zbk/build"
 	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/build"
 )
 
 // originRefs builds a real provenance referrer through the production path, so

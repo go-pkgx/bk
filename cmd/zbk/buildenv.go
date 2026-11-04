@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/go-zpkg/zbk/target"
 	"github.com/go-zpkg/bottle"
+	"github.com/go-zpkg/zbk/target"
 )
 
 // envPrefix marks a resolvedDependency that names a BUILD ENVIRONMENT entry
