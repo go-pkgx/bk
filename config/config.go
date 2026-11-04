@@ -73,8 +73,25 @@ func dataHomeFor(goos, home string) string {
 // rooted under that checkout (homes/srcs/builds/testbeds), matching brewkit's
 // in-pantry layout; otherwise it lives under the XDG data home, keyed on the
 // target platform+arch.
-func Compute(project, version string, tgt target.Target) Paths {
-	install := filepath.Join(PkgxDir(), filepath.FromSlash(project), "v"+version)
+// ⛔⛔ `hash` IS THE BUILD'S IDENTITY AND IT GOES IN THE INSTALL PREFIX. The
+// prefix is baked into every binary the build produces — an `@rpath`-relative
+// reference like `@rpath/zlib.net/v1.3.2/lib/libz.1.dylib`, read out of a
+// real published bottle — so a prefix that names only the version produces
+// binaries that cannot say WHICH build they were linked against, and a store
+// that cannot hold two builds of one version.
+//
+// With the hash in it the bottle stays relocatable AND names itself, which is
+// the combination Nix gives up (its paths are absolute) and Spack gives up
+// (its paths are not designed to move). See go-zpkg/zbk#410.
+//
+// An empty hash is not accepted: a caller that does not know the identity
+// has not resolved the closure yet, and the prefix must not be chosen before
+// it has.
+func Compute(project, version, hash string, tgt target.Target) Paths {
+	if hash == "" {
+		panic("config: Compute with no build identity — the prefix would not name which build it is")
+	}
+	install := filepath.Join(PkgxDir(), filepath.FromSlash(project), "v"+version+"-h"+hash)
 	p := Paths{
 		Install:      install,
 		BuildInstall: install + "+brewing",

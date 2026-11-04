@@ -228,7 +228,7 @@ func TestFactorySeamsAreReal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		runner := stubFactory("test.org/x")("pkgx")
+		runner := stubFactory()("pkgx")
 		res, err := factoryBuild(runner, rec, "test.org/x", "*", target.Host(), target.Host(), t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -1808,13 +1808,18 @@ func TestFactoryDropsAPublishedBuildTree(t *testing.T) {
 		return nil
 	}
 
+	// ⛔ THE STAGED INSTALL IS NAMED AFTER THE BUILD'S IDENTITY, so the sweep
+	// has to be told which build it is clearing: `v1.2.3+brewing` named a
+	// version, and two builds of one version staged into the same directory.
+	const hash = "abcdefghijklmnop"
+
 	tgt := target.Target{Platform: "linux", Arch: "s390x"}
 	f := &factory{tgt: tgt, stderr: io.Discard}
-	f.dropBuildTree("acme.org/tool", "1.2.3")
+	f.dropBuildTree("acme.org/tool", "1.2.3", hash)
 	if len(removed) != 2 {
 		t.Fatalf("removed = %v, want the build tree and its staged install", removed)
 	}
-	p := config.Compute("acme.org/tool", "1.2.3", tgt)
+	p := config.Compute("acme.org/tool", "1.2.3", hash, tgt)
 	if removed[0] != p.Build || removed[1] != p.BuildInstall {
 		t.Errorf("removed = %v, want [%s %s]", removed, p.Build, p.BuildInstall)
 	}
@@ -1829,7 +1834,7 @@ func TestFactoryDropsAPublishedBuildTree(t *testing.T) {
 	// --keep-build-trees leaves everything, for the operator who wants to look.
 	removed = nil
 	keep := &factory{tgt: tgt, keepBuildTrees: true, stderr: io.Discard}
-	keep.dropBuildTree("acme.org/tool", "1.2.3")
+	keep.dropBuildTree("acme.org/tool", "1.2.3", hash)
 	if len(removed) != 0 {
 		t.Errorf("nothing must be removed: %v", removed)
 	}
@@ -1838,7 +1843,7 @@ func TestFactoryDropsAPublishedBuildTree(t *testing.T) {
 	// and the next failure would name a different project.
 	var errb bytes.Buffer
 	factoryRemoveAll = func(string) error { return errors.New("device busy") }
-	(&factory{tgt: tgt, stderr: &errb}).dropBuildTree("acme.org/tool", "1.2.3")
+	(&factory{tgt: tgt, stderr: &errb}).dropBuildTree("acme.org/tool", "1.2.3", hash)
 	if !strings.Contains(errb.String(), "could not remove") || !strings.Contains(errb.String(), "device busy") {
 		t.Errorf("stderr = %q", errb.String())
 	}

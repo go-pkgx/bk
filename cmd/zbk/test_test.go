@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/buildscript"
 	"github.com/go-zpkg/zbk/target"
 	"mvdan.cc/sh/v3/interp"
@@ -18,12 +19,31 @@ import (
 
 // testbed points bk's path computation at a scratch checkout, so a test never
 // reads or writes the developer's real ~/.pkgx or XDG data home.
+//
+// ⛔ IT ALSO INSTALLS THE BUILD UNDER TEST. `zbk test` runs against a build
+// and no longer composes `<store>/<project>/v<version>` to find it — there is
+// no such directory any more — so it asks the store, and a store with nothing
+// in it makes every case here fail for the one uninteresting reason. The
+// refusal has its own test below; these want a build to point at.
 func testTestbed(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("ZPKG_PANTRY_DIR", dir)
 	t.Setenv("ZPKG_DIR", filepath.Join(dir, "pkgx"))
+	installTestBuild(t, filepath.Join(dir, "pkgx"), "proj.org", "1.2.3")
 	return dir
+}
+
+// installTestBuild makes the directory an install makes: hashed, and nothing
+// beside it that names the version alone.
+func installTestBuild(t *testing.T, store, project, version string) string {
+	t.Helper()
+	v := bottle.Ver{Raw: version}
+	hash := bottle.StoreHash(v, "digest:"+project+"@"+version, "")
+	if err := os.MkdirAll(bottle.StoreBuildPrefix(store, project, v, hash), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return hash
 }
 
 // writeTestRecipe drops a package.yml in its own project directory, as a pantry
@@ -823,4 +843,81 @@ func TestRunTestSurvivesShimsItCannotMake(t *testing.T) {
 	if !strings.Contains(errOut.String(), "warning: compiler shims:") {
 		t.Errorf("it did not say the shims are missing: %q", errOut.String())
 	}
+}
+
+// ⛔⛔ `zbk test` ASKS THE STORE WHICH BUILD IT IS TESTING, and the three
+// answers it can get are all held here. The old code composed
+// `<store>/<project>/v<version>` and handed it to the script as `{{prefix}}`,
+// which is now a path that never exists: a test would have run against an
+// absent directory and reported whatever the script makes of that.
+func TestRunTestNamesTheBuildItRunsAgainst(t *testing.T) {
+	t.Run("nothing installed is NOT-RUN, and says so", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("ZPKG_PANTRY_DIR", dir)
+		t.Setenv("ZPKG_DIR", filepath.Join(dir, "pkgx"))
+		stubRun(t, nil)
+
+		p := writeTestRecipe(t, okRecipe)
+		var out, errOut bytes.Buffer
+		if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != exitCannotRun {
+			t.Errorf("exit %d, want %d (%s)", code, exitCannotRun, errOut.String())
+		}
+		// The message has to name the project AND the version: "not installed"
+		// alone sends the reader to look at the wrong one of the two.
+		for _, want := range []string{"proj.org", "1.2.3"} {
+			if !strings.Contains(errOut.String(), want) {
+				t.Errorf("want %q in: %q", want, errOut.String())
+			}
+		}
+	})
+
+	t.Run("one installed renders its hashed prefix", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("ZPKG_PANTRY_DIR", dir)
+		t.Setenv("ZPKG_DIR", filepath.Join(dir, "pkgx"))
+		hash := installTestBuild(t, filepath.Join(dir, "pkgx"), "proj.org", "1.2.3")
+		got := stubRun(t, nil)
+
+		p := writeTestRecipe(t, "versions:\n  - 1.2.3\nbuild: make\ntest: ls {{prefix}}\n")
+		var out, errOut bytes.Buffer
+		if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != 0 {
+			t.Fatalf("want 0, got %d (%s)", code, errOut.String())
+		}
+		script, err := os.ReadFile(*got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// ⛔ THE HASH THE STORE HOLDS, not one the test chose: installTestBuild
+		// returns what it wrote, and the assertion is that the SAME string
+		// reached the script.
+		if !strings.Contains(string(script), "v1.2.3-h"+hash) {
+			t.Errorf("the script does not name the installed build (-h%s):\n%s", hash, script)
+		}
+	})
+
+	t.Run("two installed is AMBIGUOUS, not the newest", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("ZPKG_PANTRY_DIR", dir)
+		t.Setenv("ZPKG_DIR", filepath.Join(dir, "pkgx"))
+		store := filepath.Join(dir, "pkgx")
+		v := bottle.Ver{Raw: "1.2.3"}
+		for _, seed := range []string{"a", "b"} {
+			h := bottle.StoreHash(v, "digest:"+seed, "")
+			if err := os.MkdirAll(bottle.StoreBuildPrefix(store, "proj.org", v, h), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		prev := testRun
+		t.Cleanup(func() { testRun = prev })
+		testRun = func(string, []string) error {
+			t.Error("a test ran against a build nobody chose")
+			return nil
+		}
+
+		p := writeTestRecipe(t, okRecipe)
+		var out, errOut bytes.Buffer
+		if code := runTest([]string{"--recipe", p, "proj.org"}, &out, &errOut); code != exitCannotRun {
+			t.Errorf("exit %d, want %d (%s)", code, exitCannotRun, errOut.String())
+		}
+	})
 }

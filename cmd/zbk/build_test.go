@@ -12,9 +12,7 @@ import (
 
 	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/build"
-	"github.com/go-zpkg/zbk/config"
 	"github.com/go-zpkg/zbk/fixup"
-	"github.com/go-zpkg/zbk/target"
 	"mvdan.cc/sh/v3/interp"
 )
 
@@ -31,20 +29,28 @@ func writeRecipe(t *testing.T) string {
 
 // stubFactory returns a factory whose Runner succeeds; its Run creates the
 // +brewing dir so the pipeline's rename works. version is fixed to 1.0.0.
-func stubFactory(project string) func(string) *build.Runner {
+//
+// ⛔ IT READS THE PREFIX FROM THE RUNNER RATHER THAN COMPUTING IT. The
+// install prefix carries the build's identity hash, which depends on the
+// recipe and the resolved closure — neither of which this stub has. A real
+// script learns the prefix because moustache substituted it in; a stub
+// learns it from `r.BuildInstall`, set before Run is called. Recomputing it
+// here would be a second definition of the identity, free to drift from the
+// first — which is also why it no longer takes a project: it has nothing left
+// to key on one.
+func stubFactory() func(string) *build.Runner {
 	return func(string) *build.Runner {
-		return &build.Runner{
+		r := &build.Runner{
 			PickVersion:    func(string, string) (string, error) { return "1.0.0", nil },
 			ResolveVersion: func(any, string) (string, string, error) { return "1.0.0", "v1.0.0", nil },
 			Fetch:          func(string, string, int) (string, error) { return "b0b0feed", nil },
 			FetchGit:       func(string, string, string) (string, error) { return "", nil },
 			Touch:          func(string) error { return nil },
-			Run: func(string, []string) error {
-				return os.MkdirAll(config.Compute(project, "1.0.0", target.Host()).BuildInstall, 0o755)
-			},
-			FixUp:       func(fixup.Options) error { return nil },
-			WriteBottle: func(_, _, _, _, _, out string) (string, error) { return filepath.Join(out, "b.tgz"), nil },
+			FixUp:          func(fixup.Options) error { return nil },
+			WriteBottle:    func(_, _, _, _, _, out string) (string, error) { return filepath.Join(out, "b.tgz"), nil },
 		}
+		r.Run = func(string, []string) error { return os.MkdirAll(r.BuildInstall, 0o755) }
+		return r
 	}
 }
 
@@ -59,7 +65,7 @@ func TestBuildCommand(t *testing.T) {
 	tempEnv(t)
 	old := buildFactory
 	defer func() { buildFactory = old }()
-	buildFactory = stubFactory("test.org/x")
+	buildFactory = stubFactory()
 
 	rec := writeRecipe(t)
 	code, out, errs := run2(t, "build", "--recipe", rec, "--dist", filepath.Join(t.TempDir(), "dist"), "test.org/x")
@@ -82,7 +88,7 @@ func TestBuildCommandSetsRecipeDir(t *testing.T) {
 	defer func() { buildFactory = old }()
 
 	var captured *build.Runner
-	base := stubFactory("test.org/x")
+	base := stubFactory()
 	buildFactory = func(p string) *build.Runner { captured = base(p); return captured }
 
 	rec := writeRecipe(t)
@@ -145,7 +151,7 @@ func TestBuildResolvesPkgxPath(t *testing.T) {
 	defer func() { buildFactory, lookPath = oldF, oldL }()
 
 	var gotBin string
-	base := stubFactory("test.org/x")
+	base := stubFactory()
 	buildFactory = func(p string) *build.Runner { gotBin = p; return base(p) }
 	rec := writeRecipe(t)
 
@@ -177,7 +183,7 @@ func TestBuildVersionFlag(t *testing.T) {
 
 	var gotConstraint string
 	buildFactory = func(string) *build.Runner {
-		base := stubFactory("test.org/x")("")
+		base := stubFactory()("")
 		base.ResolveVersion = func(_ any, constraint string) (string, string, error) {
 			gotConstraint = constraint
 			// Return the version stubFactory's Run materialises, so the pipeline

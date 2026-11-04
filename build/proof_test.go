@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/go-zpkg/zbk/config"
 	"github.com/go-zpkg/zbk/target"
 )
 
@@ -47,6 +46,13 @@ func TestProofPropsInBuildDir(t *testing.T) {
 	if err != nil {
 		t.Skip("no bash on this host: nothing to run the generated script with")
 	}
+	// The recipe FIRST: the stub below needs it to ask the same identity
+	// question the build asks, and the install prefix depends on the recipe.
+	rec := okRecipe()
+	rec.Distributable = nil // no fetch; the build dir is created empty by the pipeline
+	rec.Dependencies = nil
+	rec.Build = map[string]any{"script": []any{"test -f props/iconv.patch"}}
+
 	r.Run = func(scriptPath string, env []string) error {
 		cmd := exec.Command(bash, scriptPath)
 		cmd.Env = env
@@ -54,13 +60,12 @@ func TestProofPropsInBuildDir(t *testing.T) {
 		if err := cmd.Run(); err != nil {
 			return err
 		}
-		return os.MkdirAll(config.Compute(project, "1.2.3", tgt).BuildInstall, 0o755)
+		// ⛔ THE PREFIX THE BUILD CHOSE, read off the Runner. It carries
+		// the build's identity, so a stub that composed its own path would
+		// create a directory the build does not look in — and the failure
+		// would read as "the script did not install anything".
+		return os.MkdirAll(r.BuildInstall, 0o755)
 	}
-
-	rec := okRecipe()
-	rec.Distributable = nil // no fetch; the build dir is created empty by the pipeline
-	rec.Dependencies = nil
-	rec.Build = map[string]any{"script": []any{"test -f props/iconv.patch"}}
 
 	if _, err := r.Build(rec, project, "*", tgt, tgt, ""); err != nil {
 		t.Fatalf("proof failed - props not visible to script: %v", err)
