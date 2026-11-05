@@ -71,7 +71,7 @@ The packages, all at 100% statement coverage (`go test ./... -coverprofile` + `g
 | `httpretry` | which failed HTTP attempts are worth repeating. Measured on one 23-failure batch, **eleven** were transient HTTP and nothing else — a factory that gives a flaky host exactly one chance reports its own bad luck as a broken recipe |
 | `useragent` | the one User-Agent every HTTP path in bk sends. It exists because they differed: `versions` set one and `fetch` did not, so bk could LIST a project's versions and then get 403 downloading the tarball it had just found |
 | `versions` | resolves a project's upstream version from the recipe's `versions:` spec — deliberately distinct from what pkgx's dist advertises, which normalises versions the recipe's own source URL does not have |
-| `cmd/zbk` | thirty-six subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. Whether two builds AGREE: `reproduce` — it compares two bottles entry by entry and classes what differs, because "the digests differ" is the start of an afternoon with two tarballs rather than a finding. It exists because the question was asked once by hand, on 2026-09-29, and found one: zlib.net 1.3.2 built on the s390x seed VM before and after it was replaced had every file byte-identical and its directories 0755 against 0775 — the two hosts' umasks. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `origin`, `vulnid`, `advisories`, `vulnfetch`, `attest`, `eol`. What it gets WRONG: `depgaps`, `depsplit`, `undeclared`, `unlinked`, `unresolved`, `provides`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
+| `cmd/zbk` | thirty-seven subcommands. The pipeline: `build`, `test`, `publish`, `factory`, `builder`, `source`. Whether two builds AGREE: `reproduce` — it compares two bottles entry by entry and classes what differs, because "the digests differ" is the start of an afternoon with two tarballs rather than a finding. It exists because the question was asked once by hand, on 2026-09-29, and found one: zlib.net 1.3.2 built on the s390x seed VM before and after it was replaced had every file byte-identical and its directories 0755 against 0775 — the two hosts' umasks. Whether a second builder VOUCHES: `sign` — it attaches your signature to a bottle somebody else published, after checking your rebuild produced the same bytes, and refuses when it did not. What a recipe set SAYS: `target`, `versions`, `closure`, `lock`, `catalog`, `tools`, `overrides`, `tohcl`, `version`, `buildenv`, `origin`, `vulnid`, `advisories`, `vulnfetch`, `attest`, `eol`. What it gets WRONG: `depgaps`, `depsplit`, `undeclared`, `unlinked`, `unresolved`, `provides`, `lint`, `weather`, `sonames`, `runlog`. Build-time shims a recipe invokes rather than a person: `fixup`, `libtool`, `bkpyvenv`. `bk tools` is worth singling out: it reports which external commands a recipe set invokes, parsed rather than grepped, and `--scope build\|test\|all` separates two surfaces that disagree — a build's is what the IMAGE must hold, a test's is what the package's own acceptance check needs, and **260 tests call a compiler where 6 declare one**. |
 
 `bk build` runs the whole pipeline — resolve version → fetch source → parse
 recipe → dependency closure → generate + wrap the build script → run it in a
@@ -256,6 +256,44 @@ guess, and `order.txt` is the hand-tuned guess that works — `bk closure
 --check-order` exists to judge it. `builder/toolchain.txt` is a different
 thing, an *install* list, where order carries nothing; that is the one that
 moved.
+
+### `zbk sign` — a second builder's word
+
+`reproduce` answers *are these two bottles the same bottle?* locally. `sign`
+is the half that makes the answer travel.
+
+Two people who build the same inputs get the **same** bottle — deliberately,
+since an identity that varied with the builder could never be compared. So
+the artefact stays one artefact and what differs is the *attestation*: each
+builder attaches their own signature referrer to the published bottle, and a
+client counts how many distinct trusted keys it can verify
+(`ZPKG_TRUST_THRESHOLD`).
+
+```
+$ zbk build …                                   # your own build
+$ zbk reproduce yours.tar.gz theirs.tar.gz      # do they agree?
+$ zbk sign -key you.sec -project fftw.org \
+    -version 3.3.11-h27o3ysxva6swayci yours.tar.gz
+signed fftw.org 3.3.11-h27o3ysxva6swayci (linux/x86-64) sha256:… with key 9f2c…
+add it to a client's trust set with:
+  ZPKG_EXTRA_TRUSTED_KEYS='<name>:RWQ…'
+```
+
+It **pushes no bottle**. Re-publishing to add a signature is how you end up
+with two objects where the entire point was that there is one.
+
+And it **refuses when the digests differ**, which is the interesting case —
+`guix challenge` exists to report exactly that, and the report *is* the
+finding: either the recipe is not reproducible or one of the two machines is
+not what it claims. Both digests are printed, because "they differ" is not
+something anyone can act on. `-force` exists and says what it does: it signs
+bytes this build did not produce, which is the one claim a threshold must
+never be able to make.
+
+The referrer carries the signer's **key id** and no name. A name would be
+written by whoever pushed it, and the line it would appear in — `signed by: …`
+— is the one a reader uses to decide whether to trust the artefact. The name
+a user sees comes from their own trust set.
 
 ### `bk lock` — the concrete half
 
