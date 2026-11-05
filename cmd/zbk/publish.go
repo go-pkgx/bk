@@ -633,14 +633,36 @@ func buildReferrers(project, version, osn, arch string, tarball []byte, src buil
 		if err != nil {
 			return nil, err
 		}
-		refs = append(refs, bottle.Referrer{
-			ArtifactType: bottle.ArtifactTypeSignature,
-			MediaType:    bottle.MediaSimpleSigning,
-			Blob:         payload,
-			Annotations:  map[string]string{bottle.CosignSignatureAnnotation: kp.SignPayload(payload)},
-		})
+		refs = append(refs, signatureReferrer(payload, kp))
 	}
 	return refs, nil
+}
+
+// signatureReferrer is the one place a signature referrer is built, so the
+// publishing path and `zbk sign` cannot drift apart in what they attach.
+//
+// ⛔ THE KEY ID GOES ON, THE SIGNER'S NAME DOES NOT. A cosign blob signature
+// is a bare Ed25519 signature: it does not say which key made it, so a
+// verifier facing several signatures would otherwise try every trusted key
+// against every one of them. The key id turns that product back into a walk
+// — and bottle treats it as a HINT only, trying it first and then the rest,
+// so a wrong one costs microseconds and changes no verdict.
+//
+// A NAME is deliberately absent. It would be written by whoever pushed the
+// referrer, and the line it would appear in — "signed by: …" — is the one a
+// reader uses to decide whether to trust the artefact. The name a user sees
+// comes from their own trust set, which is the only place it means anything.
+func signatureReferrer(payload []byte, kp *sign.Keypair) bottle.Referrer {
+	ann := map[string]string{
+		bottle.CosignSignatureAnnotation: kp.SignPayload(payload),
+		bottle.SignerKeyIDAnnotation:     hex.EncodeToString(kp.ID[:]),
+	}
+	return bottle.Referrer{
+		ArtifactType: bottle.ArtifactTypeSignature,
+		MediaType:    bottle.MediaSimpleSigning,
+		Blob:         payload,
+		Annotations:  ann,
+	}
 }
 
 // buildTime is the timestamp stamped into attestations. It honours
