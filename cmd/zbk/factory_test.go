@@ -74,9 +74,11 @@ func newFactoryHarness(t *testing.T) *factoryHarness {
 		bottles:  filepath.Join(t.TempDir(), "dist"),
 	}
 	ov, li, re, pu, bu, hp, bf, lp := factoryOverrides, factoryList, factoryResolve, factoryPublish, factoryBuild, factoryHasPlatform, buildFactory, lookPath
+	pl := factoryPlan
 	t.Cleanup(func() {
 		factoryOverrides, factoryList, factoryResolve, factoryPublish = ov, li, re, pu
 		factoryBuild, factoryHasPlatform, buildFactory, lookPath = bu, hp, bf, lp
+		factoryPlan = pl
 	})
 	for _, k := range []string{"BREWKIT_TARGET", "PLATFORM", "PANTRY", "RECIPES", "DIST", "MAX_VERSIONS", "FORCE", "SIGNING_KEY", "SOURCE_DATE_EPOCH"} {
 		t.Setenv(k, "")
@@ -90,13 +92,28 @@ func newFactoryHarness(t *testing.T) *factoryHarness {
 		return []versions.VersionTag{{Version: "2.0", Tag: "v2.0"}, {Version: "1.0", Tag: "v1.0"}}, nil
 	}
 	factoryResolve = func(any, string) (string, string, error) { return "9.9", "v9.9", nil }
-	factoryBuild = func(_ *build.Runner, _ *pantry.Recipe, project, constraint string, _, _ target.Target, out string) (build.Result, error) {
-		h.built = append(h.built, project+"@"+constraint)
+	// ⛔ THE PLAN IS STUBBED, AND IT CARRIES A SPEC. The factory asks the
+	// registry about the BUILD, so a plan with an empty spec would produce a
+	// bare version tag and this harness would quietly measure the old
+	// behaviour — passing while the thing under test does not happen.
+	factoryPlan = func(_ *build.Runner, _ *pantry.Recipe, project, constraint string, tgt target.Target) (build.Plan, error) {
 		v := strings.TrimPrefix(constraint, "=")
-		return build.Result{Version: v, BottlePath: filepath.Join(out, project, "v"+v+".tar.gz")}, nil
+		return build.Plan{
+			Version:  v,
+			Tag:      "v" + v,
+			Concrete: testSpec(project, v, tgt),
+			SpecHash: testSpec(project, v, tgt).Hash(),
+		}, nil
+	}
+	factoryBuild = func(_ *build.Runner, p build.Plan, _ *pantry.Recipe, project string, _, _ target.Target, out string) (build.Result, error) {
+		h.built = append(h.built, project+"@="+p.Version)
+		return build.Result{
+			Version: p.Version, Concrete: p.Concrete, SpecHash: p.SpecHash,
+			BottlePath: filepath.Join(out, project, "v"+p.Version+".tar.gz"),
+		}, nil
 	}
 	factoryPublish = func(o publishOptions) (string, ocispec.Descriptor, error) {
-		tag := flavoredTag(o.Project, o.Version, o.Glibc)
+		tag := buildTag(o.Project, o.Version, o.Glibc, o.Concrete)
 		h.published = append(h.published, publishedBottle{
 			project: o.Project, version: o.Version, tag: tag, osn: o.OS, arch: o.Arch,
 			dist: o.Dist, path: o.Path, glibc: o.Glibc, signed: o.Key != nil, when: o.Time,
@@ -109,6 +126,30 @@ func newFactoryHarness(t *testing.T) *factoryHarness {
 	buildFactory = func(string) *build.Runner { return &build.Runner{} }
 	lookPath = func(s string) (string, error) { return "/usr/local/bin/" + s, nil }
 	return h
+}
+
+// testSpec is a stand-in for what a build IS, made distinct per project,
+// version and platform so two stubbed builds do not share one address.
+//
+// ⛔ IT IS NOT A HASH THE TEST CHOSE. The hash is asked of bottle.Concrete,
+// the way the real plan asks for it, so an assertion about a tag is an
+// assertion about the value the publish path will actually produce — not
+// about a constant written twice.
+func testSpec(project, version string, tgt target.Target) bottle.Concrete {
+	return bottle.Concrete{
+		Platform: tgt.Platform + "/" + tgt.Arch,
+		Recipe:   "sha256:" + project + "@" + version,
+	}
+}
+
+// harnessTarget is the platform every factory-harness run builds for; the
+// harness forces it, and the spec hash depends on it.
+var harnessTarget = target.Target{Platform: "linux", Arch: "x86-64"}
+
+// specTag is the tag a (project, version) build lands on in a harness run:
+// the version with the identity the stubbed plan gives it.
+func specTag(project, version string) string {
+	return version + testSpec(project, version, harnessTarget).VariantTag()
 }
 
 // args builds a command line with the harness's paths plus extras.
@@ -204,7 +245,7 @@ func TestRunFactoryBuildsClosureDepsFirst(t *testing.T) {
 		"signing: disabled (no key)",
 		"closure: 2 project(s) for linux/x86-64 (from 1 requested)",
 		"versions app.org: 2 to consider (linux/x86-64)",
-		"✅ OK lib.org 9.9 linux/x86-64",
+		"✅ OK lib.org " + specTag("lib.org", "9.9") + " linux/x86-64",
 		"=== summary (linux/x86-64): 3 built, 0 skipped, 0 failed ===",
 	} {
 		if !strings.Contains(out, want) {
@@ -222,19 +263,33 @@ func TestRunFactoryBuildsClosureDepsFirst(t *testing.T) {
 // TestFactorySeamsAreReal exercises the seams the other tests stub out, so the
 // production wiring itself is covered rather than only its stand-ins.
 func TestFactorySeamsAreReal(t *testing.T) {
-	t.Run("build runs the real Runner.Build", func(t *testing.T) {
+	t.Run("plan and build run the real Runner", func(t *testing.T) {
 		tempEnv(t)
 		rec, err := pantry.Parse([]byte(miniRecipe))
 		if err != nil {
 			t.Fatal(err)
 		}
 		runner := stubFactory()("pkgx")
-		res, err := factoryBuild(runner, rec, "test.org/x", "*", target.Host(), target.Host(), t.TempDir())
+		plan, err := factoryPlan(runner, rec, "test.org/x", "*", target.Host())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// ⛔ THE PLAN SETTLES THE IDENTITY BEFORE ANYTHING IS BUILT. That is
+		// the whole reason it is a step of its own: the registry is asked
+		// about this hash while the build has not started.
+		if plan.SpecHash == "" {
+			t.Fatal("the plan produced no identity, so there is nothing to ask the registry about")
+		}
+		res, err := factoryBuild(runner, plan, rec, "test.org/x", target.Host(), target.Host(), t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if res.Version != "1.0.0" {
 			t.Fatalf("res = %+v", res)
+		}
+		if res.SpecHash != plan.SpecHash {
+			t.Errorf("the build used a different identity from the one the plan checked: %q vs %q",
+				res.SpecHash, plan.SpecHash)
 		}
 	})
 
@@ -282,7 +337,11 @@ func TestRunFactorySkipIfPublished(t *testing.T) {
 			if !strings.Contains(h.out.String(), tc.wantSummaryPhrase) {
 				t.Fatalf("stdout = %s", h.out.String())
 			}
-			if tc.wantSkipped > 0 && !strings.Contains(h.out.String(), "⏭  SKIP lib.org 2.0 (linux/x86-64) — already published") {
+			// ⛔ THE SKIP NAMES THE BUILD, NOT THE VERSION. "lib.org 2.0 is
+			// already published" was the wrong sentence: it skipped a package
+			// whose RECIPE had changed, because the version had not.
+			wantSkip := "⏭  SKIP lib.org " + specTag("lib.org", "2.0") + " (linux/x86-64) — already published"
+			if tc.wantSkipped > 0 && !strings.Contains(h.out.String(), wantSkip) {
 				t.Fatalf("stdout = %s", h.out.String())
 			}
 			if tc.name == "force" && len(h.checked) != 0 {
@@ -306,7 +365,7 @@ func TestRunFactoryPublishCheckErrorBuildsAnyway(t *testing.T) {
 	if len(h.built) != 1 {
 		t.Fatalf("built = %v", h.built)
 	}
-	if !strings.Contains(h.errb.String(), "publish-check lib.org 2.0: dial tcp") {
+	if !strings.Contains(h.errb.String(), "publish-check lib.org "+specTag("lib.org", "2.0")+": dial tcp") {
 		t.Fatalf("stderr = %s", h.errb.String())
 	}
 }
@@ -338,13 +397,20 @@ func TestRunFactoryGlibcFlavor(t *testing.T) {
 	if runner.LibcMode != "pkgx" || runner.Glibc != "2.27.0" {
 		t.Fatalf("runner libc = %q glibc = %q", runner.LibcMode, runner.Glibc)
 	}
-	if got := strings.Join(h.checked, " "); got != "lib.org@2.0-glibc2.27.0 gnu.org/glibc@2.0" {
-		t.Fatalf("checked = %q (glibc itself must not be flavored)", got)
+	// ⛔ THE GLIBC FLAVOUR COMES FIRST AND THE IDENTITY LAST. Both are in the
+	// tag and they are not the same thing: the flavour is readable and says
+	// which libc, the hash is the address and says which build. The glibc
+	// package itself is never flavoured — it IS the glibc — but it is still
+	// addressed, so it carries a hash like everything else.
+	libTag := "2.0-glibc2.27.0" + testSpec("lib.org", "2.0", harnessTarget).VariantTag()
+	glibcTag := specTag("gnu.org/glibc", "2.0")
+	if got, want := strings.Join(h.checked, " "), "lib.org@"+libTag+" gnu.org/glibc@"+glibcTag; got != want {
+		t.Fatalf("checked = %q, want %q (glibc itself must not be flavored)", got, want)
 	}
-	if h.published[0].tag != "2.0-glibc2.27.0" || h.published[1].tag != "2.0" {
-		t.Fatalf("tags = %q %q", h.published[0].tag, h.published[1].tag)
+	if h.published[0].tag != libTag || h.published[1].tag != glibcTag {
+		t.Fatalf("tags = %q %q, want %q %q", h.published[0].tag, h.published[1].tag, libTag, glibcTag)
 	}
-	if !strings.Contains(h.out.String(), "✅ OK lib.org 2.0-glibc2.27.0 linux/x86-64") {
+	if !strings.Contains(h.out.String(), "✅ OK lib.org "+libTag+" linux/x86-64") {
 		t.Fatalf("stdout = %s", h.out.String())
 	}
 }
@@ -359,7 +425,7 @@ func TestRunFactoryFailureStages(t *testing.T) {
 		if err := os.WriteFile(script, []byte("echo compiling lib\necho 'error: boom' >&2\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		factoryBuild = func(r *build.Runner, _ *pantry.Recipe, _, _ string, _, _ target.Target, _ string) (build.Result, error) {
+		factoryBuild = func(r *build.Runner, _ build.Plan, _ *pantry.Recipe, _ string, _, _ target.Target, _ string) (build.Result, error) {
 			if err := r.Run(script, nil); err != nil { // the real script runner, teed into the tail buffer
 				t.Fatal(err)
 			}
@@ -393,8 +459,18 @@ func TestRunFactoryFailureStages(t *testing.T) {
 		name, want string
 		setup      func(t *testing.T, h *factoryHarness)
 	}{
+		// ⛔ A PLAN THAT FAILS IS ITS OWN STAGE. The closure could not be
+		// resolved, so the identity does not exist, so nothing can be asked
+		// of the registry and nothing can be built — and recording it as
+		// "build" would send its reader to read a build log that was never
+		// written.
+		{"plan", "lib.org 2.0 plan\n", func(t *testing.T, h *factoryHarness) {
+			factoryPlan = func(_ *build.Runner, _ *pantry.Recipe, _, _ string, _ target.Target) (build.Plan, error) {
+				return build.Plan{}, errors.New("resolve deps: 503")
+			}
+		}},
 		{"package", "lib.org 2.0 package\n", func(t *testing.T, h *factoryHarness) {
-			factoryBuild = func(_ *build.Runner, _ *pantry.Recipe, _, _ string, _, _ target.Target, _ string) (build.Result, error) {
+			factoryBuild = func(_ *build.Runner, _ build.Plan, _ *pantry.Recipe, _ string, _, _ target.Target, _ string) (build.Result, error) {
 				return build.Result{Version: "2.0"}, nil // built, but nothing bottled
 			}
 		}},
