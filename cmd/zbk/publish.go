@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -259,6 +260,11 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 	signKey := f.String("sign", "", "sign the bottle with this go-attest/sign secret key file")
 	glibc := f.String("glibc", "", "glibc version this bottle was built against; publishes under the flavored tag <version>-glibc<ver> so builds against different glibc coexist (linux only)")
 	advisories := f.String("advisories", "", "advisory tree to look this project up in; attaches an OpenVEX document saying what was decided about each vulnerability")
+	var specDeps depFlag
+	f.Var(&specDeps, "spec-dep", "a resolved dependency of this build, `project=version[=hash]`, repeatable. For a lane that builds without a pantry plan — a Go cross-build, say — this is how the TOOLCHAIN gets into the identity, which is the whole point: a rebuild against a patched Go must not land on the first one's address")
+	specRecipe := f.String("spec-recipe", "", "digest of the resolved build — the script after substitution, the environment, the flags. ⛔ NOT a digest of a recipe FILE: a reflowed comment would rebuild the world")
+	allowUnsigned := f.Bool("allow-unsigned", false, "publish without a signature. ⛔ A CLIENT VERIFIES FAIL-CLOSED BY DEFAULT, so an unsigned bottle is one nobody can install without turning verification off")
+	allowUnidentified := f.Bool("allow-unidentified", false, "publish without a build identity, under the bare version tag. For a bottle this process did not build — a mirror — where claiming an identity would be a claim nothing supports")
 	if err := f.Parse(args); err != nil {
 		return 2
 	}
@@ -280,10 +286,27 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 		}
 		kp = k
 	}
+	// ⛔⛔ THE PLATFORM ALONE IS NOT AN IDENTITY, AND BUILDING ONE FROM IT
+	// WOULD HAVE DEFEATED THE GATE BELOW. --platform is required, so filling
+	// Concrete.Platform unconditionally makes IsZero() permanently false:
+	// every publish would have looked identified. Worse, the resulting hash
+	// is of the Concrete alone — project and version live in the TAG — so a
+	// platform-only spec yields the SAME hash for every project built for
+	// that platform. An address that collides across projects is not an
+	// address. Found by the gate's own test, which could not make the
+	// unidentified case happen.
+	var spec bottle.Concrete
+	if *specRecipe != "" || len(specDeps.deps) > 0 {
+		spec = bottle.Concrete{Platform: *platform, Deps: specDeps.deps, Recipe: *specRecipe}
+	}
+	if err := everythingSignedAndIdentified(kp, spec, *allowUnsigned, *allowUnidentified); err != nil {
+		fmt.Fprintln(stderr, "publish:", err)
+		return 2
+	}
 	if _, _, err := publishBottle(publishOptions{
 		Dist: *to, Project: *project, Version: *version,
 		OS: osn, Arch: arch, Path: f.Arg(0), Glibc: *glibc, Key: kp,
-		Advisories: *advisories,
+		Advisories: *advisories, Concrete: spec,
 	}); err != nil {
 		fmt.Fprintln(stderr, "publish:", err)
 		return 1
@@ -294,6 +317,66 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "published %s %s %s/%s to %s (+SBOM +provenance%s)\n", *project, *version, osn, arch, *to, extra)
 	return 0
+}
+
+// everythingSignedAndIdentified is the rule, enforced before anything is
+// pushed: a bottle this factory publishes says WHO vouches for it and WHAT it
+// is, or it is not published.
+//
+// ⛔⛔ BOTH WERE SILENT, AND SILENCE IS WHY THEY HAPPENED. On 2026-11-05 the
+// wasip1 lane published 30 bottles to a fresh registry, green, and every one
+// of them was unsigned and unidentified:
+//
+//	HASH    PUBLISHED  SIGNED BY   BUILT BY     WHAT
+//	(none)  yes        ⚠ unsigned  zbk@v0.65.0  nothing recorded
+//
+// Neither was a bug in the code that ran. `--sign` was simply absent because
+// the signing secret had not followed an organisation transfer, and the lane
+// builds with a plain `go build` so there was no plan and so no Concrete.
+// Both paths did exactly what they were written to do, quietly, and the
+// result is thirty artefacts a fail-closed client will refuse to install and
+// that no reader can name.
+//
+// ⛔ THE DEROGATIONS ARE FLAGS WITH NO DEFAULT, AND THEY ARE SEPARATE. One
+// `--force` covering both would let a lane that only needed to mirror an
+// unidentified bottle also start publishing unsigned ones. A workflow that
+// wants either has to write it down, in its own source, where a reader sees
+// it — which is the point of making it a flag rather than a warning.
+func everythingSignedAndIdentified(kp *sign.Keypair, spec bottle.Concrete, allowUnsigned, allowUnidentified bool) error {
+	if kp == nil && !allowUnsigned {
+		return errors.New("refusing to publish unsigned: a client verifies fail-closed by default, so this bottle " +
+			"would be refused at install time. Pass --sign <key>, or --allow-unsigned to publish one anyway")
+	}
+	if spec.IsZero() && !allowUnidentified {
+		return errors.New("refusing to publish without a build identity: the tag would be the bare version, which " +
+			"two different builds can both claim, and nothing would record what this one is. Pass --spec-dep and " +
+			"--spec-recipe to state it, or --allow-unidentified for a bottle this process did not build")
+	}
+	return nil
+}
+
+// depFlag collects repeated --spec-dep values.
+type depFlag struct{ deps []bottle.Dep }
+
+func (d *depFlag) String() string { return "" }
+
+// Set parses `project=version[=hash]`.
+//
+// ⛔ THE HASH IS OPTIONAL AND ITS ABSENCE IS NOT A FAILURE. A toolchain taken
+// from the runner's own image — `setup-go` — has a version and no bottle
+// identity, and that is the truth about it. Refusing it would push a lane
+// back to publishing nothing at all, which is what this guard exists to end.
+func (d *depFlag) Set(s string) error {
+	parts := strings.Split(s, "=")
+	if len(parts) < 2 || len(parts) > 3 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("want project=version[=hash], got %q", s)
+	}
+	dep := bottle.Dep{Project: parts[0], Version: parts[1]}
+	if len(parts) == 3 {
+		dep.Hash = parts[2]
+	}
+	d.deps = append(d.deps, dep)
+	return nil
 }
 
 // loadSigningKey reads a go-attest/sign secret key file.

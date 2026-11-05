@@ -137,8 +137,13 @@ func TestPublishEndToEnd(t *testing.T) {
 	m := newMiniOCI()
 	defer m.close()
 	b := writeBottle(t, "sqlite.tar.gz")
+	// Identified on purpose — the end-to-end path is the one a factory takes,
+	// and a tag with no hash is not it. Unsigned is TestPublishSigned's
+	// subject, so this one says so rather than carrying a key it is not
+	// testing.
 	code, out, errs := run2(t, "publish", "--to", m.base(), "--project", "sqlite.org",
-		"--version", "3.46.0", "--platform", "darwin/x86-64", b)
+		"--version", "3.46.0", "--platform", "darwin/x86-64",
+		"--spec-recipe", "sha256:abc", "--spec-dep", "go.dev=1.27.3", "--allow-unsigned", b)
 	if code != 0 {
 		t.Fatalf("publish code=%d err=%q", code, errs)
 	}
@@ -148,8 +153,82 @@ func TestPublishEndToEnd(t *testing.T) {
 	// a .tar.xz bottle exercises the xz layer-media branch
 	bx := writeBottle(t, "x.tar.xz")
 	if c, _, e := run2(t, "publish", "--to", m.base(), "--project", "z.org",
-		"--version", "1", "--platform", "linux/aarch64", bx); c != 0 {
+		"--version", "1", "--platform", "linux/aarch64",
+		"--spec-recipe", "sha256:def", "--allow-unsigned", bx); c != 0 {
 		t.Fatalf("xz publish code=%d err=%q", c, e)
+	}
+}
+
+// ⛔⛔ EVERYTHING THIS FACTORY PUBLISHES IS SIGNED AND IDENTIFIED, OR IT IS
+// NOT PUBLISHED. Both halves failed silently on 2026-11-05: the wasip1 lane
+// pushed 30 bottles that were unsigned (the signing secret had not followed
+// an organisation transfer) and unidentified (it builds with a plain
+// `go build`, so there is no plan and no spec). Both paths did exactly what
+// they were written to do, and produced thirty artefacts a fail-closed client
+// refuses and no reader can name.
+func TestPublishRefusesUnsignedOrUnidentified(t *testing.T) {
+	m := newMiniOCI()
+	defer m.close()
+	b := writeBottle(t, "g.tar.gz")
+	base := []string{"publish", "--to", m.base(), "--project", "p", "--version", "1",
+		"--platform", "linux/x86-64"}
+	with := func(extra ...string) []string {
+		return append(append(append([]string{}, base...), extra...), b)
+	}
+
+	// Neither: refused, and the message names the first thing missing.
+	c, _, errs := run2(t, with()...)
+	if c != 2 {
+		t.Fatalf("an unsigned, unidentified publish was allowed: code=%d", c)
+	}
+	if !strings.Contains(errs, "refusing to publish unsigned") || !strings.Contains(errs, "--allow-unsigned") {
+		t.Errorf("message should say what is missing and how to override: %q", errs)
+	}
+
+	// Unsigned waived but still unidentified: refused for the other reason.
+	//
+	// ⛔ THIS CASE FOUND A HOLE IN THE GATE. --platform is required, so the
+	// first version filled Concrete.Platform unconditionally and IsZero()
+	// was never true — the identity half could not fire at all. A
+	// platform-only spec is also meaningless: the hash is of the Concrete
+	// alone, so every project on one platform would share it.
+	c, _, errs = run2(t, with("--allow-unsigned")...)
+	if c != 2 || !strings.Contains(errs, "without a build identity") {
+		t.Errorf("unidentified publish: code=%d err=%q", c, errs)
+	}
+	if !strings.Contains(errs, "--spec-dep") || !strings.Contains(errs, "--allow-unidentified") {
+		t.Errorf("message should name both the way to state it and the override: %q", errs)
+	}
+
+	// ⛔ THE TWO DEROGATIONS ARE SEPARATE. One flag covering both would let a
+	// lane that only needed to mirror an unidentified bottle quietly start
+	// publishing unsigned ones too.
+	if c, _, e := run2(t, with("--allow-unsigned", "--allow-unidentified")...); c != 0 {
+		t.Errorf("both derogations given and still refused: code=%d err=%q", c, e)
+	}
+}
+
+// A dependency is stated as project=version, with the hash optional — a Go
+// toolchain from the runner's image has a version and no bottle identity, and
+// that is the truth about it.
+func TestSpecDepFlag(t *testing.T) {
+	var d depFlag
+	if d.String() != "" {
+		t.Errorf("String() = %q", d.String())
+	}
+	for _, s := range []string{"go.dev=1.27.3", "openssl.org=3.5.8=abcdefghijklmnop"} {
+		if err := d.Set(s); err != nil {
+			t.Errorf("Set(%q): %v", s, err)
+		}
+	}
+	if len(d.deps) != 2 || d.deps[0].Project != "go.dev" || d.deps[0].Version != "1.27.3" ||
+		d.deps[0].Hash != "" || d.deps[1].Hash != "abcdefghijklmnop" {
+		t.Errorf("deps = %+v", d.deps)
+	}
+	for _, bad := range []string{"", "nope", "=1", "p=", "a=b=c=d"} {
+		if err := d.Set(bad); err == nil {
+			t.Errorf("Set(%q) should fail", bad)
+		}
 	}
 }
 
@@ -166,14 +245,16 @@ func TestPublishSigned(t *testing.T) {
 	}
 	b := writeBottle(t, "s.tar.gz")
 	code, out, errs := run2(t, "publish", "--to", m.base(), "--project", "z.org",
-		"--version", "1", "--platform", "linux/x86-64", "--sign", keyFile, b)
+		"--version", "1", "--platform", "linux/x86-64", "--sign", keyFile,
+		"--allow-unidentified", b)
 	if code != 0 {
 		t.Fatalf("signed publish code=%d err=%q", code, errs)
 	}
 	if !strings.Contains(out, "+signature") {
 		t.Errorf("output = %q", out)
 	}
-	// unreadable key
+	// unreadable key — and it fails on the KEY, before the gate, so the
+	// message is about the file the operator named.
 	if c, _, _ := run2(t, "publish", "--to", m.base(), "--project", "z.org", "--version", "1",
 		"--platform", "linux/x86-64", "--sign", filepath.Join(t.TempDir(), "nope"), b); c != 1 {
 		t.Error("missing key file")
@@ -204,17 +285,23 @@ func TestPublishFlagErrors(t *testing.T) {
 }
 
 func TestPublishRuntimeErrors(t *testing.T) {
+	// The derogations say "this test is not about the signed-and-identified
+	// gate"; without them every case below would stop at exit 2 and prove
+	// nothing about the failure it names.
+	ok := []string{"--allow-unsigned", "--allow-unidentified"}
+	args := func(last string) []string {
+		return append(append([]string{"publish", "--to", "oci://x/y", "--project", "p",
+			"--version", "1", "--platform", "linux/x86-64"}, ok...), last)
+	}
 	// unreadable bottle
-	if c, _, _ := run2(t, "publish", "--to", "oci://x/y", "--project", "p", "--version", "1",
-		"--platform", "linux/x86-64", filepath.Join(t.TempDir(), "missing")); c != 1 {
+	if c, _, _ := run2(t, args(filepath.Join(t.TempDir(), "missing"))...); c != 1 {
 		t.Error("missing bottle")
 	}
 	b := writeBottle(t, "b.tar.gz")
 	// buildReferrers failure via the sbom seam
 	os1 := sbomJSON
 	sbomJSON = func(sbom.Document) ([]byte, error) { return nil, errBoom }
-	if c, _, _ := run2(t, "publish", "--to", "oci://x/y", "--project", "p", "--version", "1",
-		"--platform", "linux/x86-64", b); c != 1 {
+	if c, _, _ := run2(t, args(b)...); c != 1 {
 		t.Error("sbom error")
 	}
 	sbomJSON = os1
@@ -223,8 +310,7 @@ func TestPublishRuntimeErrors(t *testing.T) {
 	ociPush = func(string, string, string, string, string, []byte, string, []bottle.Referrer, map[string]string) (ocispec.Descriptor, error) {
 		return ocispec.Descriptor{}, errBoom
 	}
-	if c, _, _ := run2(t, "publish", "--to", "oci://x/y", "--project", "p", "--version", "1",
-		"--platform", "linux/x86-64", b); c != 1 {
+	if c, _, _ := run2(t, args(b)...); c != 1 {
 		t.Error("push error")
 	}
 	ociPush = op
@@ -350,7 +436,8 @@ func TestPublishGlibcTag(t *testing.T) {
 		if tc.flag != "" {
 			args = append(args, "--glibc", tc.flag)
 		}
-		args = append(args, b)
+		// The subject here is the glibc TAG, not the signed-and-identified gate.
+		args = append(args, "--allow-unsigned", "--allow-unidentified", b)
 		if code, _, errs := run2(t, args...); code != 0 {
 			t.Fatalf("glibc=%q publish code=%d err=%q", tc.flag, code, errs)
 		}
@@ -579,7 +666,8 @@ func TestPublishGlibcBottleMinKernel(t *testing.T) {
 		return ocispec.Descriptor{}, nil
 	}
 	if code, _, errs := run2(t, "publish", "--to", "oci://r.example/x", "--project", bottle.GlibcProject,
-		"--version", "2.27.0", "--platform", "linux/x86-64", bp); code != 0 {
+		"--version", "2.27.0", "--platform", "linux/x86-64",
+		"--allow-unsigned", "--allow-unidentified", bp); code != 0 {
 		t.Fatalf("glibc publish code=%d err=%q", code, errs)
 	}
 	if gotTag != "2.27.0" {
@@ -592,7 +680,8 @@ func TestPublishGlibcBottleMinKernel(t *testing.T) {
 	bad := filepath.Join(dir, "v9.tar.gz")
 	os.WriteFile(bad, gzBytes(tarBytes(map[string][]byte{"x/y": []byte("z")})), 0o644)
 	if code, _, _ := run2(t, "publish", "--to", "oci://r.example/x", "--project", bottle.GlibcProject,
-		"--version", "9", "--platform", "linux/x86-64", bad); code != 1 {
+		"--version", "9", "--platform", "linux/x86-64",
+		"--allow-unsigned", "--allow-unidentified", bad); code != 1 {
 		t.Error("glibc bottle without libc.so.6 should fail")
 	}
 }
