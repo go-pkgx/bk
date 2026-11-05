@@ -1,6 +1,7 @@
 package build
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -209,6 +210,75 @@ func TestTwoEdgesToOneProjectStillSortTotally(t *testing.T) {
 	}
 	if c.Deps[0].Version != "1.2.13" {
 		t.Errorf("the lower version did not sort first: %+v", c.Deps)
+	}
+}
+
+// ⛔⛔ THE MERKLE PROPERTY WAS INERT AND THIS IS THE TEST THAT CATCHES IT.
+//
+// DepTokens COMPOSED a dependency's prefix as `<dir>/<project>/v<version>`.
+// That is not a path that exists once a build is installed under its
+// identity, so two things rode on it silently: the build script was pointed
+// at a directory that is not there, and `concreteOf` read an EMPTY hash out
+// of every edge — which made two builds differing only in how a dependency
+// was built hash alike, the exact collision the whole design exists to end.
+//
+// It is tested through DepTokens and not through concreteOf, because
+// concreteOf was always correct: it reads whatever the path carries, and the
+// path carried nothing.
+func TestADependencysOwnBuildReachesTheIdentityThroughItsPrefix(t *testing.T) {
+	store := t.TempDir()
+	t.Setenv("ZPKG_DIR", store)
+
+	// Two builds of one version of a dependency, installed as the installer
+	// installs them: hashed.
+	const dep, depVer = "zlib.net", "1.3.2"
+	v := bottle.Ver{Raw: depVer}
+	var hashes []string
+	for _, seed := range []string{"a", "b"} {
+		h := bottle.StoreHash(v, "digest:"+seed, "")
+		if err := os.MkdirAll(bottle.StoreBuildPrefix(store, dep, v, h), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		hashes = append(hashes, h)
+	}
+
+	// With TWO installed, the store cannot say which, so the prefix falls
+	// back to the composed path and the edge degrades to the version. That
+	// is the documented honest behaviour, not a hash we invented.
+	_, resolved, err := DepTokens(
+		map[string]any{dep: "^1"}, nil, idTarget, store,
+		func(string, string) (string, error) { return depVer, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hashOfPrefix(resolved[0].Path); got != "" {
+		t.Errorf("two builds installed and one was picked anyway: %q", got)
+	}
+
+	// With ONE installed, the edge carries that build's own hash — and the
+	// identity moves with it.
+	if err := os.RemoveAll(bottle.StoreBuildPrefix(store, dep, v, hashes[1])); err != nil {
+		t.Fatal(err)
+	}
+	_, resolved, err = DepTokens(
+		map[string]any{dep: "^1"}, nil, idTarget, store,
+		func(string, string) (string, error) { return depVer, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hashOfPrefix(resolved[0].Path); got != hashes[0] {
+		t.Fatalf("the dependency's own build did not reach its prefix: %q, want %q (path %q)",
+			got, hashes[0], resolved[0].Path)
+	}
+	// And that is what makes the dependent's identity move: the same version
+	// of the same dependency, built differently, is a different build of us.
+	mine := mustHash(t, idRecipe(), idTarget, resolved)
+	other := mustHash(t, idRecipe(), idTarget, []moustache.Dep{{
+		Project: dep, Version: depVer,
+		Path: bottle.StoreBuildPrefix(store, dep, v, hashes[1]),
+	}})
+	if mine == other {
+		t.Error("a dependency rebuilt into a different prefix left our identity alone")
 	}
 }
 
