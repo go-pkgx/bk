@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/logical"
 	"github.com/go-zpkg/zbk/moustache"
 	"github.com/go-zpkg/zbk/recipefile"
@@ -175,7 +176,22 @@ func DepTokens(runtime, buildDeps map[string]any, tgt target.Target, pkgxDir str
 		deps = append(deps, moustache.Dep{
 			Project: p,
 			Version: ver,
-			Path:    filepath.Join(pkgxDir, filepath.FromSlash(p), "v"+ver),
+			// ⛔⛔ ASKED, NOT COMPOSED. `<dir>/<project>/v<version>` is no
+			// longer a path that exists once a build is installed under its
+			// identity, and this line composed it. Two things rode on the
+			// mistake, and both are silent:
+			//
+			//   - the SCRIPT gets this as {{deps.X.prefix}}, so a build
+			//     would be pointed at a directory that is not there;
+			//   - the IDENTITY reads the dependency's own hash out of this
+			//     path, so every edge contributed an empty hash and the
+			//     Merkle property was inert — two builds differing only in
+			//     how a dependency was built would have hashed alike.
+			//
+			// bottle.StorePrefix resolves the installed build and falls back
+			// to the composed path when nothing is installed, which is the
+			// string this produced before and keeps a dry run unchanged.
+			Path: bottle.StorePrefix(pkgxDir, p, bottle.Ver{Raw: ver}),
 		})
 	}
 	return moustache.Deps(deps), deps, nil
