@@ -155,12 +155,91 @@ func TestSignRefusesADifferentBuild(t *testing.T) {
 	}
 }
 
+// ⛔ THE DISPATCH IS ITS OWN FACT. `runSign` working says nothing about
+// `zbk sign` working: the switch in main.go is the only place that decides
+// what a word on the command line does, and a subcommand that is implemented
+// and not wired is invisible.
+func TestSignIsWiredIntoTheDispatch(t *testing.T) {
+	code, _, errb := run2(t, "sign")
+	if code != 2 {
+		t.Fatalf("`zbk sign` with no arguments: code=%d err=%q", code, errb)
+	}
+	if !strings.Contains(errb, "usage: zbk sign") {
+		t.Errorf("the dispatch did not reach runSign: %q", errb)
+	}
+	if strings.Contains(errb, "unknown command") {
+		t.Errorf("`sign` is not dispatched at all: %q", errb)
+	}
+}
+
+// With no -os/-arch the host's platform is used — the common case, since a
+// rebuilder is checking their own machine's output.
+func TestSignDefaultsToThisHost(t *testing.T) {
+	key, bot, digest, _ := writeKeyAndBottle(t, "host-default")
+	h := &signHarness{published: digest}
+	h.install(t)
+
+	var out, errb bytes.Buffer
+	code := runSign([]string{"-key", key, "-project", "p", "-version", "1", bot}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	wantOS, wantArch := bottle.HostSlug()
+	if !strings.Contains(out.String(), "("+wantOS+"/"+wantArch+")") {
+		t.Errorf("output does not name the host platform %s/%s:\n%s", wantOS, wantArch, out.String())
+	}
+}
+
+// A payload that cannot be built is exit 1 with a message, never a silent
+// success — the signature would otherwise be over nothing.
+func TestSignReportsAPayloadFailure(t *testing.T) {
+	key, bot, digest, _ := writeKeyAndBottle(t, "payload-fail")
+	h := &signHarness{published: digest}
+	h.install(t)
+	old := simpleSigning
+	simpleSigning = func(string, string) ([]byte, error) { return nil, os.ErrInvalid }
+	t.Cleanup(func() { simpleSigning = old })
+
+	var out, errb bytes.Buffer
+	if code := runSign([]string{
+		"-key", key, "-project", "p", "-version", "1", "-os", "linux", "-arch", "x86-64", bot,
+	}, &out, &errb); code != 1 {
+		t.Errorf("a failed payload = %d, want 1", code)
+	}
+	if !strings.Contains(errb.String(), "zbk sign:") {
+		t.Errorf("no message: %q", errb.String())
+	}
+}
+
+// ⛔ THE SEAMS' REAL BODIES ARE EXERCISED TOO. A seam that only ever runs its
+// test double is code nobody has executed — and these two are the ones that
+// talk to the registry, so a typo in them fails only in production.
+func TestSignSeamsRejectABadDist(t *testing.T) {
+	if _, err := ociBottleDigest("https://not-oci", "p", "1", "linux", "x86-64"); err == nil {
+		t.Error("ociBottleDigest accepted a non-oci dist")
+	}
+	if err := ociAttach("https://not-oci", "p", "1", "linux", "x86-64", bottle.Referrer{}); err == nil {
+		t.Error("ociAttach accepted a non-oci dist")
+	}
+	// And a WELL-FORMED oci:// dist, so the call each seam exists to make is
+	// actually made. A blackhole: the client builds, the request is refused
+	// at once, and no test waits on DNS or reaches a real registry.
+	const blackhole = "oci://127.0.0.1:1/nothing"
+	if _, err := ociBottleDigest(blackhole, "p", "1", "linux", "x86-64"); err == nil {
+		t.Error("ociBottleDigest reported success against a dead registry")
+	}
+	if err := ociAttach(blackhole, "p", "1", "linux", "x86-64", bottle.Referrer{}); err == nil {
+		t.Error("ociAttach reported success against a dead registry")
+	}
+}
+
 func TestSignUsageAndFailures(t *testing.T) {
 	key, bot, digest, _ := writeKeyAndBottle(t, "x")
 
-	// Missing required flags → usage, exit 2.
+	// Missing required flags, and an unknown one, → usage, exit 2.
 	for _, args := range [][]string{
 		{},
+		{"-no-such-flag"},
 		{"-key", key, bot},
 		{"-key", key, "-project", "p", bot},
 		{"-key", key, "-project", "p", "-version", "1", bot, "extra"},
