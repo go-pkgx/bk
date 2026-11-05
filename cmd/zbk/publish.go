@@ -440,11 +440,61 @@ func publishBottle(o publishOptions) (string, ocispec.Descriptor, error) {
 		}
 		annotations[ABIProvidesAnnotation] = strings.Join(names, ",")
 	}
+	if err := refuseToMoveATag(o, tag, tarball); err != nil {
+		return "", ocispec.Descriptor{}, err
+	}
 	desc, err := ociPush(o.Dist, o.Project, tag, o.OS, o.Arch, tarball, ext, refs, annotations)
 	if err != nil {
 		return "", ocispec.Descriptor{}, err
 	}
 	return tag, desc, nil
+}
+
+// refuseToMoveATag stops a push that would leave an existing HASHED tag
+// resolving to bytes it did not resolve to before.
+//
+// ⛔⛔ A TAG WHOSE CONTENT CAN CHANGE IS NOT AN ADDRESS. The whole point of
+// `<version>-h<hash>` is that it names one build; the hash is computed from
+// {platform, variants, closure, recipe} and deliberately NOT from the builder,
+// so a zbk whose output differs produces different bytes under the SAME tag.
+// Re-publishing then silently rewrites what an existing lock, an existing
+// install and an existing signature all refer to — and the signature is the
+// loudest of the three, because the old one still verifies against the old
+// bytes and now sits beside content it was never made for.
+//
+// The check is cheap and reads only the manifest: `BottleDigest` takes the
+// layer digest off the per-platform manifest without pulling the bottle.
+//
+// ⛔ IT IS NOT A REBUILD GUARD. Re-publishing the SAME bytes is the normal,
+// idempotent case — a retried run, a re-dispatch — and is allowed, silently.
+// Only a change of content at a fixed address is refused.
+//
+// ⛔ AND IT NEVER FAILS CLOSED ON NOT KNOWING. An unreachable registry, a tag
+// that does not exist yet, a manifest with no layer: all mean "nothing to
+// contradict", and a factory that stopped because it could not reach ghcr
+// would turn a network blip into a halted campaign. Only a digest that is
+// present AND different refuses.
+func refuseToMoveATag(o publishOptions, tag string, tarball []byte) error {
+	// A bottle with no identity lands on the bare version, which has always
+	// been a moving tag — `bk publish` of something this process did not
+	// build cannot know what it is, and that is stated in buildTag.
+	if o.Concrete.IsZero() {
+		return nil
+	}
+	published, err := ociBottleDigest(o.Dist, o.Project, tag, o.OS, o.Arch)
+	if err != nil || published == "" {
+		return nil
+	}
+	sum := sha256.Sum256(tarball)
+	mine := "sha256:" + hex.EncodeToString(sum[:])
+	if published == mine {
+		return nil
+	}
+	return fmt.Errorf("refusing to move %s %s (%s/%s): it already resolves to %s and this build is %s.\n"+
+		"  A hashed tag names ONE build; rewriting it changes what every existing lock, install and\n"+
+		"  signature refers to. If this build really is different, its identity should be too — see\n"+
+		"  go-zpkg/zbk#416",
+		o.Project, tag, o.OS, o.Arch, published, mine)
 }
 
 // flavoredTag is the registry tag a (project, version) lands under BEFORE the

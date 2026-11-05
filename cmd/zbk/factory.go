@@ -89,7 +89,53 @@ var (
 		}
 		return c.HasPlatform(project, ver, osn, arch)
 	}
+	// factoryPublishedBuilder reads what made the bottle already sitting at a
+	// tag. Separate from factoryHasPlatform rather than folded into it,
+	// because that one is stubbed in a dozen tests and widening it would make
+	// every one of them restate a fact they do not care about.
+	factoryPublishedBuilder = func(dist, project, ver, osn, arch string) (string, error) {
+		c, err := bottle.NewOCIClient(dist)
+		if err != nil {
+			return "", err
+		}
+		_, builder, err := c.ProvenanceOfTag(project, ver, osn, arch)
+		return builder, err
+	}
 )
+
+// staleBuilderNote is the half-sentence appended to a SKIP when the bottle
+// already at that tag was made by a DIFFERENT factory from the one running.
+//
+// ⛔⛔ THE SKIP WAS TRUE AND USELESS. A build's identity is
+// {platform, variants, closure, recipe} and deliberately NOT the builder — a
+// zbk release must not re-address every bottle in the registry, which is Nix's
+// and Spack's position about their own build tools. The consequence is that a
+// zbk fix which changes the produced BYTES with every input unchanged lands on
+// the same tag, finds it occupied, and is skipped. Forever, silently, on every
+// nightly run. (go-zpkg/zbk#416.)
+//
+// This does not rebuild — that would spend the fleet's whole build capacity on
+// every zbk release, for a change that usually alters no output. It makes the
+// skip SAY SO, so a human reading factory logs after a release that is known to
+// change output can re-dispatch those projects with `force`. An invisible skip
+// becomes a fact somebody can act on, which is the smallest honest fix.
+//
+// ⛔ AND IT NEVER TURNS A SKIP INTO A FAILURE. The registry may be unreachable,
+// the bottle may predate provenance, the statement may not parse: all three are
+// "" and all three mean nothing is known, not that anything is wrong. The note
+// is empty whenever the comparison cannot be made.
+func staleBuilderNote(dist, project, tag, osn, arch string) string {
+	published, err := factoryPublishedBuilder(dist, project, tag, osn, arch)
+	if err != nil || published == "" {
+		return ""
+	}
+	mine := builderWithVersion()
+	if published == mine {
+		return ""
+	}
+	return fmt.Sprintf("\n   ⚠ it was built by %s, and this is %s — `force` to rebuild it (go-zpkg/zbk#416)",
+		published, mine)
+}
 
 // runFactory implements `bk factory`: build a set of pantry recipes — expanded
 // to their full runtime closure, deps first — and publish every resulting bottle
@@ -780,7 +826,8 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 			// redundant rebuild is far cheaper than silently skipping the world.
 			fmt.Fprintf(f.stderr, "factory: publish-check %s %s: %v\n", proj, buildTagged, err)
 		case published:
-			fmt.Fprintf(f.stdout, "⏭  SKIP %s %s (%s) — already published\n", proj, buildTagged, f.platform)
+			fmt.Fprintf(f.stdout, "⏭  SKIP %s %s (%s) — already published%s\n",
+				proj, buildTagged, f.platform, staleBuilderNote(f.dist, proj, buildTagged, f.osn, f.arch))
 			f.skipped++
 			return
 		}
