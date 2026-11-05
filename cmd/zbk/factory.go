@@ -62,8 +62,19 @@ var (
 	factoryList      = versions.List
 	factoryResolve   = versions.Resolve
 	factoryPublish   = publishBottle
-	factoryBuild     = func(r *build.Runner, rec *pantry.Recipe, project, constraint string, tgt, host target.Target, out string) (build.Result, error) {
-		return r.Build(rec, project, constraint, tgt, host, out)
+	// factoryPlan settles what a build IS without building it: the resolved
+	// version, the resolved closure, and the identity those give it.
+	//
+	// ⛔ A SEAM OF ITS OWN BECAUSE THE SKIP DEPENDS ON IT. A bottle is
+	// addressed by its identity now, so "is this already published?" cannot
+	// be answered before the closure is resolved — and asking it of the bare
+	// version, as this did while a version was an address, gave the wrong
+	// answer every time a recipe had changed and the version had not.
+	factoryPlan = func(r *build.Runner, rec *pantry.Recipe, project, constraint string, tgt target.Target) (build.Plan, error) {
+		return r.Plan(rec, project, constraint, tgt)
+	}
+	factoryBuild = func(r *build.Runner, p build.Plan, rec *pantry.Recipe, project string, tgt, host target.Target, out string) (build.Result, error) {
+		return r.BuildPlan(p, rec, project, tgt, host, out)
 	}
 	// factoryPublishedVersion is the newest version of a project the REGISTRY
 	// holds for this platform, membership checked — what --test-only tests.
@@ -719,6 +730,11 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 		f.fail(proj, ver, "override", fmt.Errorf("%s did not apply, so this would build an unpatched recipe", strings.Join(patches, ", ")))
 		return
 	}
+	// ⛔ THE VERSION-ONLY TAG, AND ONLY FOR --test-only. It is the prefix the
+	// builds of this version share, not an address: `HasPlatform` on it
+	// answers "is there any bottle of this version here", which is the right
+	// question when nothing is being built and the wrong one when something
+	// is — see the plan below.
 	tag := flavoredTag(proj, ver, f.glibc)
 	// --test-only stops here. The override guard above still applies: an
 	// override that did not apply changes the recipe, and the test: block is
@@ -741,14 +757,30 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 		}
 		return
 	}
+	// ⛔⛔ PLAN BEFORE ASKING WHETHER IT IS PUBLISHED. The identity is a
+	// function of the resolved closure, so the question "is THIS BUILD in the
+	// registry" cannot be asked until the closure exists. Asking it of the
+	// version instead — which is what this did while a version was an address
+	// — skipped every package whose RECIPE had changed, because the version
+	// had not. Nix and Spack both evaluate to a hash before consulting a
+	// binary cache, for exactly this.
+	//
+	// Planning costs the dependency resolution, not a build, and the build
+	// below reuses the plan rather than resolving twice.
+	plan, err := factoryPlan(f.runner, rec, proj, "="+ver, f.tgt)
+	if err != nil {
+		f.fail(proj, ver, "plan", err)
+		return
+	}
+	buildTagged := buildTag(proj, plan.Version, f.glibc, plan.Concrete)
 	if !f.forcing(proj) {
-		switch published, err := factoryHasPlatform(f.dist, proj, tag, f.osn, f.arch); {
+		switch published, err := factoryHasPlatform(f.dist, proj, buildTagged, f.osn, f.arch); {
 		case err != nil:
 			// Treat an unreachable registry as "not published" and build: a
 			// redundant rebuild is far cheaper than silently skipping the world.
-			fmt.Fprintf(f.stderr, "factory: publish-check %s %s: %v\n", proj, tag, err)
+			fmt.Fprintf(f.stderr, "factory: publish-check %s %s: %v\n", proj, buildTagged, err)
 		case published:
-			fmt.Fprintf(f.stdout, "⏭  SKIP %s %s (%s) — already published\n", proj, tag, f.platform)
+			fmt.Fprintf(f.stdout, "⏭  SKIP %s %s (%s) — already published\n", proj, buildTagged, f.platform)
 			f.skipped++
 			return
 		}
@@ -757,7 +789,7 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 	fmt.Fprintf(f.stdout, "::group::build %s %s (%s)\n", proj, ver, f.platform)
 	tw := &tailWriter{w: f.stdout, max: failTailLines}
 	f.runner.Run = runBashTo(tw, tw)
-	res, err := factoryBuild(f.runner, rec, proj, "="+ver, f.tgt, f.host, f.bottles)
+	res, err := factoryBuild(f.runner, plan, rec, proj, f.tgt, f.host, f.bottles)
 	fmt.Fprintln(f.stdout, "::endgroup::")
 	if err != nil {
 		f.failDetail(proj, ver, "build", err, tw.tail())
@@ -797,10 +829,10 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 	// told otherwise.
 	if f.noPublish {
 		fmt.Fprintf(f.stdout, "✅ BUILT %s %s %s — not published (--no-publish): %s\n",
-			proj, flavoredTag(proj, res.Version, f.glibc), f.platform, res.BottlePath)
+			proj, buildTag(proj, res.Version, f.glibc, res.Concrete), f.platform, res.BottlePath)
 		f.ok++
-		f.testPublished(rec, proj, res.Version, bottle.ShortHash(res.SpecHash))
-		f.dropBuildTree(proj, res.Version, bottle.ShortHash(res.SpecHash))
+		f.testPublished(rec, proj, res.Version, res.SpecHash)
+		f.dropBuildTree(proj, res.Version, res.SpecHash)
 		return
 	}
 	tag, desc, err := factoryPublish(publishOptions{
@@ -815,20 +847,26 @@ func (f *factory) buildOne(rec *pantry.Recipe, proj, ver string) {
 		// the field existed. A promotion gate needs the difference said out
 		// loud (go-zpkg/packages#316).
 		Origin: provOrigin{Bootstrap: boolParam(f.runner.Bootstrap), Dist: f.dist},
+		// What this build IS. It becomes the tag's `-h<hash>` and the
+		// manifest's spec annotation, which bottle.VerifySpec checks against
+		// each other — so the two cannot be published out of step.
+		Concrete: res.Concrete,
 	})
 	if err != nil {
 		f.fail(proj, res.Version, "publish", err)
 		return
 	}
-	fmt.Fprintf(f.stdout, "✅ OK %s %s %s\n", proj, flavoredTag(proj, res.Version, f.glibc), f.platform)
+	// `tag` and not a recomputation: it is what factoryPublish actually
+	// pushed under, so a line saying OK cannot name a tag nobody wrote.
+	fmt.Fprintf(f.stdout, "✅ OK %s %s %s\n", proj, tag, f.platform)
 	f.ok++
 	f.pushed = append(f.pushed, published{project: proj, tag: tag, desc: desc})
 	// Before dropBuildTree, though the test reads the INSTALLED prefix and
 	// not the tree: if a test ever does reach for a source file, failing
 	// with it present is a legible failure and failing with it deleted is a
 	// puzzle.
-	f.testPublished(rec, proj, res.Version, bottle.ShortHash(res.SpecHash))
-	f.dropBuildTree(proj, res.Version, bottle.ShortHash(res.SpecHash))
+	f.testPublished(rec, proj, res.Version, res.SpecHash)
+	f.dropBuildTree(proj, res.Version, res.SpecHash)
 }
 
 // dropBuildTree removes a build tree once its bottle is PUBLISHED.

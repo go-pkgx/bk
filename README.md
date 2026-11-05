@@ -407,6 +407,40 @@ The hash is a function of the **inputs**, computed before the compiler runs;
 hashing the output into the output would be circular, which is why Nix hashes
 the derivation and Spack the concrete DAG rather than the result.
 
+#### The registry carries the same address, and the description to check it
+
+A bottle is published under `<version>-h<hash>`, with the glibc flavour still
+readable in between where there is one (`8.20-glibc2.27.0-h<hash>`), and its
+per-platform manifest carries the spec it was hashed from:
+
+```
+io.github.go-zpkg.spec = {"v":1,"platform":"linux/x86-64","deps":[…],"recipe":"sha256:…"}
+```
+
+**The tag carries the address, the annotation carries the meaning**, and
+`bottle.VerifySpec` recomputes the first from the second. That is what makes
+the identity checkable rather than merely asserted: a reader does not have to
+trust that the hash describes this build, it can recompute it. An identity
+hashed over inputs the bottle does not carry — which is what `bk` briefly
+did — cannot be checked at all.
+
+It also settles a question Nix leaves open. A store path says *which* build
+and never *what* build, so "the one with CUDA?" needs a second index; Spack
+keeps the spec queryable (`spack find libdwarf +debug`) and conda writes its
+hash inputs to `info/hash_input.json`. Readability here is a tooling property,
+not a naming one.
+
+A bottle `bk publish` only mirrored gets **neither**: no hash in the tag and no
+annotation. We do not know how it was built, and a tag claiming an address
+would say we do.
+
+Because the tag is an address, `bk factory`'s "already published?" check asks
+about the **build**: it plans first — resolving the version and the closure,
+which is what the identity is a function of — and only then consults the
+registry. Asking about the bare version, which is what it did while a version
+was an address, skipped every package whose *recipe* had changed, because the
+version had not.
+
 Because the directory name can no longer be composed from a version, a reader
 **asks** the store (`bottle.ResolveBuild`) instead of building the path. It
 answers with the one installed build, or refuses when two are installed —

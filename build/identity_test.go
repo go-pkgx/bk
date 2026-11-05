@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-zpkg/bottle"
 	"github.com/go-zpkg/zbk/moustache"
 	"github.com/go-zpkg/zbk/pantry"
 	"github.com/go-zpkg/zbk/target"
@@ -18,40 +19,76 @@ func idRecipe() *pantry.Recipe {
 
 var idTarget = target.Target{Platform: "linux", Arch: "x86-64"}
 
-func mustIdentity(t *testing.T, rec *pantry.Recipe, project, version string, tgt target.Target, deps []moustache.Dep) string {
+func mustHash(t *testing.T, rec *pantry.Recipe, tgt target.Target, deps []moustache.Dep) string {
 	t.Helper()
-	got, err := identity(rec, project, version, tgt, deps)
+	c, err := concreteOf(rec, tgt, deps)
 	if err != nil {
-		t.Fatalf("identity: %v", err)
+		t.Fatalf("concreteOf: %v", err)
 	}
+	got := c.Hash()
 	if got == "" {
-		t.Fatal("identity is empty")
+		t.Fatal("the spec describes nothing, so it has no address")
 	}
 	return got
 }
 
-// ⛔⛔ THE SAME INPUTS GIVE THE SAME ANSWER, TWICE AND IN ANY ORDER. This is
-// the one property the whole hashed layout rests on: the hash goes in the
-// install prefix, which is baked into every binary the build links, so an
-// identity that varied between two runs of the same build would make the
-// store unable to say that a rebuild produced the same thing.
+// ⛔⛔ THE IDENTITY IS WHAT THE PUBLISHED BOTTLE SAYS IT IS. The tag carries
+// `-h<hash>` and the manifest carries the spec; bottle.VerifySpec recomputes
+// the first from the second and refuses the pair when they disagree. So the
+// property that matters is not "we have a hash" but "the hash is a function
+// of the description we publish" — which is exactly what this asserts, by
+// going through the annotation the way a reader does.
+//
+// A hash computed any other way (this package had one, over inputs nothing
+// published carries) would make every bottle fail its own verification, with
+// a message that reads as tampering.
+func TestTheIdentityIsRecomputableFromThePublishedSpec(t *testing.T) {
+	c, err := concreteOf(idRecipe(), idTarget, []moustache.Dep{
+		{Project: "openssl.org", Version: "3.6.4", Path: "/s/openssl.org/v3.6.4-habcdefghijklmnop"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag := "1.2.3" + c.VariantTag()
+	if !strings.HasPrefix(c.VariantTag(), "-h") {
+		t.Fatalf("the tag suffix is not a hash: %q", c.VariantTag())
+	}
+
+	// The round trip a reader makes: split the hash out of the tag, read the
+	// annotation, and check the one against the other.
+	_, wantHash := bottle.SplitVariantHash(tag)
+	if wantHash == "" {
+		t.Fatalf("the tag %q does not read back as carrying a hash", tag)
+	}
+	got, err := bottle.VerifySpec(bottle.MarshalSpec(c), wantHash)
+	if err != nil {
+		t.Fatalf("the bottle would not verify against its own tag: %v", err)
+	}
+	if got.Hash() != c.Hash() {
+		t.Errorf("the spec came back as a different build: %q vs %q", got.Hash(), c.Hash())
+	}
+}
+
+// ⛔⛔ THE SAME INPUTS GIVE THE SAME ANSWER, TWICE AND IN ANY ORDER. The hash
+// goes in the install prefix, which is baked into every binary the build
+// links, so an identity that varied between two runs of the same build would
+// make the store unable to say that a rebuild produced the same thing.
 func TestAnIdentityIsStableAcrossRunsAndDependencyOrder(t *testing.T) {
 	rec := idRecipe()
-	a := mustIdentity(t, rec, "acme.org/tool", "1.2.3", idTarget, nil)
-	if b := mustIdentity(t, rec, "acme.org/tool", "1.2.3", idTarget, nil); a != b {
+	a := mustHash(t, rec, idTarget, nil)
+	if b := mustHash(t, rec, idTarget, nil); a != b {
 		t.Errorf("two runs disagree: %q vs %q", a, b)
 	}
 
 	// Dependencies reach this as a slice built by walking a map, so the order
-	// is whatever Go felt like. Sorting inside identity() is what makes the
-	// two spellings below one identity, and the assertion is that they are.
+	// is whatever Go felt like. The sort in concreteOf is what makes the two
+	// spellings below one identity, and the assertion is that they are.
 	deps := []moustache.Dep{
-		{Project: "openssl.org", Path: "/store/openssl.org/v3.5.8-habcdefghijklmnop"},
-		{Project: "zlib.net", Path: "/store/zlib.net/v1.3.2-hqrstuvwxyz234567"},
+		{Project: "openssl.org", Version: "3.5.8", Path: "/s/openssl.org/v3.5.8-habcdefghijklmnop"},
+		{Project: "zlib.net", Version: "1.3.2", Path: "/s/zlib.net/v1.3.2-hqrstuvwxyz234567"},
 	}
-	fwd := mustIdentity(t, rec, "acme.org/tool", "1.2.3", idTarget, deps)
-	rev := mustIdentity(t, rec, "acme.org/tool", "1.2.3", idTarget,
-		[]moustache.Dep{deps[1], deps[0]})
+	fwd := mustHash(t, rec, idTarget, deps)
+	rev := mustHash(t, rec, idTarget, []moustache.Dep{deps[1], deps[0]})
 	if fwd != rev {
 		t.Errorf("the order a map was walked in changed the identity: %q vs %q", fwd, rev)
 	}
@@ -60,14 +97,13 @@ func TestAnIdentityIsStableAcrossRunsAndDependencyOrder(t *testing.T) {
 	}
 }
 
-// ⛔⛔ EVERY INPUT IS LOAD-BEARING, AND EACH IS CHECKED SEPARATELY. A table
-// that only asserted "these all differ from the base" would pass with an
-// input silently dropped from the hash, as long as one other input varied
-// with it; here each case changes exactly one thing.
+// ⛔⛔ EVERY INPUT IS LOAD-BEARING, AND EACH IS CHECKED AGAINST EVERY OTHER. A
+// table that only compared each case to the base would pass with an input
+// silently dropped from the hash, as long as one other input varied with it.
+// Here each case changes exactly one thing and collides with nothing.
 func TestEveryInputChangesTheIdentity(t *testing.T) {
-	base := mustIdentity(t, idRecipe(), "acme.org/tool", "1.2.3", idTarget, nil)
+	base := mustHash(t, idRecipe(), idTarget, nil)
 
-	otherArch := idRecipe()
 	otherScript := idRecipe()
 	otherScript.Build = map[string]any{"script": []any{"make install", "make check"}}
 	otherURL := idRecipe()
@@ -75,28 +111,23 @@ func TestEveryInputChangesTheIdentity(t *testing.T) {
 
 	seen := map[string]string{base: "the base"}
 	for _, tc := range []struct {
-		what    string
-		rec     *pantry.Recipe
-		project string
-		version string
-		tgt     target.Target
-		deps    []moustache.Dep
+		what string
+		rec  *pantry.Recipe
+		tgt  target.Target
+		deps []moustache.Dep
 	}{
-		{"the platform", otherArch, "acme.org/tool", "1.2.3",
-			target.Target{Platform: "darwin", Arch: "x86-64"}, nil},
-		{"the architecture", otherArch, "acme.org/tool", "1.2.3",
-			target.Target{Platform: "linux", Arch: "aarch64"}, nil},
-		{"the project", idRecipe(), "acme.org/other", "1.2.3", idTarget, nil},
-		{"the version", idRecipe(), "acme.org/tool", "1.2.4", idTarget, nil},
-		{"the build script", otherScript, "acme.org/tool", "1.2.3", idTarget, nil},
-		{"the distributable", otherURL, "acme.org/tool", "1.2.3", idTarget, nil},
-		{"a dependency's resolved prefix", idRecipe(), "acme.org/tool", "1.2.3", idTarget,
-			[]moustache.Dep{{Project: "zlib.net", Path: "/store/zlib.net/v1.3.2-habcdefghijklmnop"}}},
+		{"the platform", idRecipe(), target.Target{Platform: "darwin", Arch: "x86-64"}, nil},
+		{"the architecture", idRecipe(), target.Target{Platform: "linux", Arch: "aarch64"}, nil},
+		{"the build script", otherScript, idTarget, nil},
+		{"the distributable", otherURL, idTarget, nil},
+		{"a dependency", idRecipe(), idTarget,
+			[]moustache.Dep{{Project: "zlib.net", Version: "1.3.2", Path: "/s/zlib.net/v1.3.2-habcdefghijklmnop"}}},
+		{"a dependency's version", idRecipe(), idTarget,
+			[]moustache.Dep{{Project: "zlib.net", Version: "1.3.1", Path: "/s/zlib.net/v1.3.1-habcdefghijklmnop"}}},
+		{"a dependency's own build", idRecipe(), idTarget,
+			[]moustache.Dep{{Project: "zlib.net", Version: "1.3.2", Path: "/s/zlib.net/v1.3.2-hqrstuvwxyz234567"}}},
 	} {
-		got := mustIdentity(t, tc.rec, tc.project, tc.version, tc.tgt, tc.deps)
-		// Collision-checked against every earlier case, not only the base:
-		// two inputs that mapped to one identity would mean the store could
-		// not hold both builds, and comparing to the base alone cannot see it.
+		got := mustHash(t, tc.rec, tc.tgt, tc.deps)
 		if prev, dup := seen[got]; dup {
 			t.Errorf("changing %s gives the same identity as %s: %q", tc.what, prev, got)
 			continue
@@ -105,17 +136,92 @@ func TestEveryInputChangesTheIdentity(t *testing.T) {
 	}
 }
 
+// ⛔ THE PROJECT AND THE VERSION ARE NOT IN THE HASH, AND THAT IS CORRECT.
+// They are in the tag and in the store path the hash is appended to, so the
+// hash only has to separate builds WITHIN one (project, version) — which is
+// what it does. Asserted rather than assumed, because a reader who expected
+// the hash to be globally unique would use it as one.
+func TestTheHashSeparatesBuildsWithinAVersionAndIsNotAGlobalName(t *testing.T) {
+	rec := idRecipe()
+	c, err := concreteOf(rec, idTarget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Identical inputs, so identical hashes — the project and version a
+	// caller would pass alongside are not part of it.
+	again, err := concreteOf(rec, idTarget, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Hash() != again.Hash() {
+		t.Fatalf("one description, two addresses: %q vs %q", c.Hash(), again.Hash())
+	}
+	// And what keeps them apart is the tag the hash hangs off.
+	if buildA, buildB := "1.2.3"+c.VariantTag(), "1.2.4"+again.VariantTag(); buildA == buildB {
+		t.Error("two versions produced one tag")
+	}
+}
+
+// ⛔ A DEPENDENCY INSTALLED WITHOUT A HASH CONTRIBUTES AN EMPTY ONE. That edge
+// degrades to version-level precision and no further, which is the honest
+// state while the registry is being rebuilt — and it must not be mistaken for
+// a hash, nor make the whole identity refuse.
+func TestADependencyWithNoHashDegradesThatEdgeOnly(t *testing.T) {
+	plain := mustHash(t, idRecipe(), idTarget,
+		[]moustache.Dep{{Project: "zlib.net", Version: "1.3.2", Path: "/s/zlib.net/v1.3.2"}})
+	hashed := mustHash(t, idRecipe(), idTarget,
+		[]moustache.Dep{{Project: "zlib.net", Version: "1.3.2", Path: "/s/zlib.net/v1.3.2-habcdefghijklmnop"}})
+	if plain == hashed {
+		t.Error("a dependency's hash did not reach the identity")
+	}
+	if got := hashOfPrefix("/s/zlib.net/v1.3.2"); got != "" {
+		t.Errorf("an unhashed prefix yielded a hash: %q", got)
+	}
+	if got := hashOfPrefix("/s/zlib.net/v1.3.2-habcdefghijklmnop"); got != "abcdefghijklmnop" {
+		t.Errorf("the dependency's own hash was not read back: %q", got)
+	}
+	// A prefix we cannot parse is not a hash either, and must not become one.
+	for _, p := range []string{"", "/s/zlib.net/notaversion", "/s/zlib.net"} {
+		if got := hashOfPrefix(p); got != "" {
+			t.Errorf("hashOfPrefix(%q) = %q, want none", p, got)
+		}
+	}
+}
+
+// ⛔ THE DEPENDENCY ORDER IS TOTAL, INCLUDING FOR TWO EDGES TO THE SAME
+// PROJECT. Sorting on the project alone leaves those two in whatever order
+// the map was walked, which is the defect the sort exists to remove — and it
+// would show up only as an identity that changed between runs, which is the
+// hardest kind of bug to catch from the outside.
+func TestTwoEdgesToOneProjectStillSortTotally(t *testing.T) {
+	deps := []moustache.Dep{
+		{Project: "zlib.net", Version: "1.3.2", Path: "/s/zlib.net/v1.3.2-habcdefghijklmnop"},
+		{Project: "zlib.net", Version: "1.2.13", Path: "/s/zlib.net/v1.2.13-hqrstuvwxyz234567"},
+	}
+	fwd := mustHash(t, idRecipe(), idTarget, deps)
+	rev := mustHash(t, idRecipe(), idTarget, []moustache.Dep{deps[1], deps[0]})
+	if fwd != rev {
+		t.Errorf("two edges to one project hash differently by input order: %q vs %q", fwd, rev)
+	}
+	c, err := concreteOf(idRecipe(), idTarget, []moustache.Dep{deps[1], deps[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Deps[0].Version != "1.2.13" {
+		t.Errorf("the lower version did not sort first: %+v", c.Deps)
+	}
+}
+
 // ⛔⛔ A BUILD WHOSE IDENTITY CANNOT BE COMPUTED DOES NOT BUILD. There is no
 // weaker prefix to fall back to: `v<version>` is the shape two builds of one
 // version overwrote each other in, and an identity that failed quietly would
-// either produce it or produce a prefix hashed over less than the closure
-// read. So the failure is returned and the build stops, naming the step.
+// either produce it or produce a prefix hashed over less than the recipe says.
 func TestABuildStopsWhenItsIdentityCannotBeComputed(t *testing.T) {
 	tenv(t)
 	tgt := target.Target{Platform: "linux", Arch: "x86-64"}
 	rec := okRecipe()
-	// A channel has no JSON form, so the recipe does not serialise and
-	// `spec.Hash` refuses rather than hashing over the halves it managed.
+	// A channel has no JSON form, so the recipe does not serialise and the
+	// digest refuses rather than describing less than the recipe says.
 	rec.Build = map[string]any{"script": []any{"make install"}, "unserialisable": make(chan int)}
 
 	_, err := okRunner("acme.org/tool", tgt).Build(rec, "acme.org/tool", "*", tgt, tgt, "")
@@ -124,20 +230,5 @@ func TestABuildStopsWhenItsIdentityCannotBeComputed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "build identity") {
 		t.Errorf("the failure does not name the step: %v", err)
-	}
-}
-
-// Two builds that differ ONLY in a dependency's build — same project, same
-// version, a different hash in its prefix — are different builds. This is the
-// edge the Merkle property rides on, and the one that makes a rebuilt
-// dependency propagate.
-func TestADependencysOwnHashReachesTheIdentity(t *testing.T) {
-	rec := idRecipe()
-	one := mustIdentity(t, rec, "acme.org/tool", "1.2.3", idTarget,
-		[]moustache.Dep{{Project: "zlib.net", Path: "/store/zlib.net/v1.3.2-habcdefghijklmnop"}})
-	two := mustIdentity(t, rec, "acme.org/tool", "1.2.3", idTarget,
-		[]moustache.Dep{{Project: "zlib.net", Path: "/store/zlib.net/v1.3.2-hqrstuvwxyz234567"}})
-	if one == two {
-		t.Error("a dependency rebuilt into a different prefix left the dependent's identity alone")
 	}
 }

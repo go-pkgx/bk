@@ -128,18 +128,18 @@ type Result struct {
 	Install    string
 	ScriptPath string
 	BottlePath string
-	// SpecHash is this build's identity: a Merkle hash over the platform,
-	// the project, the resolved version, the canonical form of the recipe
-	// and the resolved prefix of every dependency. See zbk/spec.
+	// Concrete is what this build IS: the platform, the resolved closure and
+	// the digest of the canonical recipe. It is published verbatim as the
+	// bottle's SpecAnnotation, which is what makes the identity below
+	// RECOMPUTABLE by a reader rather than merely asserted.
+	Concrete bottle.Concrete
+	// SpecHash is Concrete.Hash(), the address: in `Install`, in the registry
+	// tag, and checked against the annotation by bottle.VerifySpec.
 	//
 	// ⛔ IT IS A FUNCTION OF THE INPUTS, NEVER OF THE OUTPUT. It has to be,
-	// because its short form is in `Install` — baked into every binary the
-	// build produces — and hashing the result into the result is circular.
-	// Nix hashes the derivation and Spack the concrete DAG for the same
-	// reason.
-	//
-	// It is what `publish` tags the bottle with and attaches as the spec
-	// annotation, so the registry and the store agree on which build this is.
+	// because it is in `Install` — baked into every binary the build produces
+	// — and hashing the result into the result is circular. Nix hashes the
+	// derivation and Spack the concrete DAG for the same reason.
 	SpecHash string
 	// Source is empty for a recipe with no distributable (a few build entirely
 	// from their dependencies).
@@ -156,60 +156,82 @@ type Result struct {
 	BuildEnv []moustache.Dep
 }
 
-// Build runs the pipeline for project@constraint built for tgt (running on host)
-// and, when distOut != "", packages a bottle there.
-func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, host target.Target, distOut string) (Result, error) {
-	var res Result
+// Plan is everything a build is decided by, settled before anything is built:
+// the version it resolved to, the closure it resolved, and the identity those
+// two give it.
+//
+// ⛔⛔ IT EXISTS SO THE "ALREADY PUBLISHED?" QUESTION CAN BE ASKED ABOUT A
+// BUILD. While a bottle was addressed by its version, the factory could ask
+// that before resolving anything — and got the wrong answer whenever a recipe
+// had changed, because the version had not. Now a bottle is addressed by its
+// identity, the identity is a function of the resolved closure, and so the
+// question cannot be asked until the closure exists. Nix and Spack both
+// evaluate to a hash before consulting a binary cache, for this reason.
+//
+// Nothing in here touches the install prefix: that is what makes it separable
+// at all, and it is also the invariant that keeps the hash a function of the
+// INPUTS rather than of the output.
+type Plan struct {
+	// Version is what the recipe's own `versions:` spec resolved to, and Tag
+	// the raw upstream git tag it came from.
+	Version string
+	Tag     string
+	// Concrete is what this build IS, in the form the published bottle
+	// carries in its SpecAnnotation and a reader can verify against the tag.
+	Concrete bottle.Concrete
+	// SpecHash is Concrete.Hash(): the 16 base32 characters a store path and
+	// an OCI tag can both hold. ⛔ NOT A SECOND DEFINITION — it is read off
+	// Concrete, so the prefix, the tag and the annotation cannot disagree.
+	SpecHash string
+	// BuildEnv is the closure as resolved: the compiler, its libc and every
+	// tool the recipe invoked, at the versions actually used.
+	BuildEnv []moustache.Dep
+
+	deps        []string
+	toolDeps    []string
+	depToks     []moustache.Token
+	fromHost    []string
+	selfDropped bool
+}
+
+// Plan resolves the version and the closure and computes the identity, doing
+// none of the work that follows. It touches no directory.
+func (r *Runner) Plan(recipe *pantry.Recipe, project, constraint string, tgt target.Target) (Plan, error) {
+	var p Plan
 	version, tag, err := r.ResolveVersion(recipe.Versions, constraint)
 	if err != nil {
-		return res, fmt.Errorf("resolve version: %w", err)
+		return p, fmt.Errorf("resolve version: %w", err)
 	}
-	res.Version = version
+	p.Version = version
 	// {{version.tag}} = the raw upstream git tag the version resolved from.
 	// Some url-form specs have no meaningful tag; fall back to the version so
 	// the token still expands rather than staying literal (→ a fetch 404).
 	if tag == "" {
 		tag = version
 	}
+	p.Tag = tag
 
-	// ⛔⛔ THE CLOSURE IS RESOLVED BEFORE THE PREFIX IS CHOSEN, AND THAT ORDER
-	// IS THE WHOLE POINT. The prefix is baked into every binary this build
-	// produces, so if it is to name WHICH build this is, its hash has to be
-	// known before a compiler runs — which means the identity must be a
-	// function of the INPUTS, never of the output. Hashing the result into
-	// the result is circular; Nix hashes the derivation and Spack the
-	// concrete DAG for exactly this reason.
-	//
-	// Nothing in this block touches `paths`, which is why it can move at all:
-	// it reads the recipe, the target and the dependency resolver.
-	deps := EvalLinkDeps(recipe.Dependencies, tgt)
+	p.deps = EvalLinkDeps(recipe.Dependencies, tgt)
 	bd := buildDeps(recipe)
-	var fromHost []string
-	var selfDropped bool
 	if r.Bootstrap {
-		_, selfDropped = bd[project]
+		_, p.selfDropped = bd[project]
 		bd = WithoutSelfDep(project, bd)
-		bd, fromHost = WithoutUnresolvable(bd, tgt, r.toolInstallable(), func(s string) { logf("%s", s) })
-		if selfDropped {
-			fromHost = append(fromHost, project)
+		bd, p.fromHost = WithoutUnresolvable(bd, tgt, r.toolInstallable(), func(s string) { logf("%s", s) })
+		if p.selfDropped {
+			p.fromHost = append(p.fromHost, project)
 		}
 	}
-	toolDeps := EvalToolDeps(project, recipe.Dependencies, bd, tgt)
+	p.toolDeps = EvalToolDeps(project, recipe.Dependencies, bd, tgt)
 	if r.Bootstrap {
-		toolDeps = BootstrapToolDeps(bd, tgt)
+		p.toolDeps = BootstrapToolDeps(bd, tgt)
 	}
-	var depToks []moustache.Token
 	if r.ResolveDep != nil {
 		dt, resolved, err := DepTokens(recipe.Dependencies, bd, tgt, config.PkgxDir(), r.ResolveDep)
 		if err != nil {
-			return res, fmt.Errorf("resolve deps: %w", err)
+			return p, fmt.Errorf("resolve deps: %w", err)
 		}
-		depToks = dt
-		// The build environment, kept rather than discarded: the compiler,
-		// its libc and every tool the recipe invoked, at the versions
-		// actually used. It is what a published bottle has to be able to
-		// name when it is rebuilt for a toolchain vulnerability.
-		res.BuildEnv = resolved
+		p.depToks = dt
+		p.BuildEnv = resolved
 	}
 
 	// ⛔ DEPENDENCIES ARE IDENTIFIED BY THEIR RESOLVED PREFIX, AND THAT MAKES
@@ -222,13 +244,48 @@ func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, h
 	// degrades to version-level precision for that edge and no further, and
 	// it repairs itself as the registry is rebuilt. Said plainly rather than
 	// hidden: a hash is only as sharp as what it is taken over.
-	id, err := identity(recipe, project, version, tgt, res.BuildEnv)
+	c, err := concreteOf(recipe, tgt, p.BuildEnv)
 	if err != nil {
-		return res, fmt.Errorf("build identity: %w", err)
+		return p, fmt.Errorf("build identity: %w", err)
 	}
-	res.SpecHash = id
+	p.Concrete = c
+	// ⛔ NO GUARD HERE FOR AN EMPTY HASH, ON PURPOSE. Concrete.Hash() is ""
+	// only for a spec that records NOTHING, and concreteOf always sets both
+	// Platform and Recipe — so a check here is a branch no caller can reach
+	// and no test can exercise, which a later reader mistakes for a real
+	// case. The invariant is still enforced, one layer down and by something
+	// that CAN fire: config.Compute panics on an empty hash, because a prefix
+	// without one is the old `v<version>` shape and must never be produced.
+	p.SpecHash = c.Hash()
+	return p, nil
+}
 
-	paths := config.Compute(project, version, bottle.ShortHash(id), tgt)
+// Build runs the pipeline for project@constraint built for tgt (running on host)
+// and, when distOut != "", packages a bottle there.
+//
+// It plans first. A caller that has already planned — the factory, which has
+// to know the identity before it can ask whether this build is published —
+// calls BuildPlan instead, so the closure is resolved once.
+func (r *Runner) Build(recipe *pantry.Recipe, project, constraint string, tgt, host target.Target, distOut string) (Result, error) {
+	p, err := r.Plan(recipe, project, constraint, tgt)
+	if err != nil {
+		return Result{Version: p.Version}, err
+	}
+	return r.BuildPlan(p, recipe, project, tgt, host, distOut)
+}
+
+// BuildPlan runs the pipeline for a plan already settled.
+func (r *Runner) BuildPlan(p Plan, recipe *pantry.Recipe, project string, tgt, host target.Target, distOut string) (Result, error) {
+	res := Result{Version: p.Version, BuildEnv: p.BuildEnv, SpecHash: p.SpecHash, Concrete: p.Concrete}
+	version, tag := p.Version, p.Tag
+	deps, toolDeps, depToks := p.deps, p.toolDeps, p.depToks
+	fromHost, selfDropped := p.fromHost, p.selfDropped
+
+	// ⛔ THE HASH GOES IN AS IT IS. It is already Concrete.Hash() — 16 base32
+	// characters — and shortening it again here would make the prefix carry
+	// a hash of a hash, which is a second definition wearing the first one's
+	// name and would not match the tag.
+	paths := config.Compute(project, version, p.SpecHash, tgt)
 	// ⛔ PUBLISHED FOR THE SCRIPT RUNNER, which is a seam. A real `Run`
 	// installs into the prefix the SCRIPT was given — moustache substituted
 	// it — but a stubbed one has no script to read it from, and the prefix

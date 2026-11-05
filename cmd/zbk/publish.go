@@ -333,6 +333,18 @@ type publishOptions struct {
 	// `bk publish` on a bottle this process did not build, and which a
 	// promotion gate must treat as "not promotable" rather than as "fine".
 	Origin provOrigin
+	// Concrete is what the build IS: the platform, the resolved closure and
+	// the digest of the canonical recipe. It becomes the tag's `-h<hash>` AND
+	// the manifest's spec annotation, which is what lets a reader recompute
+	// the address from the description instead of taking it on trust.
+	//
+	// ⛔ THE ZERO VALUE IS A STATEMENT, NOT A GAP TO PAPER OVER. `bk publish`
+	// on a bottle this process did not build knows nothing about how it was
+	// made, so it publishes an unhashed tag and no annotation — the honest
+	// shape for a mirrored bottle, and distinguishable from a build whose
+	// description we do hold. bottle.Concrete.Hash() returns "" for it, and
+	// bottle.SpecOf reports "no spec" rather than an error.
+	Concrete bottle.Concrete
 }
 
 // publishBottle pushes a built bottle with its SBOM, SLSA provenance and (given
@@ -380,8 +392,27 @@ func publishBottle(o publishOptions) (string, ocispec.Descriptor, error) {
 	if vexRef != nil {
 		refs = append(refs, *vexRef)
 	}
-	tag := flavoredTag(o.Project, o.Version, o.Glibc)
+	tag := buildTag(o.Project, o.Version, o.Glibc, o.Concrete)
 	var annotations map[string]string
+	// ⛔ THE SPEC GOES ON FIRST, so that nothing below can overwrite it by
+	// assigning a fresh map. The tag says WHICH build; this says WHAT build,
+	// and bottle.VerifySpec refuses the pair when they disagree — so a bottle
+	// published with one and not the other is worse than one published with
+	// neither.
+	if spec := o.Concrete; !spec.IsZero() {
+		annotations = map[string]string{bottle.SpecAnnotation: bottle.MarshalSpec(spec)}
+	}
+	// ⛔ EVERY BRANCH BELOW ADDS, NONE REPLACES. Each of these used to build a
+	// fresh map, which was harmless while the spec did not exist and would
+	// now drop it — leaving a tag that claims a hash and a manifest that does
+	// not say what the hash is of, which bottle.VerifySpec reads as a bottle
+	// that does not match its own description.
+	set := func(k, v string) {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[k] = v
+	}
 	switch {
 	case o.Project == bottle.GlibcProject:
 		// The glibc bottle IS the glibc — no flavored tag; instead self-describe
@@ -391,11 +422,11 @@ func publishBottle(o publishOptions) (string, ocispec.Descriptor, error) {
 		if err != nil {
 			return "", ocispec.Descriptor{}, err
 		}
-		annotations = map[string]string{bottle.GlibcMinKernelAnnotation: mk}
+		set(bottle.GlibcMinKernelAnnotation, mk)
 	case o.Glibc != "":
 		// A tool built against a specific glibc: flavor the tag + self-describe
 		// which glibc, so a glibc-aware resolver matches it without parsing tags.
-		annotations = map[string]string{bottle.GlibcVersionAnnotation: strings.TrimPrefix(o.Glibc, "=")}
+		set(bottle.GlibcVersionAnnotation, strings.TrimPrefix(o.Glibc, "="))
 	}
 	// Every bottle says which ABIs it provides, whatever else is annotated.
 	// A failure to read one is not a reason to refuse the publish: the bottle is
@@ -416,15 +447,37 @@ func publishBottle(o publishOptions) (string, ocispec.Descriptor, error) {
 	return tag, desc, nil
 }
 
-// flavoredTag is the registry tag a (project, version) lands under: the plain
-// version, or <version>-glibc<ver> for a tool built against a pinned glibc. The
-// glibc package itself is never flavored (it IS the glibc). The factory computes
-// the same tag to test whether a bottle is already published.
+// flavoredTag is the registry tag a (project, version) lands under BEFORE the
+// build's identity is appended: the plain version, or <version>-glibc<ver> for
+// a tool built against a pinned glibc. The glibc package itself is never
+// flavored (it IS the glibc).
+//
+// ⛔ THIS IS NOT AN ADDRESS ON ITS OWN ANY MORE. Two builds of one version
+// land on it, which is the collision the hash exists to end — see buildTag.
+// It survives as the prefix those tags share, which is what lets the builds
+// of a version be LISTED.
 func flavoredTag(project, version, glibc string) string {
 	if glibc == "" || project == bottle.GlibcProject {
 		return version
 	}
 	return version + "-glibc" + strings.TrimPrefix(glibc, "=")
+}
+
+// buildTag is the tag a BUILD lands under: the flavoured version with the
+// build's identity appended, `1.3.2-habcdefghijklmnop`.
+//
+// ⛔⛔ THE HASH COMES FROM THE SPEC, NOT FROM A SECOND COMPUTATION. It is
+// `Concrete.Hash()`, the same value `bottle.VerifySpec` recomputes from the
+// annotation on the other side; a tag built from anything else would make
+// every bottle fail its own verification, and the message — "the bottle does
+// not match its own description" — reads as tampering rather than as a bug
+// here.
+//
+// An empty spec yields the bare flavoured version. That is `bk publish` on a
+// bottle this process did not build: we do not know what it is, so we do not
+// give it an address that claims we do.
+func buildTag(project, version, glibc string, spec bottle.Concrete) string {
+	return flavoredTag(project, version, glibc) + spec.VariantTag()
 }
 
 // environmentMaterials renders the build environment as SLSA

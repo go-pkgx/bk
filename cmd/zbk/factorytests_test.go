@@ -193,7 +193,7 @@ func TestFactoryTestOnlyBuildsNothing(t *testing.T) {
 	}
 	built := false
 	prevBuild := factoryBuild
-	factoryBuild = func(*build.Runner, *pantry.Recipe, string, string, target.Target, target.Target, string) (build.Result, error) {
+	factoryBuild = func(*build.Runner, build.Plan, *pantry.Recipe, string, target.Target, target.Target, string) (build.Result, error) {
 		built = true
 		return build.Result{}, nil
 	}
