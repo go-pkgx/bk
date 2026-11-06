@@ -208,6 +208,67 @@ func TestPublishRefusesUnsignedOrUnidentified(t *testing.T) {
 	}
 }
 
+// ⛔⛔ TWO SPELLINGS OF ONE VALUE ARE REFUSED, NOT RECONCILED. A precedence
+// rule between --spec-recipe and --spec-recipe-from would be a second
+// definition of the build's identity, which this project has already paid for
+// once: two definitions of one hash meant a bottle failed its own
+// verification with a message that read as tampering.
+func TestSpecRecipeFromFile(t *testing.T) {
+	dir := t.TempDir()
+	desc := filepath.Join(dir, "build.txt")
+	if err := os.WriteFile(desc, []byte("module=x\nversion=1\nGOOS=wasip1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := recipeDigestFromFlags("", desc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("module=x\nversion=1\nGOOS=wasip1\n"))
+	if want := "sha256:" + hex.EncodeToString(sum[:]); got != want {
+		t.Errorf("digest = %q, want %q", got, want)
+	}
+
+	// The literal passes through, and neither given is neither.
+	if got, err := recipeDigestFromFlags("sha256:abc", ""); err != nil || got != "sha256:abc" {
+		t.Errorf("literal: %q %v", got, err)
+	}
+	if got, err := recipeDigestFromFlags("", ""); err != nil || got != "" {
+		t.Errorf("neither: %q %v", got, err)
+	}
+
+	if _, err := recipeDigestFromFlags("sha256:abc", desc); err == nil {
+		t.Error("both spellings at once should be refused")
+	}
+	if _, err := recipeDigestFromFlags("", filepath.Join(dir, "absent")); err == nil {
+		t.Error("an unreadable file should be an error")
+	}
+
+	// ⛔ An EMPTY file hashes perfectly well — to the same value for every
+	// lane that makes the same mistake — so a whole platform could publish
+	// under one shared identity with nothing to say so.
+	empty := filepath.Join(dir, "empty.txt")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recipeDigestFromFlags("", empty); err == nil {
+		t.Error("an empty description should be refused")
+	}
+
+	// And the command stops on it, with exit 2 — a usage mistake, not a
+	// runtime one, so nothing is pushed and the operator is told which flag.
+	b := writeBottle(t, "rf.tar.gz")
+	c, _, errs := run2(t, "publish", "--to", "oci://x/y", "--project", "p", "--version", "1",
+		"--platform", "linux/x86-64", "--allow-unsigned",
+		"--spec-recipe", "sha256:abc", "--spec-recipe-from", desc, b)
+	if c != 2 {
+		t.Fatalf("both recipe spellings: code=%d, want 2", c)
+	}
+	if !strings.Contains(errs, "--spec-recipe-from") {
+		t.Errorf("the refusal should name the flags: %q", errs)
+	}
+}
+
 // A dependency is stated as project=version, with the hash optional — a Go
 // toolchain from the runner's image has a version and no bottle identity, and
 // that is the truth about it.
