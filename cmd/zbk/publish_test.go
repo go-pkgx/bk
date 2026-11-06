@@ -269,6 +269,58 @@ func TestSpecRecipeFromFile(t *testing.T) {
 	}
 }
 
+// ⛔⛔ A PUBLIC KEY IN THE SIGNING SLOT SAYS SO. This is the mistake somebody
+// actually made, into a CI secret, on 2026-11-06: both files open with
+// `untrusted comment:`, both hold one base64 line, and the one you are told
+// to publish is the public one. `sign: malformed secret key` sent the reader
+// looking for a corrupted paste.
+func TestABadSigningKeySaysWhichMistakeItIs(t *testing.T) {
+	kp, err := sign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	pub := filepath.Join(dir, "pub.key")
+	if err := os.WriteFile(pub, []byte(kp.PublicKeyFile("oops")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = loadSigningKey(pub)
+	if err == nil {
+		t.Fatal("a public key was accepted as a signing key")
+	}
+	for _, want := range []string{"PUBLIC key", "96", "56"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the message should mention %q: %v", want, err)
+		}
+	}
+	// ⛔ AND IT CARRIES NO KEY MATERIAL. The content might be a real secret
+	// key that failed for another reason; explaining it by quoting it would
+	// put it in a CI log.
+	if strings.Contains(err.Error(), kp.PublicKeyString()) {
+		t.Error("the message quoted the key")
+	}
+
+	// Anything else keeps the parser's own words rather than being dressed
+	// up as a public key.
+	junk := filepath.Join(dir, "junk.key")
+	if err := os.WriteFile(junk, []byte("untrusted comment: x\nnot base64 at all!!\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSigningKey(junk); err == nil || strings.Contains(err.Error(), "PUBLIC key") {
+		t.Errorf("junk should not be reported as a public key: %v", err)
+	}
+
+	// The real thing still loads.
+	sec := filepath.Join(dir, "sec.key")
+	if err := os.WriteFile(sec, []byte(kp.SecretKeyFile("good")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSigningKey(sec); err != nil {
+		t.Errorf("a valid secret key was refused: %v", err)
+	}
+}
+
 // A dependency is stated as project=version, with the hash optional — a Go
 // toolchain from the runner's image has a version and no bottle identity, and
 // that is the truth about it.
