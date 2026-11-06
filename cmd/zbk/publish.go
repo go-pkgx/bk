@@ -263,6 +263,7 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 	var specDeps depFlag
 	f.Var(&specDeps, "spec-dep", "a resolved dependency of this build, `project=version[=hash]`, repeatable. For a lane that builds without a pantry plan — a Go cross-build, say — this is how the TOOLCHAIN gets into the identity, which is the whole point: a rebuild against a patched Go must not land on the first one's address")
 	specRecipe := f.String("spec-recipe", "", "digest of the resolved build — the script after substitution, the environment, the flags. ⛔ NOT a digest of a recipe FILE: a reflowed comment would rebuild the world")
+	specRecipeFrom := f.String("spec-recipe-from", "", "`file` describing the resolved build; its sha256 becomes the recipe digest. For a lane whose build is a command rather than a pantry script: write what decided the output — module, version, package, GOOS/GOARCH, flags, toolchain — and let this digest it, instead of computing a hash in the shell")
 	allowUnsigned := f.Bool("allow-unsigned", false, "publish without a signature. ⛔ A CLIENT VERIFIES FAIL-CLOSED BY DEFAULT, so an unsigned bottle is one nobody can install without turning verification off")
 	allowUnidentified := f.Bool("allow-unidentified", false, "publish without a build identity, under the bare version tag. For a bottle this process did not build — a mirror — where claiming an identity would be a claim nothing supports")
 	if err := f.Parse(args); err != nil {
@@ -295,9 +296,14 @@ func runPublish(args []string, stdout, stderr io.Writer) int {
 	// that platform. An address that collides across projects is not an
 	// address. Found by the gate's own test, which could not make the
 	// unidentified case happen.
+	recipe, err := recipeDigestFromFlags(*specRecipe, *specRecipeFrom)
+	if err != nil {
+		fmt.Fprintln(stderr, "publish:", err)
+		return 2
+	}
 	var spec bottle.Concrete
-	if *specRecipe != "" || len(specDeps.deps) > 0 {
-		spec = bottle.Concrete{Platform: *platform, Deps: specDeps.deps, Recipe: *specRecipe}
+	if recipe != "" || len(specDeps.deps) > 0 {
+		spec = bottle.Concrete{Platform: *platform, Deps: specDeps.deps, Recipe: recipe}
 	}
 	if err := everythingSignedAndIdentified(kp, spec, *allowUnsigned, *allowUnidentified); err != nil {
 		fmt.Fprintln(stderr, "publish:", err)
@@ -353,6 +359,41 @@ func everythingSignedAndIdentified(kp *sign.Keypair, spec bottle.Concrete, allow
 			"--spec-recipe to state it, or --allow-unidentified for a bottle this process did not build")
 	}
 	return nil
+}
+
+// recipeDigestFromFlags settles --spec-recipe against --spec-recipe-from.
+//
+// ⛔ BOTH AT ONCE IS REFUSED, NOT RECONCILED. They are two spellings of one
+// value, and a precedence rule between them is a second definition of the
+// build's identity — the exact shape of a defect this project has already
+// paid for once, where two definitions of one hash meant a bottle failed its
+// own verification with a message that read as tampering.
+//
+// The file is digested here rather than in the caller's shell because a
+// digest computed by a pipeline is a digest nobody tested, and because the
+// bytes that decide an identity should be hashed by the thing that records
+// it.
+func recipeDigestFromFlags(literal, from string) (string, error) {
+	if literal != "" && from != "" {
+		return "", errors.New("--spec-recipe and --spec-recipe-from both given: they are two spellings of one value, " +
+			"and choosing between them here would be a second definition of this build's identity")
+	}
+	if from == "" {
+		return literal, nil
+	}
+	b, err := os.ReadFile(from)
+	if err != nil {
+		return "", fmt.Errorf("--spec-recipe-from: %w", err)
+	}
+	// ⛔ AN EMPTY FILE IS A MISTAKE, NOT A DIGEST. It hashes perfectly well,
+	// to the same value for every project that makes the same mistake, so a
+	// whole lane could publish under one shared identity and nothing would
+	// say so.
+	if len(b) == 0 {
+		return "", fmt.Errorf("--spec-recipe-from %s is empty: every build that did this would share one identity", from)
+	}
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // depFlag collects repeated --spec-dep values.
