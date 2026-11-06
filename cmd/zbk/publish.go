@@ -426,7 +426,46 @@ func loadSigningKey(path string) (*sign.Keypair, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sign.LoadSecretKey(string(kb))
+	kp, err := sign.LoadSecretKey(string(kb))
+	if err != nil {
+		return nil, explainBadKey(string(kb), err)
+	}
+	return kp, nil
+}
+
+// explainBadKey turns `sign: malformed secret key` into a sentence that names
+// the mistake it almost always is.
+//
+// ⛔⛔ THE BARE MESSAGE COST A WHOLE CYCLE. A factory run on 2026-11-06 said
+// `signing: enabled` and then `publish: sign: malformed secret key`, and it
+// took an experiment — feeding the parser nine spellings of a key file — to
+// learn that the parser is tolerant of every formatting difference (trailing
+// newline or not, CRLF, surrounding spaces, a missing comment line) and that
+// exactly one thing produces that error: a PUBLIC key where the secret one
+// belongs.
+//
+// It is the easy mistake to make. Both files open with `untrusted comment:`,
+// both hold one base64 line, and the one you are told to publish is the
+// public one. The only visible difference is the length — 56 characters
+// against 96 — which nobody knows to look at.
+//
+// ⛔ AND IT PRINTS NO KEY MATERIAL. The content here may be a secret key that
+// failed for some other reason; echoing it to explain itself would put it in
+// a CI log. Only the shape is reported.
+func explainBadKey(body string, err error) error {
+	if _, _, perr := sign.ParsePublicKey(strings.TrimSpace(lastLine(body))); perr == nil {
+		return fmt.Errorf("this is a PUBLIC key, not a secret one: it is the half you publish, "+
+			"and it cannot sign. A secret key file's payload line is 96 characters; a public "+
+			"key's is 56 (%w)", err)
+	}
+	return err
+}
+
+// lastLine is the payload line of a two-line key file, or the whole thing
+// when there is only one.
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\r\n"), "\n")
+	return lines[len(lines)-1]
 }
 
 // publishOptions describes one bottle push.
