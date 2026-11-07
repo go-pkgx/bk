@@ -274,6 +274,39 @@ edits   = [{ path = "distributable", set = 7 }]
 		}
 	})
 
+	// ⛔⛔ AND THE SAME REFUSAL ON THE UPSTREAM FILE IS NOT OUR FINDING.
+	// Closing the schema (#423) made us decline 42 of upstream's 1932 recipes
+	// on keys nothing here implements — `aliases`, `unpackaged`, `options`.
+	// Reported as override failures, they turned this step red on
+	// `additional properties 'aliases' not allowed` for python.org,
+	// protobuf.dev and rust-lang.org, which says nothing whatever about our
+	// patches.
+	//
+	// The companion above — "it produces something a recipe may not say" —
+	// is the other half, and the two together are why the upstream recipe is
+	// validated FIRST: refused before any override, nothing can be concluded
+	// about ours; refused only after, the override produced it.
+	t.Run("upstream's own recipe is one this schema declines", func(t *testing.T) {
+		dir, pantry := ovTree(t, logicalRecipe+"aliases:\n  - acme\n", "")
+		writeHCL(t, dir, "acme.hcl", `
+project = "acme.org"
+why     = "our registry carries no openssl 1.x"
+edits   = [{ path = "dependencies.openssl.org", set = "^3" }]
+`)
+		rc, out, errb := ov(t, "--dir", dir, "--pantry", pantry)
+		if rc != 0 {
+			t.Errorf("a recipe OUR schema declines is not an override failure: rc = %d\n%s", rc, errb)
+		}
+		// ⛔ Counted, not skipped: a tolerant skip here would leave the
+		// "1 logical override(s)" line above measuring nothing at all.
+		if !strings.Contains(out, "1 of 1 upstream recipe(s) this schema declines") {
+			t.Errorf("the declined recipe was not counted:\n%s", out)
+		}
+		if !strings.Contains(out, "acme.org") {
+			t.Errorf("the report does not name which one:\n%s", out)
+		}
+	})
+
 	t.Run("a file that does not parse", func(t *testing.T) {
 		dir, pantry := ovTree(t, logicalRecipe, "")
 		writeHCL(t, dir, "bad.hcl", "project = ")
