@@ -6,6 +6,7 @@ package pantry
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/go-zpkg/zbk/schema"
@@ -67,6 +68,23 @@ type Runtime struct {
 	Env map[string]any `yaml:"env"`
 }
 
+// ErrSchema reports that a recipe does not satisfy the authoritative schema,
+// as distinct from being unreadable or absent.
+//
+// ⛔⛔ THE DISTINCTION IS LOAD-BEARING SINCE THE SCHEMA WAS CLOSED. Closing
+// `additionalProperties` (#423) made us refuse 42 of the 1932 upstream
+// recipes, which is intended — they rely on keys nothing here implements. But
+// `zbk overrides` validated the OVERRIDDEN recipe and reported every error as
+// "override(s) whose premise is gone", so a recipe our schema declines became
+// indistinguishable from a patch that no longer applies, and the step went red
+// on `additional properties 'aliases' not allowed` for python.org,
+// protobuf.dev and rust-lang.org.
+//
+// Those are two different findings about two different files. Validating
+// somebody else's recipe against our schema and calling the result an override
+// failure blames our patch for their key.
+var ErrSchema = errors.New("pantry: schema validation failed")
+
 // compiledSchema is the package.yml JSON Schema, compiled once at load.
 var compiledSchema = must(compile(schema.PackageJSON))
 
@@ -98,7 +116,7 @@ func Validate(data []byte) error {
 	}
 	doc = toJSONValue(doc)
 	if err := compiledSchema.Validate(doc); err != nil {
-		return fmt.Errorf("pantry: schema validation failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrSchema, err)
 	}
 	return nil
 }

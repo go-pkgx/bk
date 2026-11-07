@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/go-zpkg/zbk/logical"
 	"github.com/go-zpkg/zbk/overrides"
+	"github.com/go-zpkg/zbk/pantry"
 	"github.com/go-zpkg/zbk/recipefile"
 )
 
@@ -110,11 +112,37 @@ func checkLogical(dir, pantryDir string, stdout, stderr io.Writer) (int, int) {
 	}
 
 	applied, redundant := 0, 0
-	var obsolete, broken []string
+	var obsolete, broken, declined []string
 	for _, proj := range projects {
 		// Through the loader, so the recipe is read, overridden and validated
 		// exactly as the factory will do it. A check that read the file its
 		// own way would be checking its own reader.
+		// ⛔⛔ WHOSE FAULT THE SCHEMA REFUSAL IS DEPENDS ON WHEN IT HAPPENS, AND
+		// THE FIRST VERSION OF THIS FIX GOT THAT WRONG. Since the schema was
+		// closed (#423) we refuse 42 of upstream's 1932 recipes — deliberately,
+		// they use keys nothing here implements — and this loop reported every
+		// error as "whose premise is gone", so `additional properties
+		// 'aliases' not allowed` read as *our patch no longer applies to
+		// python.org*. That is a finding about THEIR file, not ours.
+		//
+		// But treating every schema refusal that way is equally wrong, and
+		// `TestOverridesChecksTheLogicalOnes/it_produces_something_a_recipe_
+		// may_not_say` says so: an override that sets `distributable = 7`
+		// produces a recipe the schema refuses, and that one IS ours. A test
+		// older than this change caught the over-correction.
+		//
+		// So the upstream recipe is validated FIRST. If it is already refused,
+		// nothing can be concluded about our override and the project is
+		// declined. If it validates and the OVERRIDDEN result does not, the
+		// override produced it, and that fails.
+		if _, uerr := recipefile.Load(pantryDir, proj); errors.Is(uerr, pantry.ErrSchema) {
+			// ⛔ COUNTED, NOT SKIPPED. A tolerant skip becomes a silent filter:
+			// if this ever covers most of the set, the "N logical override(s)"
+			// line above is measuring almost nothing, and the count below is
+			// the only thing that would say so.
+			declined = append(declined, fmt.Sprintf("  %s", proj))
+			continue
+		}
 		_, res, err := recipefile.LoadOverriddenReporting(set, pantryDir, proj)
 		if err != nil {
 			broken = append(broken, fmt.Sprintf("  %s: %v", proj, err))
@@ -136,6 +164,14 @@ func checkLogical(dir, pantryDir string, stdout, stderr io.Writer) (int, int) {
 
 	fmt.Fprintf(stdout, "%d logical override(s): %d operation(s) applied, %d already true\n",
 		len(projects), applied, redundant)
+	if len(declined) > 0 {
+		sort.Strings(declined)
+		fmt.Fprintf(stdout, "%d of %d upstream recipe(s) this schema declines, so their "+
+			"overrides were not checked:\n", len(declined), len(projects))
+		for _, d := range declined {
+			fmt.Fprintln(stdout, d)
+		}
+	}
 	if len(obsolete) > 0 {
 		sort.Strings(obsolete)
 		fmt.Fprintf(stdout, "%d override(s) upstream has caught up with — delete them:\n", len(obsolete))
