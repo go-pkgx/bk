@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -598,12 +600,15 @@ type source struct {
 	// with the URL, which is why openssl.org — the only recipe that had one —
 	// spells it this way.
 	sha string
+	// sha256 is the digest the RECIPE pins, already resolved for the version
+	// being built. Empty when the recipe pins nothing.
+	sha256 string
 }
 
 // oneSource derives a single fetch source from a scalar (string) or map-form
 // distributable entry, applying the version moustaches to its fields. Each
 // entry keeps its own url / strip-components / git ref.
-func oneSource(dist any, toks []moustache.Token) (source, error) {
+func oneSource(dist any, version string, toks []moustache.Token) (source, error) {
 	switch d := dist.(type) {
 	case string:
 		return source{url: moustache.Apply(d, toks)}, nil
@@ -612,6 +617,11 @@ func oneSource(dist any, toks []moustache.Token) (source, error) {
 		if ref, ok := d["ref"].(string); ok && ref != "" {
 			s.git, s.ref = true, moustache.Apply(ref, toks)
 		}
+		pinned, err := pinnedDigest(d["sha256"], version)
+		if err != nil {
+			return s, err
+		}
+		s.sha256 = pinned
 		// `${{url}}` in a sha refers to this entry's own url, so the token is
 		// added here rather than by the caller: a list-form distributable has a
 		// different url per entry, and openssl.org is exactly that shape.
@@ -653,7 +663,7 @@ func sourcesOf(dist any, version, tag string) ([]source, error) {
 		}
 		srcs := make([]source, 0, len(lst))
 		for _, e := range lst {
-			s, err := oneSource(e, toks)
+			s, err := oneSource(e, version, toks)
 			if err != nil {
 				return nil, err
 			}
@@ -661,11 +671,66 @@ func sourcesOf(dist any, version, tag string) ([]source, error) {
 		}
 		return srcs, nil
 	}
-	s, err := oneSource(dist, toks)
+	s, err := oneSource(dist, version, toks)
 	if err != nil {
 		return nil, err
 	}
 	return []source{s}, nil
+}
+
+// hex64 is a lowercase SHA-256 in hex, which is the only shape a pinned
+// digest may take. A pin that is almost a digest is worse than none: it reads
+// as a control and compares against nothing real.
+var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// pinnedDigest resolves the recipe's `sha256:` for the version being built.
+//
+// ⛔⛔ A PIN BELONGS TO A VERSION, NOT TO A URL. The distributable's url
+// interpolates {{version.raw}}, so one entry serves every version the recipe
+// can resolve, and a single scalar digest would be right for exactly one of
+// them and a lie for the rest. Spack pins on `version(…, sha256=)` and Guix
+// on the origin of a specific source for the same reason. So the map form —
+// version → digest — is the real shape, and the scalar is allowed only as
+// the degenerate case of a recipe that resolves one version.
+//
+// ⛔ AND A RECIPE THAT PINS IS FAIL-CLOSED. If `sha256:` is present and the
+// version being built has no entry, the build is REFUSED rather than falling
+// back to an unverified fetch. Opting in and then silently skipping the
+// versions nobody got round to is how a control becomes decoration; a
+// version the author did not pin is a version they have not vouched for.
+func pinnedDigest(v any, version string) (string, error) {
+	switch d := v.(type) {
+	case nil:
+		return "", nil
+	case string:
+		if !hex64.MatchString(d) {
+			return "", fmt.Errorf("sha256 %q is not a lowercase hex SHA-256", d)
+		}
+		return d, nil
+	case map[string]any:
+		raw, ok := d[version]
+		if !ok {
+			return "", fmt.Errorf("sha256 is pinned for %s but not for %s, which is "+
+				"the version being built — pin it or remove the others",
+				strings.Join(sortedKeys(d), ", "), version)
+		}
+		got := str(raw)
+		if !hex64.MatchString(got) {
+			return "", fmt.Errorf("sha256 for %s is %q, not a lowercase hex SHA-256", version, got)
+		}
+		return got, nil
+	default:
+		return "", fmt.Errorf("sha256 must be a digest or a map of version to digest, got %T", v)
+	}
+}
+
+func sortedKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ErrChecksumMismatch is returned when a downloaded archive does not match the
@@ -683,6 +748,24 @@ var ErrChecksumMismatch = errors.New("build: source checksum mismatch")
 // was unavailable, so we built anyway" is exactly the reasoning that leaves a
 // verification permanently disarmed.
 func (r *Runner) verifyChecksum(src source, got string) error {
+	// ⛔ THE PINNED DIGEST IS CHECKED FIRST, AND IT IS THE STRONGER CONTROL.
+	// `sha:` names a .sha256 served by the same host as the archive, so it
+	// catches corruption and not substitution; fetch.Pin is trust on first
+	// use and by construction cannot refuse a FIRST fetch — it records it.
+	// Only a digest written into the recipe by whoever read the release
+	// covers that case, and it needs no network to do it.
+	if src.sha256 != "" {
+		if src.git {
+			return fmt.Errorf("%w: %s pins a sha256 and is a git checkout — a commit "+
+				"is not a hash of bytes, so the pin can never be checked",
+				ErrChecksumMismatch, src.url)
+		}
+		if !strings.EqualFold(src.sha256, got) {
+			return fmt.Errorf("%w: %s\n  pinned by the recipe: %s\n  actually arrived: %s",
+				ErrChecksumMismatch, src.url, src.sha256, got)
+		}
+		logf("source digest matches the recipe's pin")
+	}
 	if src.sha == "" || src.git || r.FetchSHA == nil {
 		return nil
 	}
