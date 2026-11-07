@@ -104,6 +104,7 @@
       "properties": {
         "github": { "type": "string", "description": "owner/repo or owner/repo/releases or /tags" },
         "gitlab": { "type": "string" },
+        "npm": { "type": "string", "description": "an npm package name, scoped or not. Resolved by versions.Resolve and used as the vulnerability identity (versions/identity.go). Enumerated here because the code has always honoured it and this schema did not say so; 21 recipes of the upstream corpus use it." },
         "url": { "type": "string", "description": "a URL to scrape versions from" },
         "match": { "type": "string", "description": "regex selecting version strings from the URL body" },
         "strip": { "$ref": "#/$defs/regexOrArray" },
@@ -117,6 +118,7 @@
       "properties": {
         "url": { "type": "string", "description": "source tarball/repo URL; supports {{version}} moustaches" },
         "ref": { "type": "string" },
+        "sha": { "type": "string", "description": "where the expected SHA-256 of the archive is published, usually ${{url}}.sha256 — the build fetches it and refuses a mismatch (build/runner.go, ErrChecksumMismatch). It is served by the same host as the archive in every recipe that uses it, so it catches corruption, not substitution; fetch.Pin's trust-on-first-use is the control for the latter. Enumerated here because the runner has always honoured it and this schema did not say so." },
         "strip-components": { "type": ["integer", "string"], "description": "leading path components to strip on extract" }
       }
     },
