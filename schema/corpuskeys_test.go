@@ -81,12 +81,28 @@ func TestEveryKeyTheCorpusUsesIsEnumerated(t *testing.T) {
 
 	t.Logf("%d recipe(s) in %s", len(recipes), dir)
 	total := 0
+	// ⛔ THE BLAST RADIUS IS A COUNT OF RECIPES, NOT OF KEYS. Per-key counts
+	// answer "how much work"; closing the schema is decided on "how many
+	// recipes stop validating", and one recipe can carry several unknown
+	// keys. Summing the key counts would over-state it.
+	affected := map[string]bool{}
 	for _, c := range containers {
 		// key -> how many recipes use it, within this container
 		seen := map[string]int{}
+		// ⛔ AND WHICH RECIPE. A count tells you there is work and not where
+		// it is: "receipt, 1 recipe(s)" sent the reader to grep a corpus by
+		// hand for the one file. The first example is named, which is enough
+		// to open it.
+		first := map[string]string{}
 		for _, r := range recipes {
 			for k := range r.keys[c.name] {
 				seen[k]++
+				if _, ok := first[k]; !ok {
+					first[k] = r.path
+				}
+				if !c.known[k] {
+					affected[r.path] = true
+				}
 			}
 		}
 		var unknown []string
@@ -103,14 +119,19 @@ func TestEveryKeyTheCorpusUsesIsEnumerated(t *testing.T) {
 		})
 		t.Logf("  %-14s %2d distinct key(s), %d not in the schema", c.name, len(seen), len(unknown))
 		for _, k := range unknown {
-			t.Logf("      %-24s %d recipe(s)", k, seen[k])
+			where, err := filepath.Rel(dir, first[k])
+			if err != nil {
+				where = first[k]
+			}
+			t.Logf("      %-24s %3d recipe(s), e.g. %s", k, seen[k], where)
 		}
 		total += len(unknown)
 	}
 	if total > 0 {
-		t.Errorf("%d key(s) appear in the corpus and not in package.schema.json — "+
-			"each is either a key we must enumerate or a key no recipe should carry; "+
-			"with additionalProperties:true today, both are accepted and ignored", total)
+		t.Errorf("%d key(s) in %d of %d recipe(s) appear in the corpus and not in "+
+			"package.schema.json — each is either a key we must enumerate or a key no "+
+			"recipe should carry; with additionalProperties:true today, both are "+
+			"accepted and ignored", total, len(affected), len(recipes))
 	}
 }
 
