@@ -83,9 +83,55 @@ distributable:
 versions:
   npm: left-pad
 `},
+		{"distributable.sha256, scalar", `
+distributable:
+  url: https://example.org/x.tar.gz
+  sha256: 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+`},
+		{"distributable.sha256, keyed by version", `
+distributable:
+  url: https://example.org/x-{{version.raw}}.tar.gz
+  sha256:
+    "1.3.1": 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+    "1.3": cc0b4e42510d49c6decd464123ecf3b14ae9b47f9b4ed2ee64893e2d6520a264
+`},
 	} {
 		if err := pantry.Validate([]byte(c.yaml)); err != nil {
 			t.Errorf("%s is honoured by the code and refused by the schema: %v", c.what, err)
+		}
+	}
+}
+
+// ⛔ A PIN THAT IS ALMOST A DIGEST IS WORSE THAN NONE: it reads as a control
+// and compares against nothing real. The runner checks the shape too
+// (build.pinnedDigest), and so does the schema, so a recipe is refused at
+// the earliest point rather than at build time on a runner.
+func TestSomethingShapedLikeADigestButNotOneIsRefused(t *testing.T) {
+	for _, c := range []struct{ what, yaml string }{
+		{"a checksum URL where a digest belongs", `
+distributable:
+  url: https://example.org/x.tar.gz
+  sha256: https://example.org/x.tar.gz.sha256
+`},
+		{"uppercase hex", `
+distributable:
+  url: https://example.org/x.tar.gz
+  sha256: 9A93B2B7DFDAC77CEBA5A558A580E74667DD6FEDE4585B91EEFB60F03B72DF23
+`},
+		{"truncated", `
+distributable:
+  url: https://example.org/x.tar.gz
+  sha256: 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df2
+`},
+		{"a bad digest inside the version map", `
+distributable:
+  url: https://example.org/x.tar.gz
+  sha256:
+    "1.3.1": not-a-digest
+`},
+	} {
+		if err := pantry.Validate([]byte(c.yaml)); err == nil {
+			t.Errorf("%s validated as a pinned digest", c.what)
 		}
 	}
 }

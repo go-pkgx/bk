@@ -119,6 +119,16 @@
         "url": { "type": "string", "description": "source tarball/repo URL; supports {{version}} moustaches" },
         "ref": { "type": "string" },
         "sha": { "type": "string", "description": "where the expected SHA-256 of the archive is published, usually ${{url}}.sha256 — the build fetches it and refuses a mismatch (build/runner.go, ErrChecksumMismatch). It is served by the same host as the archive in every recipe that uses it, so it catches corruption, not substitution; fetch.Pin's trust-on-first-use is the control for the latter. Enumerated here because the runner has always honoured it and this schema did not say so." },
+        "sha256": {
+          "description": "the digest PINNED IN THE RECIPE, by whoever read the release. Unlike `sha` it needs no network and is not served by the host it vouches for, and unlike fetch.Pin's trust-on-first-use it can refuse a FIRST fetch — the case neither of the others covers. Keyed by version, because the url interpolates {{version.raw}} and one entry serves every version the recipe resolves: a scalar is right for exactly one of them. The scalar form is allowed only for a recipe that resolves a single version. A recipe that pins is fail-closed: building a version absent from the map is refused, not fetched unverified.",
+          "oneOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            {
+              "type": "object",
+              "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          ]
+        },
         "strip-components": { "type": ["integer", "string"], "description": "leading path components to strip on extract" }
       }
     },
